@@ -458,13 +458,13 @@ const (
 
 // Defines values for SchedulingLinkDays.
 const (
-	Fri SchedulingLinkDays = "fri"
-	Mon SchedulingLinkDays = "mon"
-	Sat SchedulingLinkDays = "sat"
-	Sun SchedulingLinkDays = "sun"
-	Thu SchedulingLinkDays = "thu"
-	Tue SchedulingLinkDays = "tue"
-	Wed SchedulingLinkDays = "wed"
+	SchedulingLinkDaysFri SchedulingLinkDays = "fri"
+	SchedulingLinkDaysMon SchedulingLinkDays = "mon"
+	SchedulingLinkDaysSat SchedulingLinkDays = "sat"
+	SchedulingLinkDaysSun SchedulingLinkDays = "sun"
+	SchedulingLinkDaysThu SchedulingLinkDays = "thu"
+	SchedulingLinkDaysTue SchedulingLinkDays = "tue"
+	SchedulingLinkDaysWed SchedulingLinkDays = "wed"
 )
 
 // Defines values for SchedulingLinkMyStatus.
@@ -479,6 +479,14 @@ const (
 	SchedulingLinkUsageTypeRecurring SchedulingLinkUsageType = "recurring"
 	SchedulingLinkUsageTypeReusable  SchedulingLinkUsageType = "reusable"
 	SchedulingLinkUsageTypeSingleUse SchedulingLinkUsageType = "single_use"
+)
+
+// Defines values for SchedulingLinkCoHostOutcomeOutcome.
+const (
+	AlreadyHost SchedulingLinkCoHostOutcomeOutcome = "already_host"
+	Invited     SchedulingLinkCoHostOutcomeOutcome = "invited"
+	NotAdded    SchedulingLinkCoHostOutcomeOutcome = "not_added"
+	OwnAddress  SchedulingLinkCoHostOutcomeOutcome = "own_address"
 )
 
 // Defines values for SchedulingLinkHostStatus.
@@ -499,6 +507,38 @@ const (
 const (
 	SchedulingLinkInviteResponseStatusAccepted SchedulingLinkInviteResponseStatus = "accepted"
 	SchedulingLinkInviteResponseStatusDeclined SchedulingLinkInviteResponseStatus = "declined"
+)
+
+// Defines values for SchedulingLinkRemovedHostStatus.
+const (
+	SchedulingLinkRemovedHostStatusAccepted SchedulingLinkRemovedHostStatus = "accepted"
+	SchedulingLinkRemovedHostStatusDeclined SchedulingLinkRemovedHostStatus = "declined"
+	SchedulingLinkRemovedHostStatusPending  SchedulingLinkRemovedHostStatus = "pending"
+)
+
+// Defines values for SchedulingLinkSavedDays.
+const (
+	SchedulingLinkSavedDaysFri SchedulingLinkSavedDays = "fri"
+	SchedulingLinkSavedDaysMon SchedulingLinkSavedDays = "mon"
+	SchedulingLinkSavedDaysSat SchedulingLinkSavedDays = "sat"
+	SchedulingLinkSavedDaysSun SchedulingLinkSavedDays = "sun"
+	SchedulingLinkSavedDaysThu SchedulingLinkSavedDays = "thu"
+	SchedulingLinkSavedDaysTue SchedulingLinkSavedDays = "tue"
+	SchedulingLinkSavedDaysWed SchedulingLinkSavedDays = "wed"
+)
+
+// Defines values for SchedulingLinkSavedMyStatus.
+const (
+	SchedulingLinkSavedMyStatusAccepted SchedulingLinkSavedMyStatus = "accepted"
+	SchedulingLinkSavedMyStatusDeclined SchedulingLinkSavedMyStatus = "declined"
+	SchedulingLinkSavedMyStatusPending  SchedulingLinkSavedMyStatus = "pending"
+)
+
+// Defines values for SchedulingLinkSavedUsageType.
+const (
+	SchedulingLinkSavedUsageTypeRecurring SchedulingLinkSavedUsageType = "recurring"
+	SchedulingLinkSavedUsageTypeReusable  SchedulingLinkSavedUsageType = "reusable"
+	SchedulingLinkSavedUsageTypeSingleUse SchedulingLinkSavedUsageType = "single_use"
 )
 
 // Defines values for SettingsCalendarProvider.
@@ -676,9 +716,9 @@ const (
 
 // Defines values for UpdateSchedulingLinkRequestUsageType.
 const (
-	UpdateSchedulingLinkRequestUsageTypeRecurring UpdateSchedulingLinkRequestUsageType = "recurring"
-	UpdateSchedulingLinkRequestUsageTypeReusable  UpdateSchedulingLinkRequestUsageType = "reusable"
-	UpdateSchedulingLinkRequestUsageTypeSingleUse UpdateSchedulingLinkRequestUsageType = "single_use"
+	Recurring UpdateSchedulingLinkRequestUsageType = "recurring"
+	Reusable  UpdateSchedulingLinkRequestUsageType = "reusable"
+	SingleUse UpdateSchedulingLinkRequestUsageType = "single_use"
 )
 
 // Defines values for WorkingHoursScheduleMode.
@@ -1475,10 +1515,10 @@ type CreateSchedulingLinkRequest struct {
 	BufferAfter        *int `json:"buffer_after,omitempty"`
 	BufferBefore       *int `json:"buffer_before,omitempty"`
 
-	// CoHostEmails Emails are lowercased and trimmed, then resolved to existing accounts and added as `pending` hosts. Addresses with no account are skipped silently - the response gives no indication that an invite was dropped.
+	// CoHostEmails Entries are trimmed and compared ignoring case. Each one is resolved (PAC-71 granting rule) and its outcome is reported in the 201's `co_host_changes`; an address that cannot be invited is reported as `not_added`, never silently dropped, and does not fail the create (spec D-5). On create the only current host is the owner, so a list of more than 5 entries is accepted only when every entry reaches the owner. PAC-112 (spec §3.6, D-8): an entry that is empty or only whitespace is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. The server does not check `format`; a string that is not an address is simply `not_added`.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
-	// Days Alias for days_of_week, used only when days_of_week is absent or null. Accepts "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently dropped, which can turn a non-empty list into a 422 "at least one day".
+	// Days Alias for days_of_week, used only when days_of_week is absent or null. Accepts "sun".."sat", "sunday".."saturday" and "0".."6", case-insensitive, surrounding whitespace ignored. PAC-112 (API-053, spec §3.12): when the alias is used, an entry that is none of these makes the whole request a 422 "days contains an unrecognised day name" and nothing is created, a mixed list such as ["mon","Montag"] included (before PAC-112 such entries were silently dropped). When days_of_week is carried the alias is ignored entirely, unrecognised names included (PAC-40 D-5).
 	Days *[]string `json:"days"`
 
 	// DaysOfWeek Canonical spelling, 0=Sunday..6=Saturday. Wins over `days` whenever it is carried (present and not null), even as `[]` (then a 422). Defaults to [1,2,3,4,5] when both are absent or null.
@@ -3275,6 +3315,34 @@ type SchedulingLinkBookingRecord struct {
 	Status string `json:"status"`
 }
 
+// SchedulingLinkCoHostChanges PAC-112 (spec §3.4, §3.5, §3.9, D-2; contract md §2). What this save did to the co-hosts, computed inside the write's transaction. Present in a `SchedulingLinkSaved` exactly when the request carried `co_host_emails` (non-null; `[]` included) and the save succeeded; absent otherwise. A client that sent a list and receives no `co_host_changes` is talking to a server without PAC-112 (rollback, spec §7): it must not claim any address was invited, and says it cannot tell which co-hosts were added (contract md §5.3). Counts are of people, not entries: two entries that reach one account count once.
+type SchedulingLinkCoHostChanges struct {
+	// Addresses One item per entry of the request's `co_host_emails`, in the same order and of the same length, duplicates included, so item i describes entry i.
+	Addresses []SchedulingLinkCoHostOutcome `json:"addresses"`
+
+	// InvitedCount Distinct accounts whose outcome is `invited`.
+	InvitedCount int `json:"invited_count"`
+
+	// NotAddedCount Distinct entries, compared ignoring case after trimming, whose outcome is `not_added`.
+	NotAddedCount int `json:"not_added_count"`
+
+	// Removed Every non-owner host this save removed (not on the list by the keep rule), with the status they had. Empty when nobody was removed and always empty on create. Never the owner. Order not specified.
+	Removed []SchedulingLinkRemovedHost `json:"removed"`
+
+	// RemovedCount Equals the length of `removed`.
+	RemovedCount int `json:"removed_count"`
+}
+
+// SchedulingLinkCoHostOutcome PAC-112. The outcome of one listed entry, decided in this order (contract md §2.2): `own_address` when the entry's one domain-confirmed holder is the link's owner; `already_host` when that holder, or else any account carrying the entry at any standing (the keep rule), was a non-owner host of the link before this save, whatever their status, which they keep (PAC-61, PAC-71 AC-43); `invited` when the one domain-confirmed holder was not a host and a `pending` row was created by this save (every entry reaching that account reports `invited`); otherwise `not_added`. `not_added` carries no reason: nobody, an unconfirmed carrier and several accounts are not distinguished (spec D-6). The owner's address held only unconfirmed or shared is `not_added`, and the owner's row is unchanged (spec §3.7).
+type SchedulingLinkCoHostOutcome struct {
+	// Email The entry as sent, with surrounding whitespace trimmed; letter case kept.
+	Email   string                             `json:"email"`
+	Outcome SchedulingLinkCoHostOutcomeOutcome `json:"outcome"`
+}
+
+// SchedulingLinkCoHostOutcomeOutcome defines model for SchedulingLinkCoHostOutcome.Outcome.
+type SchedulingLinkCoHostOutcomeOutcome string
+
 // SchedulingLinkHost backend/api/handlers_scheduling_links.go schedulingHostDTO - the host shape embedded in SchedulingLink. Distinct from SchedulingLinkHostRecord, which is the raw DB row returned by POST /{id}/hosts.
 type SchedulingLinkHost struct {
 	// AvatarUrl Omitted when empty.
@@ -3345,6 +3413,82 @@ type SchedulingLinkListResponse struct {
 	// Shared Links where the caller is an accepted co-host but not the owner. Deleted links are never included (PAC-40).
 	Shared []SchedulingLink `json:"shared"`
 }
+
+// SchedulingLinkRemovedHost PAC-112. A host removed by this save. Bookings already made on the link are untouched.
+type SchedulingLinkRemovedHost struct {
+	// Email The account's stored address, read inside the write; a failed read is the 500 with nothing changed, never an empty string.
+	Email string `json:"email"`
+
+	// Status The status the host had when removed.
+	Status SchedulingLinkRemovedHostStatus `json:"status"`
+	UserId openapi_types.UUID              `json:"user_id"`
+}
+
+// SchedulingLinkRemovedHostStatus The status the host had when removed.
+type SchedulingLinkRemovedHostStatus string
+
+// SchedulingLinkSaved PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200): every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus the optional `co_host_changes`. The roster in `hosts` is built like the list's, not like `getSchedulingLink`'s, and is never a co-host baseline (spec D-3).
+type SchedulingLinkSaved struct {
+	// Active false means paused: the owner switched the link off and can switch it back on with PATCH. A deleted link is never returned, so this field never describes one (PAC-40).
+	Active bool `json:"active"`
+
+	// BookingHorizonDays How many days ahead the link can be booked, counting today in the link's zone (PAC-72 revision 2, owner decision D-1). 60 for every link created before PAC-72 revision 2 and for any link created without it.
+	BookingHorizonDays int `json:"booking_horizon_days"`
+	BufferAfter        int `json:"buffer_after"`
+	BufferBefore       int `json:"buffer_before"`
+
+	// CoHostChanges PAC-112 (spec §3.4, §3.5, §3.9, D-2; contract md §2). What this save did to the co-hosts, computed inside the write's transaction. Present in a `SchedulingLinkSaved` exactly when the request carried `co_host_emails` (non-null; `[]` included) and the save succeeded; absent otherwise. A client that sent a list and receives no `co_host_changes` is talking to a server without PAC-112 (rollback, spec §7): it must not claim any address was invited, and says it cannot tell which co-hosts were added (contract md §5.3). Counts are of people, not entries: two entries that reach one account count once.
+	CoHostChanges *SchedulingLinkCoHostChanges `json:"co_host_changes,omitempty"`
+
+	// CreatedAt UTC, Go layout "2006-01-02T15:04:05.000Z07:00" (millisecond precision).
+	CreatedAt time.Time `json:"created_at"`
+
+	// Days Weekday abbreviations mapped from the stored 0-6 integers, Sunday = "sun".
+	Days      []SchedulingLinkSavedDays `json:"days"`
+	Durations []int                     `json:"durations"`
+
+	// Hosts Every host regardless of status, ordered by invited_at. Always an array, never null.
+	Hosts []SchedulingLinkHost `json:"hosts"`
+	Id    openapi_types.UUID   `json:"id"`
+
+	// IsOwner True when owner_id equals the authenticated caller.
+	IsOwner bool `json:"is_owner"`
+
+	// MaxUses Present only for `recurring` links. Forced to null (and therefore omitted, json `max_uses,omitempty`) for reusable and single_use.
+	MaxUses          *int `json:"max_uses,omitempty"`
+	MinNoticeMinutes int  `json:"min_notice_minutes"`
+
+	// MyStatus The caller's own host status. Omitted (json `my_status,omitempty`) when the caller is not among the link's hosts.
+	MyStatus *SchedulingLinkSavedMyStatus `json:"my_status,omitempty"`
+	OwnerId  openapi_types.UUID           `json:"owner_id"`
+
+	// RefusalMessage The link owner's choice of 409 body for refused public bookings (PAC-72 revision 2, owner decisions D-2/D-5). `generic`: one message, "slot is no longer available", for every refusal, revealing nothing about the hosts' calendars. `specific`: the reason (see `BookingRefusalReason`), which tells a visitor, for example, that a host is busy at that time.
+	RefusalMessage BookingRefusalMessage `json:"refusal_message"`
+
+	// Slug Lowercase alphanumerics separated by single dashes (normalizeSlug).
+	Slug string `json:"slug"`
+
+	// TimeZone Read-only. The zone the link's days and hours are evaluated in: the owner's profile time zone, `UTC` when the owner has none (PAC-72 revision 2, owner decision D-9). Not stored on the link; it follows the owner's settings, so changing the owner's time zone moves the link's hours with it. Same value as `PublicLinkInfo.time_zone`.
+	TimeZone  string                       `json:"time_zone"`
+	Title     string                       `json:"title"`
+	UsageType SchedulingLinkSavedUsageType `json:"usage_type"`
+
+	// UsesCount Number of booking rows stored for this link, whatever their status, so cancelled bookings are included and the figure never goes down when a booking is cancelled (PAC-40 D-6, API-051). Bookings made before PAC-40 count under the same rule (D-8). Exhaustion (410 on the public paths) is judged on this figure. No product path removes a booking row (cancel keeps it, delete of a link is a soft delete, D-2), so through the API the figure only grows. A row removed outside the product (e2e teardown, a manual database edit) is no longer counted. Erasing bookers' names and emails removes no row and never changes this figure (PAC-40 §3.4). Whether the server stores or computes the figure is not part of the contract, provided it equals this count.
+	UsesCount int    `json:"uses_count"`
+	WindowEnd string `json:"window_end"`
+
+	// WindowStart Read back from the Postgres TIME column, so it comes out as "HH:MM:SS" even though the handler normalises the input to "HH:MM" before writing (confirmed by handlers_scheduling_links_test.go:91 expecting "10:00:00").
+	WindowStart string `json:"window_start"`
+}
+
+// SchedulingLinkSavedDays defines model for SchedulingLinkSaved.Days.
+type SchedulingLinkSavedDays string
+
+// SchedulingLinkSavedMyStatus The caller's own host status. Omitted (json `my_status,omitempty`) when the caller is not among the link's hosts.
+type SchedulingLinkSavedMyStatus string
+
+// SchedulingLinkSavedUsageType defines model for SchedulingLinkSaved.UsageType.
+type SchedulingLinkSavedUsageType string
 
 // Settings The settings document for ONE user, returned by GET and by PATCH. Every property is always present. It has NO `llmApiKey` property at all: the key is write-only and is never returned (spec AC-11); `llmApiKeySet` reports whether one is on file. Property names come straight from the json tags on storage.Settings, camelCase throughout. `ID`, `MicrosoftTokens` and `ZoomTokens` are `json:"-"` and never appear.
 // PAC-24 revision 3 makes this a concrete schema rather than an `allOf` over a shared field set with `readOnly`/`writeOnly` markers: all three generators (oapi-codegen, openapi-typescript, typed-openapi) dropped those markers and generated a response type carrying `llmApiKey`, and typed-openapi also dropped the `required` list (contract challenge, revision 2, finding 1). The property map is shared with `SettingsUpdate` through a YAML anchor, so the two cannot drift; every `Settings` document is a valid `SettingsUpdate` body.
@@ -4424,10 +4568,10 @@ type UpdateSchedulingLinkRequest struct {
 	BufferAfter        *int `json:"buffer_after"`
 	BufferBefore       *int `json:"buffer_before"`
 
-	// CoHostEmails When present, the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Unknown emails are skipped silently.
+	// CoHostEmails When present (non-null), the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Absent or null leaves the co-hosts untouched. Entries are trimmed and compared ignoring case. Every entry's outcome and every removal are reported in the 200's `co_host_changes`; an address that cannot be invited is `not_added`, never silently dropped, and does not fail the PATCH (spec D-5). PAC-112 (spec §3.6, D-8): an entry that is empty or only whitespace is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. The server does not check `format`; a string that is not an address is simply `not_added`.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
-	// Days Alias for days_of_week, applied only when days_of_week is absent or null. Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won on PATCH).
+	// Days Alias for days_of_week, applied only when days_of_week is absent or null. Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won on PATCH), unrecognised names included. Same names as on create. PAC-112 (API-053): when applied, an unrecognised entry makes the PATCH a 422 "days contains an unrecognised day name" with the link unchanged, a mixed list included (before PAC-112 it was dropped and the rest saved).
 	Days *[]string `json:"days"`
 
 	// DaysOfWeek Canonical spelling. When carried (present and not null) it wins over `days`, as on create (PAC-40 D-5); `[]` counts as carried and fails 422.
@@ -17513,7 +17657,7 @@ type CreateSchedulingLinkResponseObject interface {
 	VisitCreateSchedulingLinkResponse(w http.ResponseWriter) error
 }
 
-type CreateSchedulingLink201JSONResponse SchedulingLink
+type CreateSchedulingLink201JSONResponse SchedulingLinkSaved
 
 func (response CreateSchedulingLink201JSONResponse) VisitCreateSchedulingLinkResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -17962,7 +18106,7 @@ type UpdateSchedulingLinkResponseObject interface {
 	VisitUpdateSchedulingLinkResponse(w http.ResponseWriter) error
 }
 
-type UpdateSchedulingLink200JSONResponse SchedulingLink
+type UpdateSchedulingLink200JSONResponse SchedulingLinkSaved
 
 func (response UpdateSchedulingLink200JSONResponse) VisitUpdateSchedulingLinkResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
