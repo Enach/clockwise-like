@@ -588,6 +588,17 @@ func TestPAC82_Migration038(t *testing.T) {
 	if !errors.Is(err, ErrSlotTaken) {
 		t.Fatalf("new overlapping booking: %v, want ErrSlotTaken", err)
 	}
+	// The cross-link half (PAC-110): 10:30-11:00 on l1 misses l1's own
+	// 10:00-10:30 rows but overlaps l2's 10:15-10:45 row, and the owner hosts
+	// l2 as accepted.
+	xs, xe := pac82Slot(10, 30)
+	_, err = SaveBookingOnLiveLink(context.Background(), conn, &Booking{LinkID: l1, BookerName: "X", BookerEmail: "x@m38.test", StartTime: xs, EndTime: xe, IdempotencyKey: pac82Key("m38x")}, nil)
+	if !errors.Is(err, ErrHostBusy) {
+		t.Fatalf("new booking overlapping the other link's row: %v, want ErrHostBusy", err)
+	}
+	if snapshot() != before {
+		t.Fatal("a refused booking changed the bookings table")
+	}
 	ks, ke := pac82Slot(15, 0)
 	if _, err := SaveBookingOnLiveLink(context.Background(), conn, &Booking{LinkID: l1, BookerName: "K", BookerEmail: "k@m38.test", StartTime: ks, EndTime: ke, IdempotencyKey: pac82Key("m38k")}, nil); err != nil {
 		t.Fatal(err)

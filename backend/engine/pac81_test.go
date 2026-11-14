@@ -627,17 +627,14 @@ func TestPAC81_BookingEmailFailureLogged(t *testing.T) {
 	})
 	host, _ := pac81User(t, db, "mailhost@pac81.test")
 	link := pac81Link(t, db, []uuid.UUID{host})
-	var buf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&buf)
-	defer log.SetOutput(prev)
+	logged := captureStdLog(t)
 	start := nextWeekday(time.Now()).Add(12 * time.Hour)
 	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "booker@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	lifecycle.Default().Wait(context.Background())
-	out := buf.String()
+	out := logged()
 	if !strings.Contains(out, "ERROR: booking confirmation email failed for booking "+booking.ID.String()) {
 		t.Fatalf("log %q", out)
 	}
