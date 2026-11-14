@@ -101,7 +101,7 @@ A release that adds a migration is applied with **no backend serving**. A
 migration changes tables that live requests are reading and writing. If the
 two run at the same time, Postgres can abort one of them (`40P01`): a
 booking is lost, or the migration fails half-way and the database is left
-dirty. From PAC-116's implementation on, the backend and `paceday-operator`
+dirty. The backend and `paceday-operator` (PAC-116)
 refuse to apply pending migrations while the app is serving. They print what
 they saw and change nothing. There is no override.
 
@@ -114,7 +114,7 @@ they saw and change nothing. There is no override.
      It applies the migrations.
   3. Start the others.
 
-  From PAC-116's implementation on, a new backend started while an old one
+  A new backend started while an old one
   is still serving refuses to start (`refusing to start: pending migrations
   … were not applied: the app is serving`). Docker restarts it
   (`restart: unless-stopped`) until the old ones are stopped. `compose up -d`
@@ -203,7 +203,7 @@ compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-
 ```
 
 - `advance-all` runs after the new backend has migrated, so it applies
-  nothing itself. (From PAC-116's implementation on, a newer operator
+  nothing itself. (A newer operator
   against an older schema refuses while the backend serves; see
   [Applying migrations](#applying-migrations-stop-migrate-start).)
 - `advance-all` runs against the running backend (`exec`): it needs no
@@ -575,7 +575,7 @@ exits 0 when nothing plain is left (3 while some is).
 
 `paceday-operator encryption <subcommand>` ships in the backend image as
 `/paceday-operator`. It reads `DATABASE_URL` and the same two key variables
-as the backend. From PAC-116's implementation on, like the backend, it
+as the backend. Like the backend (PAC-116), it
 applies pending migrations only while no backend is serving
 ([Applying migrations](#applying-migrations-stop-migrate-start)). Subcommands that need the backend **running or not** use
 `exec`:

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,10 @@ func startEncryption(ctx context.Context, db *sql.DB, cfg secretbox.KeyConfig) (
 // refusalText is contract 9.1's line for a key-load failure.
 func refusalText(err error) string {
 	switch {
+	case errors.Is(err, storage.ErrMigrating):
+		// PAC-116 contract 4.1.
+		msg := strings.TrimPrefix(err.Error(), storage.ErrMigrating.Error()+": ")
+		return "refusing to start: " + msg + ` (docs/runbook.md, "Applying migrations: stop, migrate, start")`
 	case errors.Is(err, secretbox.ErrWrongKey), errors.Is(err, secretbox.ErrUnknownKEK),
 		errors.Is(err, secretbox.ErrNoActiveDEK), errors.Is(err, storage.ErrOfflineOperation):
 		msg := err.Error()

@@ -18,6 +18,7 @@ import (
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/golang-migrate/migrate/v4"
 )
 
 // Exit codes (contract 8.1).
@@ -119,14 +120,29 @@ func runEncryption(args []string, getenv func(string) string, out, errw io.Write
 		}
 		cfg = c
 	}
+	ctx := context.Background()
+	// PAC-116 contract 3, 5: the mutating subcommands apply pending
+	// migrations only through the migrate-when-stopped procedure, before
+	// their own pool is opened (step 2). status is a read-only probe (5.1);
+	// downgrade-schema applies no pending up migration (5).
+	pre := exitOK
+	if mutating && r.sub != "downgrade-schema" {
+		code, stop := r.migrate(ctx, dsn)
+		if stop {
+			return code
+		}
+		pre = code
+	}
 	db, err := openDB(dsn, storage.OperatorApp(r.sub))
 	if err != nil {
 		fmt.Fprintln(errw, "encryption:", err)
 		return exitFailed
 	}
 	defer db.Close()
-	ctx := context.Background()
-	code := r.dispatch(ctx, db, cfg)
+	code := pre
+	if code == exitOK {
+		code = r.dispatch(ctx, db, cfg)
+	}
 	// Review #6 (contract 8.1): every mutating run that ends with exit 1
 	// writes exactly one audit row, whatever path it failed on.
 	if mutating && code == exitFailed && !r.audited {
@@ -143,9 +159,105 @@ var auditAction = map[string]string{
 	"downgrade-schema": storage.AuditEncryptionDowngrade,
 }
 
-// dispatch checks the schema version, applies migrations, takes the lock
-// and runs the subcommand.
+// migrate runs the migrate-when-stopped procedure for a mutating
+// subcommand (PAC-116 contract 3, 5). stop is true when the run ends here
+// with code and writes nothing: a refusal (exit 6 serving, 5 lock held or a
+// migration in progress) or a version the binary has no file for (exit 1,
+// AC-20). Any other failure is exit 1 with the run's failed audit row, as
+// when migrating failed before (PAC-84 review #6). Below the encryption
+// migration nothing is applied and dispatch reports it (review #3).
+func (r *encryptionRun) migrate(ctx context.Context, dsn string) (code int, stop bool) {
+	floor, err := storage.EncryptionMigrationVersion()
+	if err != nil {
+		fmt.Fprintln(r.errw, "encryption:", err)
+		return exitFailed, true
+	}
+	res, err := storage.MigrateWhenStopped(ctx, dsn, storage.MigrateOptions{Caller: storage.OperatorApp(r.sub), Floor: floor})
+	var refusal *storage.MigrationRefusal
+	var unknown *storage.UnknownVersionError
+	switch {
+	case errors.As(err, &refusal):
+		fmt.Fprintf(r.errw, "encryption %s: %v\n", r.sub, err)
+		if refusal.Serving() {
+			return exitBackends, true
+		}
+		return exitLock, true
+	case errors.Is(err, storage.ErrBelowFloor):
+		return exitOK, false
+	case errors.As(err, &unknown):
+		fmt.Fprintln(r.errw, "encryption: run migrations:", err)
+		return exitFailed, true
+	case err != nil:
+		fmt.Fprintln(r.errw, "encryption: run migrations:", err)
+		return exitFailed, false
+	case res.Applied:
+		fmt.Fprintf(r.errw, "encryption %s: migrations applied, schema version %s -> %d\n", r.sub, fromVersion(res), res.To)
+	}
+	return exitOK, false
+}
+
+// probeStatus is status's reading of the version (PAC-116 contract 5.1): it
+// never migrates, never takes the maintenance lock and never refuses as
+// serving. done is true when the run ends with code.
+func (r *encryptionRun) probeStatus(ctx context.Context, db *sql.DB) (st storage.VersionState, code int, done bool) {
+	st, err := storage.ProbeVersionState(ctx, db)
+	if err != nil {
+		fmt.Fprintln(r.errw, "encryption:", err)
+		return st, exitFailed, true
+	}
+	switch st.Kind {
+	case storage.VersionUnknown:
+		fmt.Fprintln(r.errw, "encryption: run migrations: migrate up:", storage.NewUnknownVersionError(st.Version))
+		return st, exitFailed, true
+	case storage.VersionDirty:
+		fmt.Fprintf(r.errw, "encryption: run migrations: migrate up: %v\n", migrate.ErrDirty{Version: int(st.Version)})
+		return st, exitFailed, true
+	case storage.VersionInProgress:
+		fmt.Fprintf(r.errw, "encryption status: migrations are being applied by %s (pid %d); run again after it ends\n", st.Holder.AppName, st.Holder.PID)
+		return st, exitLock, true
+	}
+	return st, exitOK, false
+}
+
+// printPending is status's report of pending migrations and of the serving
+// state, its own connection excluded (PAC-116 contract 5.1).
+func (r *encryptionRun) printPending(ctx context.Context, db *sql.DB, st storage.VersionState) error {
+	from := "none (empty schema)"
+	if st.Present {
+		from = fmt.Sprint(st.Version)
+	}
+	fmt.Fprintf(r.out, "encryption status: schema at version %s; this release's migrations up to %d are pending, not applied\n", from, st.Highest)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	beats, sessions, err := storage.ServingState(ctx, conn)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(r.out, "serving: %d live backend heartbeat(s), %d other database session(s)\n", len(beats), len(sessions))
+	for _, h := range beats {
+		fmt.Fprintf(r.out, "  live backend heartbeat: instance %s on %q, seen %ds ago\n", h.InstanceID, h.Hostname, int64(h.Age/time.Second))
+	}
+	for _, s := range sessions {
+		fmt.Fprintf(r.out, "  other database session: pid %d, application_name %q, user %s, client %s, state %s\n", s.PID, s.AppName, s.User, s.Client, s.State)
+	}
+	return nil
+}
+
+// dispatch checks the schema version, takes the lock and runs the
+// subcommand (migrations were applied, or refused, before; status reports
+// them, PAC-116 contract 5.1).
 func (r *encryptionRun) dispatch(ctx context.Context, db *sql.DB, cfg secretbox.KeyConfig) int {
+	var probe storage.VersionState
+	if r.sub == "status" {
+		st, code, done := r.probeStatus(ctx, db)
+		if done {
+			return code
+		}
+		probe = st
+	}
 	// Review #3: a database below this work's migration (downgraded with
 	// downgrade-schema, or not yet upgraded) is never migrated up by the
 	// CLI: the previous release could no longer start on it.
@@ -178,11 +290,13 @@ func (r *encryptionRun) dispatch(ctx context.Context, db *sql.DB, cfg secretbox.
 		}
 		return exitFailed
 	}
-	if err := storage.Migrate(db); err != nil {
-		fmt.Fprintln(r.errw, "encryption:", err)
-		return exitFailed
-	}
 	if r.sub == "status" {
+		if probe.Kind == storage.VersionPending {
+			if err := r.printPending(ctx, db, probe); err != nil {
+				fmt.Fprintln(r.errw, "encryption status:", err)
+				return exitFailed
+			}
+		}
 		return r.status(ctx, db)
 	}
 	lock, err := storage.TryMaintenanceLock(ctx, db)

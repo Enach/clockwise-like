@@ -121,13 +121,16 @@ type LockHolder struct {
 }
 
 // MaintenanceHolder returns the holder of the maintenance lock, nil when
-// none holds it.
-func MaintenanceHolder(ctx context.Context, db DBTX) (*LockHolder, error) {
+// none holds it. Advisory locks are per database: a holder of (8400,1) on
+// another database of the same server is not this database's holder
+// (PAC-116: a migrator elsewhere must not stop this app).
+func MaintenanceHolder(ctx context.Context, db DBTXQuery) (*LockHolder, error) {
 	var h LockHolder
 	err := db.QueryRowContext(ctx, `
 		SELECT COALESCE(a.application_name, ''), a.pid, COALESCE(a.backend_start, now())
 		FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
 		WHERE l.locktype = 'advisory' AND l.classid = $1 AND l.objid = $2 AND l.granted
+		  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
 		LIMIT 1`, lockClass, lockMaintenance).Scan(&h.AppName, &h.PID, &h.BackendStart)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -258,6 +261,10 @@ type KeyLoad struct {
 // maintenance lock (contract 4.3).
 var ErrOfflineOperation = errors.New("offline encryption operation running")
 
+// ErrMigrating: a migrator holds the maintenance lock (PAC-116 contract
+// 4.1); a backend refuses to start.
+var ErrMigrating = errors.New("migrations being applied")
+
 // PrepareKeyring is the key setup of contract 5.3 step 4 without the
 // heartbeat: under lock (8400,2), in one transaction, create the first data
 // key if none is active, re-wrap every data key wrapped by a previous key
@@ -328,9 +335,21 @@ func LoadKeyring(ctx context.Context, db *sql.DB, cfg secretbox.KeyConfig, inst 
 	if err := WriteHeartbeat(ctx, db, inst, nil); err != nil {
 		return nil, fmt.Errorf("write heartbeat: %w", err)
 	}
+	if fn, ok := afterHeartbeatWrite.get(); ok {
+		fn(inst)
+	}
 	holder, err := MaintenanceHolder(ctx, db)
 	if err != nil {
 		return nil, err
+	}
+	// PAC-116 contract 4.1: a migrator at work; the heartbeat is deleted
+	// first, so the migrator's serving check is not held up by this process.
+	if holder.Migrating() {
+		if err := DeleteHeartbeat(ctx, db, inst); err != nil {
+			return nil, fmt.Errorf("delete heartbeat: %w", err)
+		}
+		return nil, fmt.Errorf("%w: migrations are being applied by %s (pid %d); start the backend after it ends",
+			ErrMigrating, holder.AppName, holder.PID)
 	}
 	if sub := holder.DestructiveSubcommand(); sub != "" {
 		return nil, fmt.Errorf("%w: paceday-operator encryption %s is running (pid %d); start the backend after it ends",
@@ -486,6 +505,13 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 	}
 	holder, err := MaintenanceHolder(ctx, r.DB)
 	if err == nil {
+		// PAC-116 contract 4.2: defence in depth for a backend whose
+		// heartbeat went stale and whose pool held no connection at a
+		// migrator's serving check.
+		if holder.Migrating() {
+			r.stop(fmt.Sprintf("encryption: migrations are being applied by %s (pid %d); shutting down", holder.AppName, holder.PID))
+			return false
+		}
 		if sub := holder.DestructiveSubcommand(); sub != "" {
 			r.stop(fmt.Sprintf("encryption: data key %d no longer exists (or %s holds the maintenance lock); shutting down", cur.ActiveDEK(), sub))
 			return false
