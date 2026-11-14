@@ -7571,19 +7571,21 @@ paths:
 
         PAC-112 (spec §3.4-§3.8, D-2, D-4, D-8; contract contracts/features/PAC-112.md §2-§4): the create
         is all or nothing. The link, the owner''s `accepted` host row and every co-host invitation are
-        written in one transaction: the answer is either 201 with all of them or an error with none of
-        them (no link, no host row). A failed owner-host write, a failed co-host lookup and a failed co-host
-        write are each the 500 with nothing created (before PAC-112 the first left the link created and
-        the other two were silently skipped). Each listed entry gets an outcome, reported in the 201''s
-        `co_host_changes` (present exactly when `co_host_emails` is carried, `[]` included): `invited`,
-        `own_address` (the address''s one domain-confirmed holder is the caller; the owner''s host row
-        stays `accepted`, never demoted to `pending`: API-048''s create-path remnant, fixed) or `not_added`
-        (no single domain-confirmed holder; the same outcome whether nobody, an unconfirmed carrier or
-        several accounts hold it, so it reveals nothing about any account). `already_host` cannot occur
-        on create. Two entries that reach the same account write one host row and count once. A list with
-        more than 5 entries is refused 422 unless every entry reaches the owner (on create the owner is
-        the only current host; contract md §3). A blank entry is refused 422. Nothing protects a retry
-        after a lost 201: saving again creates a second link (spec §5, accepted risk).'
+        written in one transaction, opened with or without a session guard (with one, the PAC-71 re-check
+        stays its first statement), whose lock waits are bounded at 10 seconds each as on PATCH (PAC-101):
+        the answer is either 201 with all of them or an error with none of them (no link, no host row).
+        A failed owner-host write, a failed co-host lookup and a failed co-host write are each the 500
+        with nothing created (before PAC-112 the first left the link created and the other two were silently
+        skipped). Each listed entry gets an outcome, reported in the 201''s `co_host_changes` (present
+        exactly when `co_host_emails` is carried, `[]` included): `invited`, `own_address` (the address''s
+        one domain-confirmed holder is the caller; the owner''s host row stays `accepted`, never demoted
+        to `pending`: API-048''s create-path remnant, fixed) or `not_added` (no single domain-confirmed
+        holder; the same outcome whether nobody, an unconfirmed carrier or several accounts hold it, so
+        it reveals nothing about any account). `already_host` cannot occur on create. Two entries that
+        reach the same account write one host row and count once. A list with more than 5 entries is refused
+        422 unless every entry reaches the owner (on create the owner is the only current host; contract
+        md §3). A blank entry is refused 422. Nothing protects a retry after a lost 201: saving again
+        creates a second link (spec §5, accepted risk).'
       requestBody:
         required: true
         content:
@@ -7622,9 +7624,10 @@ paths:
             or "internal error" (insert or owner-host insert failed, or the owner''s settings, needed
             for `time_zone`, could not be read; PAC-72 revision 3.1, never the UTC fallback). The detail
             is written to the server log and Sentry only (PAC-21). PAC-112: also "internal error" when
-            a co-host lookup or invitation could not be stored. Every 500 from this operation leaves nothing
-            behind: no link, no host row (spec D-4; before PAC-112 a failed owner-host insert left the
-            link created).'
+            a co-host lookup or invitation could not be stored, or when a lock on an invitee''s account
+            was not obtained within 10 seconds (the PATCH bound, PAC-101). Every 500 from this operation
+            leaves nothing behind: no link, no host row (spec D-4; before PAC-112 a failed owner-host
+            insert left the link created).'
           content:
             application/json:
               schema:
@@ -11074,19 +11077,23 @@ components:
             null) otherwise.
         co_host_emails:
           type: array
-          description: 'Entries are trimmed and compared ignoring case. Each one is resolved (PAC-71 granting
-            rule) and its outcome is reported in the 201''s `co_host_changes`; an address that cannot
-            be invited is reported as `not_added`, never silently dropped, and does not fail the create
-            (spec D-5). On create the only current host is the owner, so a list of more than 5 entries
-            is accepted only when every entry reaches the owner. PAC-112 (spec §3.6, D-8): an entry that
-            is empty or only whitespace is a 422 "co_host_emails must not contain a blank address" (before
-            PAC-112 it was skipped). `maxItems` is deliberately not set: a list of more than 5 entries
+          nullable: true
+          description: 'Absent or null: no co-hosts besides the owner and no `co_host_changes`. Entries
+            are trimmed and compared ignoring case. Each one is resolved (PAC-71 granting rule) and its
+            outcome is reported in the 201''s `co_host_changes`; an address that cannot be invited is
+            reported as `not_added`, never silently dropped, and does not fail the create (spec D-5).
+            On create the only current host is the owner, so a list of more than 5 entries is accepted
+            only when every entry reaches the owner. PAC-112 (spec §3.6, D-8): a blank entry is a 422
+            "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). Blank means:
+            no character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly the set the items''
+            `pattern: ''\S''` uses, the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`)
+            and "\ufeff" is blank (422). Trimming, everywhere in this operation, removes leading and trailing
+            characters of that same set. `maxItems` is deliberately not set: a list of more than 5 entries
             is refused 422 only when an entry does not reach a current host of the link (see the operation),
-            which JSON Schema cannot express. The server does not check `format`; a string that is not
-            an address is simply `not_added`.'
+            which JSON Schema cannot express. No `format` is declared because the server checks none:
+            a string that is not an address is simply `not_added` (contract md §3.4).'
           items:
             type: string
-            format: email
             minLength: 1
             pattern: \S
     CurrentUserResponse:
@@ -14089,7 +14096,7 @@ components:
       description: backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field names
         deliberately differ from the storage json tags (`durations` vs `duration_options`, `days` vs `days_of_week`,
         `owner_id` vs `owner_user_id`, `window_start` vs `window_start_time`).
-      required:
+      required: &id001
       - id
       - owner_id
       - title
@@ -14112,22 +14119,22 @@ components:
       - time_zone
       additionalProperties: false
       properties:
-        id: &id001
+        id: &id002
           type: string
           format: uuid
-        owner_id: &id002
+        owner_id: &id003
           type: string
           format: uuid
-        title: &id003
+        title: &id004
           type: string
-        slug: &id004
+        slug: &id005
           type: string
           description: Lowercase alphanumerics separated by single dashes (normalizeSlug).
-        durations: &id005
+        durations: &id006
           type: array
           items:
             type: integer
-        days: &id006
+        days: &id007
           type: array
           description: Weekday abbreviations mapped from the stored 0-6 integers, Sunday = "sun".
           items:
@@ -14140,51 +14147,51 @@ components:
             - thu
             - fri
             - sat
-        window_start: &id007
+        window_start: &id008
           type: string
           description: Read back from the Postgres TIME column, so it comes out as "HH:MM:SS" even though
             the handler normalises the input to "HH:MM" before writing (confirmed by handlers_scheduling_links_test.go:91
             expecting "10:00:00").
           example: 09:00:00
-        window_end: &id008
+        window_end: &id009
           type: string
           example: '17:00:00'
-        buffer_before: &id009
+        buffer_before: &id010
           type: integer
           minimum: 0
-        buffer_after: &id010
+        buffer_after: &id011
           type: integer
           minimum: 0
-        min_notice_minutes: &id011
+        min_notice_minutes: &id012
           type: integer
           minimum: 0
-        booking_horizon_days: &id012
+        booking_horizon_days: &id013
           type: integer
           minimum: 1
           maximum: 365
           description: How many days ahead the link can be booked, counting today in the link's zone (PAC-72
             revision 2, owner decision D-1). 60 for every link created before PAC-72 revision 2 and for
             any link created without it.
-        refusal_message: &id013
+        refusal_message: &id014
           $ref: '#/components/schemas/BookingRefusalMessage'
-        time_zone: &id014
+        time_zone: &id015
           type: string
           description: 'Read-only. The zone the link''s days and hours are evaluated in: the owner''s
             profile time zone, `UTC` when the owner has none (PAC-72 revision 2, owner decision D-9).
             Not stored on the link; it follows the owner''s settings, so changing the owner''s time zone
             moves the link''s hours with it. Same value as `PublicLinkInfo.time_zone`.'
           example: Europe/Paris
-        usage_type: &id015
+        usage_type: &id016
           type: string
           enum:
           - reusable
           - recurring
           - single_use
-        max_uses: &id016
+        max_uses: &id017
           type: integer
           description: Present only for `recurring` links. Forced to null (and therefore omitted, json
             `max_uses,omitempty`) for reusable and single_use.
-        uses_count: &id017
+        uses_count: &id018
           type: integer
           minimum: 0
           description: Number of booking rows stored for this link, whatever their status, so cancelled
@@ -14196,25 +14203,25 @@ components:
             Erasing bookers' names and emails removes no row and never changes this figure (PAC-40 §3.4).
             Whether the server stores or computes the figure is not part of the contract, provided it
             equals this count.
-        active: &id018
+        active: &id019
           type: boolean
           description: 'false means paused: the owner switched the link off and can switch it back on
             with PATCH. A deleted link is never returned, so this field never describes one (PAC-40).'
-        hosts: &id019
+        hosts: &id020
           type: array
           description: Every host regardless of status, ordered by invited_at. Always an array, never
             null.
           items:
             $ref: '#/components/schemas/SchedulingLinkHost'
-        created_at: &id020
+        created_at: &id021
           type: string
           format: date-time
           description: UTC, Go layout "2006-01-02T15:04:05.000Z07:00" (millisecond precision).
           example: '2026-08-12T10:00:00.000Z'
-        is_owner: &id021
+        is_owner: &id022
           type: boolean
           description: True when owner_id equals the authenticated caller.
-        my_status: &id022
+        my_status: &id023
           type: string
           enum:
           - pending
@@ -14308,7 +14315,9 @@ components:
         not_added_count:
           type: integer
           minimum: 0
-          description: Distinct entries, compared ignoring case after trimming, whose outcome is `not_added`.
+          description: Distinct entries whose outcome is `not_added`. Two entries are the same entry when
+            they are identical after trimming ECMA-262 `\s` from both ends and lowercasing with the database's
+            `lower()`, the comparison the lookup itself applies (contract md §3.3).
     SchedulingLinkCoHostOutcome:
       type: object
       description: 'PAC-112. The outcome of one listed entry, decided in this order (contract md §2.2):
@@ -14327,7 +14336,8 @@ components:
       properties:
         email:
           type: string
-          description: The entry as sent, with surrounding whitespace trimmed; letter case kept.
+          description: The entry as sent, with leading and trailing ECMA-262 `\s` characters removed (the
+            set of the request items' `pattern`, the PAC-67 test); letter case kept.
         outcome:
           type: string
           enum:
@@ -14335,6 +14345,11 @@ components:
           - already_host
           - own_address
           - not_added
+          x-enum-varnames:
+          - CoHostOutcomeInvited
+          - CoHostOutcomeAlreadyHost
+          - CoHostOutcomeOwnAddress
+          - CoHostOutcomeNotAdded
     SchedulingLinkHost:
       type: object
       description: backend/api/handlers_scheduling_links.go schedulingHostDTO - the host shape embedded
@@ -14490,58 +14505,43 @@ components:
           - pending
           - accepted
           - declined
+          x-enum-varnames:
+          - RemovedHostStatusPending
+          - RemovedHostStatusAccepted
+          - RemovedHostStatusDeclined
           description: The status the host had when removed.
     SchedulingLinkSaved:
       type: object
       description: 'PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200):
         every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus
         the optional `co_host_changes`. The roster in `hosts` is built like the list''s, not like `getSchedulingLink`''s,
-        and is never a co-host baseline (spec D-3).'
-      required:
-      - id
-      - owner_id
-      - title
-      - slug
-      - durations
-      - days
-      - window_start
-      - window_end
-      - buffer_before
-      - buffer_after
-      - min_notice_minutes
-      - usage_type
-      - uses_count
-      - active
-      - hosts
-      - created_at
-      - is_owner
-      - booking_horizon_days
-      - refusal_message
-      - time_zone
+        and is never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither
+        the property map nor the required list can drift.'
+      required: *id001
       additionalProperties: false
       properties:
-        id: *id001
-        owner_id: *id002
-        title: *id003
-        slug: *id004
-        durations: *id005
-        days: *id006
-        window_start: *id007
-        window_end: *id008
-        buffer_before: *id009
-        buffer_after: *id010
-        min_notice_minutes: *id011
-        booking_horizon_days: *id012
-        refusal_message: *id013
-        time_zone: *id014
-        usage_type: *id015
-        max_uses: *id016
-        uses_count: *id017
-        active: *id018
-        hosts: *id019
-        created_at: *id020
-        is_owner: *id021
-        my_status: *id022
+        id: *id002
+        owner_id: *id003
+        title: *id004
+        slug: *id005
+        durations: *id006
+        days: *id007
+        window_start: *id008
+        window_end: *id009
+        buffer_before: *id010
+        buffer_after: *id011
+        min_notice_minutes: *id012
+        booking_horizon_days: *id013
+        refusal_message: *id014
+        time_zone: *id015
+        usage_type: *id016
+        max_uses: *id017
+        uses_count: *id018
+        active: *id019
+        hosts: *id020
+        created_at: *id021
+        is_owner: *id022
+        my_status: *id023
         co_host_changes:
           $ref: '#/components/schemas/SchedulingLinkCoHostChanges'
     Settings:
@@ -14564,7 +14564,7 @@ components:
 
         '
       properties:
-        workStart: &id023
+        workStart: &id024
           type: string
           pattern: ^(([01][0-9]|2[0-3]):[0-5][0-9])?$
           description: '`HH:MM`, OR THE EMPTY STRING. DB default `09:00`. PAC-24 tightened the shape from
@@ -14588,7 +14588,7 @@ components:
             Contrast `recapSendTime`, which is NOT widened - see its own description.
 
             '
-        workEnd: &id024
+        workEnd: &id025
           type: string
           pattern: ^(([01][0-9]|2[0-3]):[0-5][0-9])?$
           description: '`HH:MM` or `""`, as `workStart`. DB default `18:00`. PAC-24 adds the cross-property
@@ -14598,7 +14598,7 @@ components:
             day was accepted and produced a zero-length day at use (API-082).
 
             '
-        timezone: &id025
+        timezone: &id026
           type: string
           description: 'IANA name, e.g. `Europe/Paris`. DB default `UTC`. PAC-24 validates it with time.LoadLocation
             and returns 400 `timezone is not a known IANA location`. Before PAC-24 any string was accepted
@@ -14606,37 +14606,37 @@ components:
             no error anywhere (API-082).
 
             '
-        focusMinBlockMinutes: &id026
+        focusMinBlockMinutes: &id027
           type: integer
           minimum: 0
           description: Rejected when < 0. DB default 25.
-        focusMaxBlockMinutes: &id027
+        focusMaxBlockMinutes: &id028
           type: integer
           minimum: 0
           description: 'Rejected when < 0. DB default 120. PAC-24 adds the cross-property check focusMinBlockMinutes
             <= focusMaxBlockMinutes, which OpenAPI cannot express; it is a 400 (API-082).
 
             '
-        focusDailyTargetMinutes: &id028
+        focusDailyTargetMinutes: &id029
           type: integer
           minimum: 0
           description: Rejected when < 0. DB default 240.
-        outOfHoursMeetingsPerWeek: &id029
+        outOfHoursMeetingsPerWeek: &id030
           type: integer
           minimum: 0
           description: 'Weekly allowance of meetings outside working hours. 0 disables out-of-hours scheduling
             entirely (canScheduleOutOfHours returns false when <= 0).
 
             '
-        autoDeclineOutsideWorkingHours: &id030
+        autoDeclineOutsideWorkingHours: &id031
           type: boolean
-        focusLabel: &id031
+        focusLabel: &id032
           type: string
           description: DB default `Focus Time`.
-        focusColor: &id032
+        focusColor: &id033
           type: string
           description: Hex colour string. Not validated. DB default `#4F46E5`.
-        lunchStart: &id033
+        lunchStart: &id034
           type: string
           pattern: ^(([01][0-9]|2[0-3]):[0-5][0-9])?$
           description: '`HH:MM` or `""`. DB default `12:00`. Legacy global; overridden per-day by lunchBreaks.
@@ -14646,50 +14646,50 @@ components:
             is represented. Forbidding it in the schema would make an existing, meaningful state unrepresentable.
 
             '
-        lunchEnd: &id034
+        lunchEnd: &id035
           type: string
           pattern: ^(([01][0-9]|2[0-3]):[0-5][0-9])?$
           description: '`HH:MM` or `""`, as `lunchStart`. DB default `13:00`. PAC-24 adds the cross-property
             check lunchEnd > lunchStart as a 400 (API-082), applied only when both values are non-empty.
 
             '
-        protectLunch: &id035
+        protectLunch: &id036
           type: boolean
           description: DB default true.
-        bufferBeforeMinutes: &id036
+        bufferBeforeMinutes: &id037
           type: integer
           minimum: 0
           description: Rejected when < 0. DB default 5.
-        bufferAfterMinutes: &id037
+        bufferAfterMinutes: &id038
           type: integer
           minimum: 0
           description: Rejected when < 0. DB default 5.
-        bufferEnabled: &id038
+        bufferEnabled: &id039
           type: boolean
-        bufferMinMeetingMinutes: &id039
+        bufferMinMeetingMinutes: &id040
           type: integer
           minimum: 0
           description: 'PAC-24 adds the `>= 0` check its two siblings already had; before that a negative
             value was accepted here alone (API-082).
 
             '
-        bufferSkipBackToBack: &id040
+        bufferSkipBackToBack: &id041
           type: boolean
-        workingHours: &id041
+        workingHours: &id042
           $ref: '#/components/schemas/WorkingHoursSchedule'
-        lunchBreaks: &id042
+        lunchBreaks: &id043
           $ref: '#/components/schemas/LunchBreakSchedule'
-        compressionEnabled: &id043
+        compressionEnabled: &id044
           type: boolean
-        autoScheduleEnabled: &id044
+        autoScheduleEnabled: &id045
           type: boolean
-        autoScheduleCron: &id045
+        autoScheduleCron: &id046
           type: string
           description: '5-field cron (minute hour dom month dow), parsed with robfig/cron v3 using exactly
             those five fields. Empty string skips validation. DB default `0 8 * * *`.
 
             '
-        llmProvider: &id046
+        llmProvider: &id047
           type: string
           enum:
           - ''
@@ -14722,14 +14722,14 @@ components:
             otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 
             '
-        llmModel: &id047
+        llmModel: &id048
           type: string
           description: 'Model for `openai` and `anthropic`. Provider default applied at call time when
             empty: `gpt-4o-mini` (openai), `claude-haiku-4-5-20251001` (anthropic). Not used by `azure_openai`
             (`azureDeployment`), `bedrock` (`bedrockModel`) or `vertex` (`vertexModel`).
 
             '
-        llmApiKeySet: &id048
+        llmApiKeySet: &id049
           type: boolean
           readOnly: true
           description: '`true` exactly when a key bound to the CURRENT `llmProvider` is on file; always
@@ -14741,7 +14741,7 @@ components:
             and ignored (PAC-24 AC-10). It is NOT the way to clear a key - send `llmApiKey: ""` for that.
 
             '
-        llmApiKeysSet: &id049
+        llmApiKeysSet: &id050
           $ref: '#/components/schemas/LLMApiKeysSet'
           readOnly: true
           description: 'Read-only (NEW-llm-bring-your-own, spec D-5, AC-15): which providers have a key
@@ -14749,7 +14749,7 @@ components:
             its earlier key usable again. Accepted and ignored on write, like `llmApiKeySet`.
 
             '
-        llmUnboundApiKeySet: &id050
+        llmUnboundApiKeySet: &id051
           type: boolean
           readOnly: true
           description: 'Read-only (NEW-llm-bring-your-own, spec AC-16). `true` when a key stored before
@@ -14759,7 +14759,7 @@ components:
             `llmUnboundApiKey: ""` removes it (see `patchSettings`). Accepted and ignored on write.
 
             '
-        aiStatus: &id051
+        aiStatus: &id052
           $ref: '#/components/schemas/AIStatus'
           readOnly: true
           description: 'Read-only (NEW-llm-bring-your-own, spec AC-8, AC-21): whether AI works for the
@@ -14769,7 +14769,7 @@ components:
             own choice. Accepted and ignored on write.
 
             '
-        llmBaseUrl: &id052
+        llmBaseUrl: &id053
           type: string
           description: 'Destination of the `openai` or `anthropic` provider; `""` means the vendor''s
             public host (`https://api.openai.com`, `https://api.anthropic.com`). Read by no other provider
@@ -14783,7 +14783,7 @@ components:
             No `pattern`, for the reason given on `awsRegion`.
 
             '
-        awsRegion: &id053
+        awsRegion: &id054
           type: string
           description: 'Bedrock region. Empty means the built-in `us-east-1`. The request goes to `bedrock-runtime.<awsRegion>.amazonaws.com`,
             only if that host is approved in `PACEDAY_LLM_APPROVED_HOSTS_BEDROCK`. No AWS configuration
@@ -14793,7 +14793,7 @@ components:
             spec D-3), so a pattern would make the response schema false for them.
 
             '
-        bedrockModel: &id054
+        bedrockModel: &id055
           type: string
           description: 'The Bedrock model ID requests use (NEW-llm-bring-your-own, spec D-16). This is
             the property the server has always read for Bedrock; the web app''s Bedrock picker writes
@@ -14801,7 +14801,7 @@ components:
             earlier pick is not copied). DB default `anthropic.claude-sonnet-4-5-20251001-v1:0`.
 
             '
-        azureEndpoint: &id055
+        azureEndpoint: &id056
           type: string
           description: 'Azure OpenAI resource endpoint, e.g. `https://my-resource.openai.azure.com`. PAC-66:
             a write changing it to a non-empty value must be an `https` URL whose host is approved in
@@ -14810,13 +14810,13 @@ components:
             `contracts/features/PAC-66.md` §7). No `format` or `pattern`, for the reason given on `awsRegion`.
 
             '
-        azureDeployment: &id056
+        azureDeployment: &id057
           type: string
           description: The Azure OpenAI deployment name requests use.
-        azureApiVersion: &id057
+        azureApiVersion: &id058
           type: string
           description: The `api-version` query value of Azure OpenAI requests.
-        vertexModel: &id058
+        vertexModel: &id059
           type: string
           description: 'The Vertex AI model requests use, in express mode (NEW-llm-bring-your-own, spec
             D-4). DB default `gemini-2.0-flash-001`. `awsProfile`, `gcpProject`, `gcpLocation`, `ollamaBaseUrl`
@@ -14825,7 +14825,7 @@ components:
             (spec D-10); writing one is a 400 `unknown property: <name>`.
 
             '
-        calendarProvider: &id059
+        calendarProvider: &id060
           type: string
           enum:
           - google
@@ -14845,15 +14845,15 @@ components:
             WHERE id = 1`).
 
             '
-        webcalUrl: &id060
+        webcalUrl: &id061
           type: string
-        calendarEmail: &id061
+        calendarEmail: &id062
           type: string
           description: 'The address of THIS user''s connected calendar. Before PAC-24 the auth-status
             handler served the singleton row''s value to everyone (API-009).
 
             '
-        conferencingProvider: &id062
+        conferencingProvider: &id063
           type: string
           enum:
           - meet
@@ -14866,9 +14866,9 @@ components:
             silently behaved as `meet`.
 
             '
-        recapEnabled: &id063
+        recapEnabled: &id064
           type: boolean
-        recapSendTime: &id064
+        recapSendTime: &id065
           type: string
           pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
           description: '`HH:MM`, in the same form on read and on write. **STRICT: unlike the four legacy
@@ -14907,7 +14907,7 @@ components:
             AC-16 is the integration test that proves the rendered form.
 
             '
-        recapSendTo: &id065
+        recapSendTo: &id066
           type: string
           enum:
           - dm
@@ -14917,20 +14917,20 @@ components:
             the DB CHECK and surfaced as a 500 (API-081).
 
             '
-        recapChannelId: &id066
+        recapChannelId: &id067
           type: string
-        recapIncludeBriefs: &id067
+        recapIncludeBriefs: &id068
           type: boolean
           description: DB default true.
-        recapIncludeFocus: &id068
+        recapIncludeFocus: &id069
           type: boolean
           description: 'DB default true. Exposed as `include_focus_blocks` by the daily-recap endpoints.
 
             '
-        recapIncludeHabits: &id069
+        recapIncludeHabits: &id070
           type: boolean
           description: DB default true.
-        timeFormat: &id070
+        timeFormat: &id071
           type: string
           enum:
           - 12h
@@ -14944,7 +14944,7 @@ components:
             public booking page ignores it (always 12-hour, PAC-55 §5).
 
             '
-        updatedAt: &id071
+        updatedAt: &id072
           type: string
           format: date-time
           readOnly: true
@@ -15041,55 +15041,55 @@ components:
 
         '
       properties:
-        workStart: *id023
-        workEnd: *id024
-        timezone: *id025
-        focusMinBlockMinutes: *id026
-        focusMaxBlockMinutes: *id027
-        focusDailyTargetMinutes: *id028
-        outOfHoursMeetingsPerWeek: *id029
-        autoDeclineOutsideWorkingHours: *id030
-        focusLabel: *id031
-        focusColor: *id032
-        lunchStart: *id033
-        lunchEnd: *id034
-        protectLunch: *id035
-        bufferBeforeMinutes: *id036
-        bufferAfterMinutes: *id037
-        bufferEnabled: *id038
-        bufferMinMeetingMinutes: *id039
-        bufferSkipBackToBack: *id040
-        workingHours: *id041
-        lunchBreaks: *id042
-        compressionEnabled: *id043
-        autoScheduleEnabled: *id044
-        autoScheduleCron: *id045
-        llmProvider: *id046
-        llmModel: *id047
-        llmApiKeySet: *id048
-        llmApiKeysSet: *id049
-        llmUnboundApiKeySet: *id050
-        aiStatus: *id051
-        llmBaseUrl: *id052
-        awsRegion: *id053
-        bedrockModel: *id054
-        azureEndpoint: *id055
-        azureDeployment: *id056
-        azureApiVersion: *id057
-        vertexModel: *id058
-        calendarProvider: *id059
-        webcalUrl: *id060
-        calendarEmail: *id061
-        conferencingProvider: *id062
-        recapEnabled: *id063
-        recapSendTime: *id064
-        recapSendTo: *id065
-        recapChannelId: *id066
-        recapIncludeBriefs: *id067
-        recapIncludeFocus: *id068
-        recapIncludeHabits: *id069
-        timeFormat: *id070
-        updatedAt: *id071
+        workStart: *id024
+        workEnd: *id025
+        timezone: *id026
+        focusMinBlockMinutes: *id027
+        focusMaxBlockMinutes: *id028
+        focusDailyTargetMinutes: *id029
+        outOfHoursMeetingsPerWeek: *id030
+        autoDeclineOutsideWorkingHours: *id031
+        focusLabel: *id032
+        focusColor: *id033
+        lunchStart: *id034
+        lunchEnd: *id035
+        protectLunch: *id036
+        bufferBeforeMinutes: *id037
+        bufferAfterMinutes: *id038
+        bufferEnabled: *id039
+        bufferMinMeetingMinutes: *id040
+        bufferSkipBackToBack: *id041
+        workingHours: *id042
+        lunchBreaks: *id043
+        compressionEnabled: *id044
+        autoScheduleEnabled: *id045
+        autoScheduleCron: *id046
+        llmProvider: *id047
+        llmModel: *id048
+        llmApiKeySet: *id049
+        llmApiKeysSet: *id050
+        llmUnboundApiKeySet: *id051
+        aiStatus: *id052
+        llmBaseUrl: *id053
+        awsRegion: *id054
+        bedrockModel: *id055
+        azureEndpoint: *id056
+        azureDeployment: *id057
+        azureApiVersion: *id058
+        vertexModel: *id059
+        calendarProvider: *id060
+        webcalUrl: *id061
+        calendarEmail: *id062
+        conferencingProvider: *id063
+        recapEnabled: *id064
+        recapSendTime: *id065
+        recapSendTo: *id066
+        recapChannelId: *id067
+        recapIncludeBriefs: *id068
+        recapIncludeFocus: *id069
+        recapIncludeHabits: *id070
+        timeFormat: *id071
+        updatedAt: *id072
         llmApiKey:
           type: string
           writeOnly: true
@@ -16254,19 +16254,23 @@ components:
             AC-11).'
         co_host_emails:
           type: array
+          nullable: true
           description: 'When present (non-null), the complete co-host list: unlisted non-owner hosts are
             removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Absent
             or null leaves the co-hosts untouched. Entries are trimmed and compared ignoring case. Every
             entry''s outcome and every removal are reported in the 200''s `co_host_changes`; an address
             that cannot be invited is `not_added`, never silently dropped, and does not fail the PATCH
-            (spec D-5). PAC-112 (spec §3.6, D-8): an entry that is empty or only whitespace is a 422 "co_host_emails
-            must not contain a blank address" (before PAC-112 it was skipped). `maxItems` is deliberately
-            not set: a list of more than 5 entries is refused 422 only when an entry does not reach a
-            current host of the link (see the operation), which JSON Schema cannot express. The server
-            does not check `format`; a string that is not an address is simply `not_added`.'
+            (spec D-5). PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not contain
+            a blank address" (before PAC-112 it was skipped). Blank means: no character outside ECMA-262
+            `\s` (WhiteSpace and LineTerminator), exactly the set the items'' `pattern: ''\S''` uses,
+            the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`) and "\ufeff" is
+            blank (422). Trimming, everywhere in this operation, removes leading and trailing characters
+            of that same set. `maxItems` is deliberately not set: a list of more than 5 entries is refused
+            422 only when an entry does not reach a current host of the link (see the operation), which
+            JSON Schema cannot express. No `format` is declared because the server checks none: a string
+            that is not an address is simply `not_added` (contract md §3.4).'
           items:
             type: string
-            format: email
             minLength: 1
             pattern: \S
     UserProfileGoStruct:
@@ -16583,10 +16587,11 @@ components:
         must be between 1 and 365"; "refusal_message must be generic or specific" (both PAC-72 revision
         2). PAC-112 (spec D-9; each also writes nothing): "days contains an unrecognised day name" (API-053:
         the `days` alias is used, i.e. `days_of_week` is absent or null, and at least one entry is not
-        a recognised name; reported instead of "at least one day is required"); "co_host_emails must not
-        contain a blank address"; "a co-host list longer than 5 can only keep or remove co-hosts, and
-        this one names someone who is not a current host of the link" (the over-5 rule; worded so it never
-        reads as "too many" to an owner who only removed someone).'
+        a recognised name; reported before every other field 422: on create before "title is required",
+        on PATCH before "slug cannot be empty", and so instead of "at least one day is required"); "co_host_emails
+        must not contain a blank address"; "a co-host list longer than 5 can only keep or remove co-hosts,
+        and this one names someone who is not a current host of the link" (the over-5 rule; worded so
+        it never reads as "too many" to an owner who only removed someone).'
       content:
         application/json:
           schema:

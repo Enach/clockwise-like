@@ -483,10 +483,10 @@ const (
 
 // Defines values for SchedulingLinkCoHostOutcomeOutcome.
 const (
-	AlreadyHost SchedulingLinkCoHostOutcomeOutcome = "already_host"
-	Invited     SchedulingLinkCoHostOutcomeOutcome = "invited"
-	NotAdded    SchedulingLinkCoHostOutcomeOutcome = "not_added"
-	OwnAddress  SchedulingLinkCoHostOutcomeOutcome = "own_address"
+	CoHostOutcomeAlreadyHost SchedulingLinkCoHostOutcomeOutcome = "already_host"
+	CoHostOutcomeInvited     SchedulingLinkCoHostOutcomeOutcome = "invited"
+	CoHostOutcomeNotAdded    SchedulingLinkCoHostOutcomeOutcome = "not_added"
+	CoHostOutcomeOwnAddress  SchedulingLinkCoHostOutcomeOutcome = "own_address"
 )
 
 // Defines values for SchedulingLinkHostStatus.
@@ -511,9 +511,9 @@ const (
 
 // Defines values for SchedulingLinkRemovedHostStatus.
 const (
-	SchedulingLinkRemovedHostStatusAccepted SchedulingLinkRemovedHostStatus = "accepted"
-	SchedulingLinkRemovedHostStatusDeclined SchedulingLinkRemovedHostStatus = "declined"
-	SchedulingLinkRemovedHostStatusPending  SchedulingLinkRemovedHostStatus = "pending"
+	RemovedHostStatusAccepted SchedulingLinkRemovedHostStatus = "accepted"
+	RemovedHostStatusDeclined SchedulingLinkRemovedHostStatus = "declined"
+	RemovedHostStatusPending  SchedulingLinkRemovedHostStatus = "pending"
 )
 
 // Defines values for SchedulingLinkSavedDays.
@@ -696,10 +696,10 @@ const (
 
 // Defines values for TeamInviteStatus.
 const (
-	Accepted TeamInviteStatus = "accepted"
-	Declined TeamInviteStatus = "declined"
-	Expired  TeamInviteStatus = "expired"
-	Pending  TeamInviteStatus = "pending"
+	TeamInviteStatusAccepted TeamInviteStatus = "accepted"
+	TeamInviteStatusDeclined TeamInviteStatus = "declined"
+	TeamInviteStatusExpired  TeamInviteStatus = "expired"
+	TeamInviteStatusPending  TeamInviteStatus = "pending"
 )
 
 // Defines values for TeamMemberRole.
@@ -1515,8 +1515,8 @@ type CreateSchedulingLinkRequest struct {
 	BufferAfter        *int `json:"buffer_after,omitempty"`
 	BufferBefore       *int `json:"buffer_before,omitempty"`
 
-	// CoHostEmails Entries are trimmed and compared ignoring case. Each one is resolved (PAC-71 granting rule) and its outcome is reported in the 201's `co_host_changes`; an address that cannot be invited is reported as `not_added`, never silently dropped, and does not fail the create (spec D-5). On create the only current host is the owner, so a list of more than 5 entries is accepted only when every entry reaches the owner. PAC-112 (spec §3.6, D-8): an entry that is empty or only whitespace is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. The server does not check `format`; a string that is not an address is simply `not_added`.
-	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
+	// CoHostEmails Absent or null: no co-hosts besides the owner and no `co_host_changes`. Entries are trimmed and compared ignoring case. Each one is resolved (PAC-71 granting rule) and its outcome is reported in the 201's `co_host_changes`; an address that cannot be invited is reported as `not_added`, never silently dropped, and does not fail the create (spec D-5). On create the only current host is the owner, so a list of more than 5 entries is accepted only when every entry reaches the owner. PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). Blank means: no character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422). Trimming, everywhere in this operation, removes leading and trailing characters of that same set. `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. No `format` is declared because the server checks none: a string that is not an address is simply `not_added` (contract md §3.4).
+	CoHostEmails *[]string `json:"co_host_emails"`
 
 	// Days Alias for days_of_week, used only when days_of_week is absent or null. Accepts "sun".."sat", "sunday".."saturday" and "0".."6", case-insensitive, surrounding whitespace ignored. PAC-112 (API-053, spec §3.12): when the alias is used, an entry that is none of these makes the whole request a 422 "days contains an unrecognised day name" and nothing is created, a mixed list such as ["mon","Montag"] included (before PAC-112 such entries were silently dropped). When days_of_week is carried the alias is ignored entirely, unrecognised names included (PAC-40 D-5).
 	Days *[]string `json:"days"`
@@ -3323,7 +3323,7 @@ type SchedulingLinkCoHostChanges struct {
 	// InvitedCount Distinct accounts whose outcome is `invited`.
 	InvitedCount int `json:"invited_count"`
 
-	// NotAddedCount Distinct entries, compared ignoring case after trimming, whose outcome is `not_added`.
+	// NotAddedCount Distinct entries whose outcome is `not_added`. Two entries are the same entry when they are identical after trimming ECMA-262 `\s` from both ends and lowercasing with the database's `lower()`, the comparison the lookup itself applies (contract md §3.3).
 	NotAddedCount int `json:"not_added_count"`
 
 	// Removed Every non-owner host this save removed (not on the list by the keep rule), with the status they had. Empty when nobody was removed and always empty on create. Never the owner. Order not specified.
@@ -3335,7 +3335,7 @@ type SchedulingLinkCoHostChanges struct {
 
 // SchedulingLinkCoHostOutcome PAC-112. The outcome of one listed entry, decided in this order (contract md §2.2): `own_address` when the entry's one domain-confirmed holder is the link's owner; `already_host` when that holder, or else any account carrying the entry at any standing (the keep rule), was a non-owner host of the link before this save, whatever their status, which they keep (PAC-61, PAC-71 AC-43); `invited` when the one domain-confirmed holder was not a host and a `pending` row was created by this save (every entry reaching that account reports `invited`); otherwise `not_added`. `not_added` carries no reason: nobody, an unconfirmed carrier and several accounts are not distinguished (spec D-6). The owner's address held only unconfirmed or shared is `not_added`, and the owner's row is unchanged (spec §3.7).
 type SchedulingLinkCoHostOutcome struct {
-	// Email The entry as sent, with surrounding whitespace trimmed; letter case kept.
+	// Email The entry as sent, with leading and trailing ECMA-262 `\s` characters removed (the set of the request items' `pattern`, the PAC-67 test); letter case kept.
 	Email   string                             `json:"email"`
 	Outcome SchedulingLinkCoHostOutcomeOutcome `json:"outcome"`
 }
@@ -3427,7 +3427,7 @@ type SchedulingLinkRemovedHost struct {
 // SchedulingLinkRemovedHostStatus The status the host had when removed.
 type SchedulingLinkRemovedHostStatus string
 
-// SchedulingLinkSaved PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200): every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus the optional `co_host_changes`. The roster in `hosts` is built like the list's, not like `getSchedulingLink`'s, and is never a co-host baseline (spec D-3).
+// SchedulingLinkSaved PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200): every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus the optional `co_host_changes`. The roster in `hosts` is built like the list's, not like `getSchedulingLink`'s, and is never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither the property map nor the required list can drift.
 type SchedulingLinkSaved struct {
 	// Active false means paused: the owner switched the link off and can switch it back on with PATCH. A deleted link is never returned, so this field never describes one (PAC-40).
 	Active bool `json:"active"`
@@ -4568,8 +4568,8 @@ type UpdateSchedulingLinkRequest struct {
 	BufferAfter        *int `json:"buffer_after"`
 	BufferBefore       *int `json:"buffer_before"`
 
-	// CoHostEmails When present (non-null), the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Absent or null leaves the co-hosts untouched. Entries are trimmed and compared ignoring case. Every entry's outcome and every removal are reported in the 200's `co_host_changes`; an address that cannot be invited is `not_added`, never silently dropped, and does not fail the PATCH (spec D-5). PAC-112 (spec §3.6, D-8): an entry that is empty or only whitespace is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. The server does not check `format`; a string that is not an address is simply `not_added`.
-	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
+	// CoHostEmails When present (non-null), the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Absent or null leaves the co-hosts untouched. Entries are trimmed and compared ignoring case. Every entry's outcome and every removal are reported in the 200's `co_host_changes`; an address that cannot be invited is `not_added`, never silently dropped, and does not fail the PATCH (spec D-5). PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). Blank means: no character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422). Trimming, everywhere in this operation, removes leading and trailing characters of that same set. `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. No `format` is declared because the server checks none: a string that is not an address is simply `not_added` (contract md §3.4).
+	CoHostEmails *[]string `json:"co_host_emails"`
 
 	// Days Alias for days_of_week, applied only when days_of_week is absent or null. Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won on PATCH), unrecognised names included. Same names as on create. PAC-112 (API-053): when applied, an unrecognised entry makes the PATCH a 422 "days contains an unrecognised day name" with the link unchanged, a mixed list included (before PAC-112 it was dropped and the rest saved).
 	Days *[]string `json:"days"`
