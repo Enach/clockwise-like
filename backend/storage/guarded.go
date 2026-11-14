@@ -15,6 +15,13 @@ import (
 // instead of anything stored after the account's generation advanced. Without
 // a guard (scheduled jobs, public pages, tests that inject a user) it is the
 // plain function.
+//
+// Exception: RespondToHostInviteCtx below, like the scheduling-link wrappers
+// in guarded_writes.go (DeleteSchedulingLinkCtx, InviteLinkHostCtx,
+// RemoveLinkHostCtx, RemoveLinkHostsExceptCtx, UpdateSchedulingLinkCtx), runs
+// through withLinkWriteTx (PAC-101): it ALWAYS opens a transaction, guard or
+// not, sets the link-lock bound after the re-check, and locks the link FOR
+// SHARE before writing; it is never the plain function.
 
 // GetOrCreateSettingsByUserCtx carries D2–D5 for the request.
 func GetOrCreateSettingsByUserCtx(ctx context.Context, db DBTX, userID uuid.UUID) (s *Settings, err error) {
@@ -98,10 +105,11 @@ func CreateTeamCtx(ctx context.Context, db DBTX, name string, createdBy uuid.UUI
 }
 
 // RespondToHostInviteCtx answers a co-host invitation under the re-check
-// (spec AC-46/AC-47 "accepts a co-host invitation").
+// (spec AC-46/AC-47 "accepts a co-host invitation"), behind the link's FOR
+// SHARE lock (PAC-101 contract §3.2): a link deleted first matches nothing.
 func RespondToHostInviteCtx(ctx context.Context, db DBTX, linkID, userID uuid.UUID, status string) (matched bool, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		matched, err = RespondToHostInvite(q, linkID, userID, status)
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
+		matched, err = respondToHostInviteLocked(q, linkID, userID, status)
 		return err
 	})
 	return matched, err

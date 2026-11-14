@@ -423,6 +423,13 @@ func TestPAC40_ArchiveReads(t *testing.T) {
 // Migration 037 down (contract §4, spec §7): no row is lost, a deleted link
 // comes back paused, an erased booking reads blank, and up again leaves
 // every link not deleted.
+//
+// PAC-101 D-8: running 037 down and up as raw SQL out of band is safe only
+// because openTestDB gives this test a database of its own (testdb.Create:
+// CREATE DATABASE per call, dropped WITH (FORCE) in t.Cleanup). A failure
+// between down and up leaves only that database without deleted_at, and it
+// is dropped. If this test ever moves to a shared database, it must restore
+// 037 up on every exit path first.
 func TestPAC40_Migration037DownKeepsEveryRow(t *testing.T) {
 	db := openTestDB(t)
 	owner := mustUser(t, db, "pac40-down@example.com")

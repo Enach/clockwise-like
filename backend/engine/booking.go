@@ -428,6 +428,11 @@ func (e *BookingEngine) calendarClientForUser(ctx, dbCtx context.Context, userID
 // (booking-completion), with their own per-call limits, independent of the
 // request; the caller gets the saved booking when the unit finishes or the
 // budget runs out, whichever is first.
+//
+// PAC-101: the save is one transaction that re-checks, under a FOR SHARE lock
+// on the link, that the link is still active and not deleted. When it is not,
+// the result is ErrLinkGone: nothing is stored and no completion unit starts.
+// A wait for that lock is bounded by storage.LinkLockTimeout (a 500 past it).
 func (e *BookingEngine) ConfirmBooking(
 	ctx context.Context,
 	link *storage.SchedulingLink,
@@ -489,6 +494,12 @@ func (e *BookingEngine) ConfirmBooking(
 		EndTime:     end,
 		Notes:       notes,
 	})
+	if errors.Is(err, storage.ErrLinkGone) {
+		// PAC-101: the link was deleted or paused before the save took its
+		// lock on it. Nothing was stored and no completion unit starts; the
+		// connection is already released.
+		return nil, ErrLinkGone
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create booking: %w", err)
 	}
@@ -530,16 +541,24 @@ func insertBookingOnConn(ctx context.Context, conn *sql.Conn, b *storage.Booking
 	if afterBookingCommit != nil {
 		afterBookingCommit()
 	}
-	var db storage.DBTX = storage.BindConn(insertCtx, conn)
+	// PAC-101 contract §3.1 step 5: one transaction with the link-lock bound
+	// and the FOR SHARE commit-point check; link gone is storage.ErrLinkGone.
+	var wrap func(storage.Querier) storage.Querier
 	if bookingInsertRowReturned != nil {
-		db = rowSeamDB{db}
+		wrap = func(q storage.Querier) storage.Querier { return rowSeamDB{q} }
 	}
-	booking, err := storage.CreateBooking(db, b)
+	booking, err := storage.SaveBookingOnLiveLink(insertCtx, conn, b, wrap)
 	_ = conn.Close() // released before the completion unit needs the pool
 	cancel()
 	released = true
 	return booking, err
 }
+
+// ErrLinkGone is ConfirmBooking's "link gone" outcome (PAC-101 contract §3.1):
+// the link was deleted or paused after the request read it, before the save
+// took its lock on the link. Nothing was written and no completion unit was
+// started. The public booking handler answers it with the 404.
+var ErrLinkGone = storage.ErrLinkGone
 
 // beforeBookingConn is a test seam: it runs just before the insert's
 // connection is acquired.
@@ -555,10 +574,10 @@ var afterBookingCommit func()
 var bookingInsertRowReturned func()
 
 // rowSeamDB runs bookingInsertRowReturned after each QueryRowContext.
-type rowSeamDB struct{ storage.DBTX }
+type rowSeamDB struct{ storage.Querier }
 
 func (d rowSeamDB) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
-	row := d.DBTX.QueryRowContext(ctx, q, args...)
+	row := d.Querier.QueryRowContext(ctx, q, args...)
 	if f := bookingInsertRowReturned; f != nil {
 		f()
 	}

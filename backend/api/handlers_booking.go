@@ -343,6 +343,9 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "link is no longer accepting bookings", http.StatusGone)
 		return
 	}
+	if afterBookingLinkRead != nil {
+		afterBookingLinkRead()
+	}
 	var body struct {
 		Name            string `json:"name"`
 		Email           string `json:"email"`
@@ -469,6 +472,13 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		budget.WriteExpired(w)
 		return
 	}
+	if errors.Is(err, engine.ErrLinkGone) {
+		// PAC-101: the link was deleted or paused while the request was
+		// handled, before the save took its lock on it. Nothing was written:
+		// the same 404 as for a link deleted before the request.
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
 	if errors.Is(err, engine.ErrHostCalendarUnreadable) {
 		// PAC-72 D-6: an unreadable host calendar counts as busy.
 		writeRefusal(w, link, gen.HostBusy)
@@ -484,6 +494,11 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(h.confirmation(saved, link, booking))
 }
+
+// afterBookingLinkRead is a test seam (PAC-101 contract §5): it runs in
+// createBooking after the link read and the 410 check, before the body is
+// read and before any host calendar is read. Nil in production.
+var afterBookingLinkRead func()
 
 // budgetCut reports whether err means the request budget cut the work short
 // (PAC-81 AC-A17, AC-A18): the answer is the shared 503.

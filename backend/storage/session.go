@@ -167,6 +167,37 @@ func WithSessionGeneration(ctx context.Context, db DBTX, fn func(q Querier) erro
 	return withGenerationTx(ctx, db, g.UserID, g.Gen, g, fn)
 }
 
+// withLinkWriteTx runs fn as one write on a scheduling link (PAC-101 contract
+// §3.2, §4.3). It always runs in a transaction, with or without a session
+// guard: a PATCH outside one is not atomic, and the bound below would be a
+// no-op outside one (challenge C-2). With a guard, the PAC-71 re-check stays
+// the transaction's first statement and is not under the bound; the link-lock
+// bound is set right after it, for this transaction only, before fn takes
+// its first lock on the link.
+func withLinkWriteTx(ctx context.Context, db DBTX, fn func(q Querier) error) error {
+	bounded := func(q Querier) error {
+		if err := setLinkLockTimeout(q); err != nil {
+			return err
+		}
+		return fn(q)
+	}
+	if g := SessionGuardFrom(ctx); g != nil {
+		if GuardedCallHook != nil {
+			GuardedCallHook(ctx)
+		}
+		return withGenerationTx(ctx, db, g.UserID, g.Gen, g, bounded)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := bounded(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // WithGeneration runs fn in one transaction that first re-confirms, under a
 // row lock, that userID is still at generation gen. It is the store step of a
 // connect (contract §4 step 6, spec AC-47): ErrStaleSession when it moved.

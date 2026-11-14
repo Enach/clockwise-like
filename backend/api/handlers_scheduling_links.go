@@ -629,35 +629,20 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	result, err := storage.UpdateSchedulingLinkCtx(r.Context(), h.db, id, &updated)
+	// PAC-101 (contract §3.2, spec D-5): the fields and, when co_host_emails
+	// is carried, the co-host list (set by difference, PAC-61) are written in
+	// one transaction whose first lock on the link is the UPDATE. A failed
+	// co-host lookup or write is a 500 with nothing changed; a delete
+	// committed before the UPDATE is the 404 with nothing changed (PAC-40
+	// K4-1, AC-6b); a delete started after it waits for this PATCH.
+	result, err := storage.UpdateSchedulingLinkAndCoHostsCtx(r.Context(), h.db, id, &updated, userID, patch.CoHostEmails)
 	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
 	}
 	if result == nil {
-		// Deleted after the read above (the UPDATE re-checks deleted_at IS
-		// NULL): nothing was written, co-hosts included (PAC-40 K4-1, AC-6b).
 		writeError(w, "not found", http.StatusNotFound)
 		return
-	}
-	if patch.CoHostEmails != nil {
-		// Set the co-host list by difference: hosts no longer listed are removed,
-		// new ones are invited as pending, and everyone else keeps their status.
-		// Deleting and re-adding every host demoted accepted co-hosts (PAC-61).
-		// PAC-71: the keep set is a KEEPING site (every account carrying a
-		// listed address, any standing, ignoring letter case, AC-43); new
-		// entries are a GRANTING site (only the one domain-confirmed holder).
-		keep, kerr := storage.CarrierIDs(h.db, patch.CoHostEmails)
-		if kerr != nil {
-			writeServerError(w, r, "co-host lookup failed", kerr, http.StatusInternalServerError)
-			return
-		}
-		_ = storage.RemoveLinkHostsExceptCtx(r.Context(), h.db, id, userID, keep)
-		for _, email := range patch.CoHostEmails {
-			if uid, ok, e := storage.ConfirmedHolder(h.db, email); e == nil && ok && uid != userID {
-				_, _, _ = storage.InviteLinkHostCtx(r.Context(), h.db, id, uid)
-			}
-		}
 	}
 	h.writeLink(w, result, loc, userID)
 }
@@ -768,6 +753,12 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	// An existing host keeps their status (PAC-61): 200 with their row as is;
 	// a new invitee gets a pending row and 201.
 	host, created, err := storage.InviteLinkHostCtx(r.Context(), h.db, id, inviteeID)
+	if errors.Is(err, storage.ErrLinkGone) {
+		// PAC-101: deleted after the read above, before the host row was
+		// written; nothing was written, as for a link deleted before.
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "invite failed", err, http.StatusInternalServerError)
 		return
