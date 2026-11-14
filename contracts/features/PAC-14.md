@@ -127,6 +127,11 @@ func main() {
 
 Target repo: `Enach/smart-calendar-flow` (React, bun).
 
+- **Amended (pointer added by PAC-114, 2026-11-14).** The frontend init below is
+  amended by PAC-86: there is **no default DSN**, and the `?? "<DSN>"` fallback
+  is superseded. The amendment note sits in §2 ("Amended by PAC-86"), next to
+  the backend's PAC-81 amendment. The text below is kept as PAC-14 approved it.
+
 - Install `@sentry/react`. Initialize once at the app entrypoint, **before** the
   React tree mounts:
 
@@ -214,6 +219,15 @@ schema, any `frontend/` source (separate repo), any secret/credential file.
 3. **Runtime kill switch (no deploy needed)**: unset `SENTRY_DSN` (backend) /
    `VITE_SENTRY_DSN` (frontend) -> init degrades to "monitoring disabled" on next
    start, so monitoring can be turned off without reverting code.
+
+   **Amended by PAC-114 (2026-11-14).** Item 3 holds for the backend only:
+   `SENTRY_DSN` is read at process start, so unsetting it and restarting turns
+   backend monitoring off. `VITE_SENTRY_DSN` is not a runtime kill switch: Vite
+   inlines it at build time, so turning web monitoring off means rebuilding and
+   redeploying the frontend image without it. Without a rebuild, unsetting
+   `NGINX_CSP_SENTRY_ORIGIN` and restarting nginx removes the Sentry origin from
+   `connect-src` (PAC-86), so browsers block the events. The text above is kept
+   as PAC-14 approved it.
 
 ---
 

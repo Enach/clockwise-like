@@ -1150,6 +1150,12 @@ Factory-assumed (pending challenge):
   no wildcard; AC-B4) + operator-configured origins; `object-src 'none'`;
   `base-uri 'self'`; `form-action 'self'`; `frame-ancestors 'none'`. Enforced,
   because AC-B3 proves zero violations with a positive and negative control.
+  **Amended by PAC-86 (2026-11-14; marker added by PAC-114).** The Sentry
+  ingest origin has no default any more: the web has no hard-coded DSN, so with
+  `NGINX_CSP_SENTRY_ORIGIN` unset or empty `connect-src` holds no Sentry origin,
+  and when set it holds exactly that origin, which must be the origin of the
+  frontend build's `VITE_SENTRY_DSN`. See AC-B4's amendment. The text above is
+  kept as approved.
 - **D-9. Real client in nginx**: right-most address not in the trusted list,
   recursive; list empty by default (spoofing impossible; limits shared until
   configured; the runbook makes configuring it a deploy step).
