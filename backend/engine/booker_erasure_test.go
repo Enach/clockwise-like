@@ -535,7 +535,7 @@ func TestPAC40B_CancelStopsBetweenLinksEachAllOrNothing(t *testing.T) {
 	e.del(first)
 	e.del(second)
 	if first.String() > second.String() { // the scan is in id order
-		first, second = second, first
+		first = second
 		fIDs, sIDs = sIDs, fIDs
 	}
 	ctx, cancel := context.WithCancel(context.Background())
