@@ -31,14 +31,14 @@ info:
     the connect state cookie expired; budget expiry never answers `?error=signin_refused`; (3) `ssoAdminStepupCallback`
     answers its denied redirect: `state_mismatch` when the budget runs out before check 0 completes (the
     state could not be verified), else the reason of the check that was running; from the start of check
-    4b, and once the outcome is decided, a granted outcome answers `unavailable` and a decided denial
-    its own reason (PAC-75 / PAC-95); once step 5 (the record and, when granted, the grant) has started
-    it is waited for like the booking insert, and the answer is the outcome''s redirect, or the 500 if
-    it failed; (4) `createPublicBooking` is never answered with the 503 once its booking insert is sent:
-    it waits for the insert and answers 201 if the row was saved or 500 if the insert failed. Only that
-    503 proves no booking was saved; a 500 does not (a lost connection leaves the outcome unknown). A
-    request body over 1 MiB is refused with 413 `{"error":"request body too large"}` before the handler
-    runs, by the backend and by nginx alike.'
+    4b it is `unavailable`, and once the outcome is decided a granted outcome answers `unavailable` and
+    a decided denial its own reason (PAC-75 / PAC-95); once step 5 (the record and, when granted, the
+    grant) has started it is waited for like the booking insert, and the answer is the outcome''s redirect,
+    or the 500 if it failed; (4) `createPublicBooking` is never answered with the 503 once its booking
+    insert is sent: it waits for the insert and answers 201 if the row was saved or 500 if the insert
+    failed. Only that 503 proves no booking was saved; a 500 does not (a lost connection leaves the outcome
+    unknown). A request body over 1 MiB is refused with 413 `{"error":"request body too large"}` before
+    the handler runs, by the backend and by nginx alike.'
 servers:
 - url: http://localhost:8080
   description: backend, direct
@@ -982,9 +982,9 @@ paths:
 
         body to check: membership (403 `org membership required` / `org not
 
-        found`), then the `{domain}` segment (percent-decoded, not trimmed)
+        found`), then the `{domain}` segment (as the router yields it, see
 
-        must equal the caller''s org domain exactly, case-insensitive for
+        below; not trimmed) must equal the caller''s org domain exactly, case-insensitive for
 
         ASCII letters only; any other difference, including non-ASCII case
 
@@ -1000,7 +1000,19 @@ paths:
 
         PAC-75 the segment was lower-cased with Unicode rules before the
 
-        comparison, so the Kelvin sign and `İ` passed; they no longer do. Then
+        comparison, so the Kelvin sign and `İ` passed; they no longer do.
+
+        The segment is percent-decoded only when the request path uses the
+
+        canonical escaping (upper-case hex, escapes only where needed:
+
+        `%E2%84%AAcme.com` is `Kcme.com` with the Kelvin sign); a path with
+
+        any other escape (`%41cme.com`, `%e2%84%aacme.com`) yields the
+
+        escaped text itself, which never matches an org domain (403), as
+
+        before PAC-75 (chi routes on the raw path then). Then
 
         authorization (a live step-up grant, consumed, or break-glass with a
 
@@ -1124,12 +1136,12 @@ paths:
         \ a second `state` is refused (`duplicate property:\n   state`), so a body never asks for two\
         \ states and no decoder's\n   \"last one wins\" decides a kill switch; then `state` is `active`\
         \ or\n   `suspended` (`state must be 'active' or 'suspended'`, for a missing\n   or `null` state\
-        \ too).\n3. Domain: `{domain}` (percent-decoded, not trimmed) must equal the\n   caller's org\
-        \ domain exactly, case-insensitive for ASCII letters\n   only; any other difference, including\
-        \ non-ASCII case folding, is\n   a different domain (createSsoProvider's DOMAIN MATCH, PAC-75),\
-        \ else 403\n   `provider_domain_mismatch` (SsoWriteDomainMismatch), as on the\n   other two SSO\
-        \ writes (owner decision 2026-10-27; PAC-22 spec D-15,\n   PAC-50 spec §9 D-10). A subdomain of\
-        \ the org domain, another org's\n   domain and a padded segment (`%20acme.com`) are all refused\
+        \ too).\n3. Domain: `{domain}` (as deleteSsoProvider's segment, not trimmed) must equal the\n\
+        \   caller's org domain exactly, case-insensitive for ASCII letters\n   only; any other difference,\
+        \ including non-ASCII case folding, is\n   a different domain (createSsoProvider's DOMAIN MATCH,\
+        \ PAC-75), else 403\n   `provider_domain_mismatch` (SsoWriteDomainMismatch), as on the\n   other\
+        \ two SSO writes (owner decision 2026-10-27; PAC-22 spec D-15,\n   PAC-50 spec §9 D-10). A subdomain\
+        \ of the org domain, another org's\n   domain and a padded segment (`%20acme.com`) are all refused\
         \ (PAC-22\n   spec AC-21).\n4. Authorization: step 5 of createSsoProvider (a live step-up grant,\n\
         \   consumed, tried first; or break-glass with a fresh session), else\n   403 `sso_write_requires_admin_stepup`\
         \ (with `stepup_url`,\n   `stepup_scopes` and `without_stepup`) or\n   `sso_write_requires_fresh_login`.\
