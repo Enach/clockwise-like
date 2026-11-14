@@ -43,6 +43,8 @@ SELF := $(MAKE) --no-print-directory -f $(ROOT)/Makefile
 
 .PHONY: help clone-frontend install-hooks db-shell \
         openapi openapi-check openapi-check-web lint test coverage e2e \
+        test-backend test-mcp test-fake-google test-fileserver test-nginx test-compose \
+        coverage-backend coverage-mcp require-docker print-suites \
         verify verify-banner verify-summary
 
 help:
@@ -50,7 +52,8 @@ help:
 	@echo "  verify         lint, openapi-check, test, coverage, e2e — fail-fast, prints a PR-pasteable summary"
 	@echo "  lint           golangci-lint over backend/ and mcp/"
 	@echo "  test           backend suite (throwaway postgres, via docker) + mcp suite"
-	@echo "  coverage       the same suites with profiles, gated at $(BACKEND_COVERAGE_MIN)%/$(MCP_COVERAGE_MIN)%"
+	@echo "                 one suite: test-backend test-mcp test-fake-google test-fileserver test-nginx test-compose"
+	@echo "  coverage       the same suites with profiles, gated at $(BACKEND_COVERAGE_MIN)%/$(MCP_COVERAGE_MIN)% (coverage-backend, coverage-mcp)"
 	@echo "  openapi        assemble the contract, regenerate Go code, refresh MIGRATION.md, regenerate web types"
 	@echo "  openapi-check  the same, as a gate: fails on any drift (OPENAPI_CROSS_REPO=skip: not the web half)"
 	@echo "  openapi-check-web  only the web half: the web repo's generated types match this bundle"
@@ -155,26 +158,66 @@ lint:
 # throwaway postgres, which is why the backend needs docker and mcp does not.
 
 ## Unit + contract tests for both modules
-test:
+# One target per suite, so ci.yml can run them as parallel jobs; `test` runs
+# them all, in this order, fail-fast, exactly as before. These lists are the
+# single source: scripts/ci_suites_check.py (run by ci.yml) fails when the jobs
+# in ci.yml stop running exactly these targets. Add a suite here AND in ci.yml.
+TEST_SUITES := backend mcp fake-google fileserver nginx compose
+COVERAGE_SUITES := backend mcp
+# The steps `verify` runs, in its recipe below, in this order.
+VERIFY_STEPS := lint openapi-check test coverage e2e
+
+test: $(addprefix test-,$(TEST_SUITES))
+
+# `make -j test` keeps the suites one at a time and in order, as before the
+# split (GNU make >= 4.4 serialises just these prerequisites; older makes treat
+# any .NOTPARALLEL as the whole makefile). Note the backend suite's postgres is
+# published on one fixed port (15432), so test-backend and coverage-backend
+# cannot run at once on one host either.
+.NOTPARALLEL: test coverage
+
+# For scripts/ci_suites_check.py.
+print-suites:
+	@echo "TEST_SUITES=$(TEST_SUITES)"
+	@echo "COVERAGE_SUITES=$(COVERAGE_SUITES)"
+	@echo "VERIFY_STEPS=$(VERIFY_STEPS)"
+
+require-docker:
 	@command -v docker >/dev/null 2>&1 || { \
 		echo "docker not installed — scripts/test-backend.sh needs it for the throwaway postgres." >&2; \
 		echo "  Without docker the integration tests are skipped, and the coverage number is not the official one (CLAUDE.md)." >&2; \
 		exit 1; }
+
+# mcp appends to GOFLAGS instead of replacing it: ci.yml sets GOFLAGS=-count=1
+# so a restored Go build cache can never replay a test result instead of running it.
+test-backend: require-docker
 	@echo "-> test backend (full suite, with postgres)"
 	$(ROOT)/scripts/test-backend.sh
+
+test-mcp:
 	@echo "-> test mcp"
-	cd $(ROOT)/mcp && GONOSUMDB='*' GOFLAGS='-mod=mod' go test ./...
+	cd $(ROOT)/mcp && GONOSUMDB='*' GOFLAGS="-mod=mod $${GOFLAGS:-}" go test ./...
+
+test-fake-google:
 	@echo "-> test e2e/fake-google (the PAC-43 calendar stand-in and sink)"
 	cd $(ROOT)/e2e/fake-google && go vet ./... && go test ./...
+
+test-fileserver:
 	@echo "-> test docker/fileserver (PAC-81 Part B: API-base injection without inline script)"
 	cd $(ROOT)/docker/fileserver && go vet ./... && go test ./...
+
+test-nginx:
 	@echo "-> test nginx (PAC-81 Parts B and C: the shipped edge config against a stub upstream, in docker; ~2.5 min)"
 	cd $(ROOT)/nginx/test && go vet ./... && go test -timeout 15m ./...
+
+test-compose:
 	@echo "-> test compose (PAC-81 Part C: the shipped production compose files under Docker Compose v2; builds images, ~8 min)"
 	cd $(ROOT)/compose-test && go vet ./... && go test -timeout 40m ./...
 
 ## The same suites with coverage profiles, gated
-coverage:
+coverage: $(addprefix coverage-,$(COVERAGE_SUITES))
+
+coverage-backend:
 	@command -v docker >/dev/null 2>&1 || { \
 		echo "docker not installed — the official coverage number needs the full suite (CLAUDE.md)." >&2; \
 		exit 1; }
@@ -184,8 +227,10 @@ coverage:
 	@# the suite runs with /app = backend mounted into the container.
 	PACEDAY_GO_TEST_FLAGS="-coverprofile=coverage.out -covermode=atomic" $(ROOT)/scripts/test-backend.sh
 	$(ROOT)/scripts/coverage-gate.sh $(ROOT)/backend/coverage.out $(BACKEND_COVERAGE_MIN) backend
+
+coverage-mcp:
 	@echo "-> coverage mcp"
-	cd $(ROOT)/mcp && GONOSUMDB='*' GOFLAGS='-mod=mod' go test ./... -coverprofile=coverage.out
+	cd $(ROOT)/mcp && GONOSUMDB='*' GOFLAGS="-mod=mod $${GOFLAGS:-}" go test ./... -coverprofile=coverage.out
 	$(ROOT)/scripts/coverage-gate.sh $(ROOT)/mcp/coverage.out $(MCP_COVERAGE_MIN) mcp
 
 ## Playwright journeys against the compose stack (suite lives in e2e/)

@@ -151,6 +151,38 @@ make verify        # everything below, in order, fail-fast
 └── make e2e       # Playwright against docker compose
 ```
 
+**How CI runs it (api repo).** Locally, `make verify` is the one sequential
+command above. GitHub Actions (`.github/workflows/ci.yml`) runs **the same make
+targets, as parallel jobs**, not `make verify` itself:
+
+- `lint + openapi-check` runs `make lint` and `make openapi-check`.
+- `make test` and `make coverage` are split into one target per suite
+  (`make test` = `test-backend test-mcp test-fake-google test-fileserver
+  test-nginx test-compose`, `make coverage` = `coverage-backend coverage-mcp`).
+  Each suite is a job, or part of one.
+- `e2e` runs `make e2e`.
+- A final job named **`verify`** passes only if every one of those jobs passed,
+  and prints the same summary block. It is the required check: branch
+  protection, `release.yml` and the factory scripts look for a check called
+  `verify`, and no other job carries that name.
+
+The suite lists are Makefile variables (`TEST_SUITES`, `COVERAGE_SUITES`,
+`VERIFY_STEPS`). `scripts/ci_suites_check.py` runs in the lint job. It fails the
+gate when the jobs stop running exactly those targets, when one of them is not
+behind `verify`, or when `test`, `coverage` or `verify` no longer match the
+lists. A new suite therefore goes in the Makefile list *and* in `ci.yml`, or CI
+goes red.
+
+Two differences from the local command:
+
+- CI is not fail-fast across suites: every suite runs, and `verify` fails if any
+  one failed.
+- CI caches downloads, Go compilation, browsers and docker layers. It never
+  caches test results (`GOFLAGS=-count=1`). Caches are written on pushes to main
+  only; pull requests only read them.
+
+The web repo's gate is unchanged by this.
+
 Where the cross-repo half of `openapi-check` (web generated types against the
 api bundle) runs: in full on every PR, against the paired branch; **not** on
 pushes to main (CI sets `OPENAPI_CROSS_REPO=skip`, since the two halves of a

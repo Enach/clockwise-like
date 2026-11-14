@@ -41,12 +41,24 @@ fi
 # Word-split deliberately inside the container, hence the unquoted expansion there.
 GO_TEST_FLAGS="${PACEDAY_GO_TEST_FLAGS:-}"
 
+# Optional host directory for the container's Go module and build caches
+# (ci.yml restores and saves it with actions/cache). Unset, the container starts
+# cold as it always has. Set, `-count=1` is added so the build cache can only
+# skip compilation, never replay a test result instead of running the test.
+CACHE_ARGS=()
+if [ -n "${PACEDAY_GO_CACHE_DIR:-}" ]; then
+  mkdir -p "$PACEDAY_GO_CACHE_DIR/mod" "$PACEDAY_GO_CACHE_DIR/build"
+  CACHE_ARGS=(-v "$PACEDAY_GO_CACHE_DIR:/gocache" -e GOMODCACHE=/gocache/mod -e GOCACHE=/gocache/build)
+  GO_TEST_FLAGS="-count=1 $GO_TEST_FLAGS"
+fi
+
 # The whole repository is mounted, with backend/ as the working directory, not
 # backend/ alone: the PAC-21 contract test (backend/api/pac21_contract_5xx_test.go)
 # reads contracts/openapi/openapi.yaml.
 docker run --rm --network host \
   -e "PACEDAY_TEST_DATABASE_URL=postgres://test:test@127.0.0.1:${DB_PORT}/testdb?sslmode=disable" \
   -e "GO_TEST_FLAGS=$GO_TEST_FLAGS" \
+  ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"} \
   -v "$ROOT_DIR:/repo" \
   -w /repo/backend \
   golang:1.25-alpine \
