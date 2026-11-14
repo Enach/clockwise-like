@@ -1,0 +1,130 @@
+{
+  "featureId": "PAC-101",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-101",
+  "status": "contract revision 1.1, challenged 2026-11-14 (accept-with-changes, applied); awaiting stage 3 (plan)",
+  "contractRevision": "1.1",
+  "contractHash": "b93b8cef924b764cbd81127453df9d074cd0cab0e5e8674dd8fe47f6cf8fea96",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi WEB=/nonexistent` in an LF clone of factory/pac-101-k at 1fa3861 (golang:1.25-bookworm, oapi-codegen v2.4.1, api-gate pattern, host repo mounted read-only), 2026-11-14, base origin/main 8dee631 (bundle 72e66cb1f2a71ae61b1ada9a3e52983482aaef9f60c5173fec44775c32b9a93f). make openapi rc 0 (132 operations, 12 generated; only openapi.yaml regenerated, backend/api/gen unchanged); make openapi-check WEB=/nonexistent rc 0; cd backend && go build ./... ok. Reproduce with: git show <commit>:contracts/openapi/openapi.yaml | sha256sum (LF blob) and python3 scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs make openapi on its base and records the new hash here, changing nothing else.",
+  "contractDoc": "contracts/features/PAC-101.md",
+  "specDoc": "docs/specs/PAC-101.md (accepted 2026-11-14 on factory/pac-101-spec 0beb649; open questions closed with factory defaults and the 'booking failed' body corrected, recorded in its Decisions section on this branch)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "Every write on one scheduling link (public booking save, co-host invite, PATCH fields + co-hosts, accept/decline (4 routes), leave) is either before the link's delete and kept in full, or after it and writes nothing, answering the existing 404 {\"error\":\"not found\"}; bookings treat a pause like a delete. PATCH becomes one transaction (a failed co-host change is a 500 with nothing changed). One 10 s per-lock wait bound (SET LOCAL lock_timeout) on every request-path transaction that locks a link, the delete included. API-072 Fixed. The 037 down test gets a comment only.",
+  "interfaceKind": "HTTP: descriptions only on existing operations (no schema, status or operation added) plus named 404 examples on inviteSchedulingLinkHost. Non-HTTP and binding: the commit-point sequence and the distinct link-gone outcome (contract md section 3), the lock modes, order, wait cap and its scoping (section 4), the test seams (section 5).",
+  "mergeAfter": "origin/main 8dee631 (PAC-40 part A, which gives deleted_at). Must merge before PAC-40 part B (the erasure job). No migration.",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/engine/booking.go (ConfirmBooking's save step and insertBookingOnConn only: the save becomes one transaction with the bound and the FOR SHARE commit-point check; a link-gone sentinel; completion unit only on saved; PAC-90 release paths kept)",
+        "backend/engine/pac101_test.go (new)",
+        "backend/api/handlers_booking.go (map the link-gone sentinel to 404 before the 500 branch; the afterBookingLinkRead seam)",
+        "backend/api/handlers_scheduling_links.go (updateLink: fields and co-hosts in one transaction, errors no longer discarded; inviteHost, respondToInvite, leaveLink, deleteLink call the locked storage variants; no other handler)",
+        "backend/storage/scheduling_links.go (booking save with FOR SHARE; link lock step for invite/respond/leave; PATCH transaction helper; LinkLockTimeout and the bound; ErrLinkGone)",
+        "backend/storage/guarded_writes.go and backend/storage/session.go (only: the scheduling-link ...Ctx wrappers it needs, and a transaction for those writes when no session guard is present; the re-check stays the first statement)",
+        "backend/storage/pac101_test.go, backend/api/pac101_test.go (new); backend/storage/pac40_lifecycle_test.go (the comment on TestPAC40_Migration037DownKeepsEveryRow only, spec D-8)",
+        "docs/plans/PAC-101.md",
+        "contracts/features/PAC-101.{md,yaml} (contractHash field and stage-4 notes only)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; openapi.yaml and backend/api/gen by hand",
+        "backend/storage/migrations/** (no migration)",
+        "the PAC-71 re-check statement and its order (first statement of the transaction)",
+        "PAC-81/PAC-90 budget code (internal/budget) and the commit point's position",
+        "existing tests named in spec section 6: they must pass unchanged",
+        "a session-level SET or set_config(..., false) anywhere on these paths",
+        "mcp/ (unaffected)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/generated/** (regeneration only, against this bundle; no hand-written change)"
+      ],
+      "forbiddenPaths": [
+        "every other path: the 404-on-submit wording and the link editor's co-host handling are PAC-105"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {"operationId": "createPublicBooking", "change": "description: link-gone rule at the commit point, refusals keep their answer, 10 s bound; 404 adds deleted/paused while handled; 500 adds the bound (body internal error, nothing written)"},
+    {"operationId": "updateSchedulingLink", "change": "description: all-or-nothing PATCH, delete ordering, 10 s per lock; 404 adds deleted while handled (co-hosts included); 500 adds co-host failure and lock bound, every 500 leaves the link unchanged"},
+    {"operationId": "deleteSchedulingLink", "change": "description: writes in progress complete first; 500 adds the lock bound"},
+    {"operationId": "inviteSchedulingLinkHost", "change": "description: race rule; 404 two named examples linkNotFound / userNotFound (API-072); 500 adds the bound"},
+    {"operationId": "acceptSchedulingLinkHostInvite", "change": "description, 404, 500: race rule and bound"},
+    {"operationId": "declineSchedulingLinkHostInvite", "change": "description, 404, 500: race rule and bound"},
+    {"operationId": "acceptSchedulingLinkInviteByLink", "change": "description, 404, 500: race rule and bound"},
+    {"operationId": "declineSchedulingLinkInviteByLink", "change": "description, 404, 500: race rule and bound"},
+    {"operationId": "leaveSchedulingLink", "change": "description, 404, 500: race rule and bound"}
+  ],
+  "componentsChanged": [],
+  "gates": {
+    "contractApproval": "contract-challenger review 2026-11-14 (accept-with-changes, applied in revision 1.1)",
+    "assembler": "make openapi WEB=/nonexistent rc 0 and make openapi-check WEB=/nonexistent rc 0 in an LF clone at 1fa3861 ('bundle is in sync (110 paths)', 'MIGRATION.md covers all 132 operations (12 generated)', 'backend/api/gen matches the contract'); py -3 scripts/openapi_assemble.py --check rc 0 on the worktree",
+    "webGate": "Stage 4: regenerate smart-calendar-flow src/api/generated against this bundle (make openapi WEB=...); the cross-repo openapi-check must pass on the pair.",
+    "stage4": "make verify in clockwise-like (factory section 3); every test in acceptanceTests ran (DB-backed ones need Docker; 'could not run' stated, never silent); the PR body states the bundle sha256.",
+    "defaultBranch": "main",
+    "ci": "GitHub Actions .github/workflows/ci.yml runs make verify",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit, api] delete injected after the link read, before host calendars are read (afterBookingLinkRead or the fake calendar) -> 404 {\"error\":\"not found\"}; no booking row, no host event, no email.",
+    "AC-2  [unit, engine] delete injected at afterBookingCommit -> 404; no row; no completion unit registered (no event, no email); pool of one: the next request gets a connection.",
+    "AC-3  [unit, engine] pause (not delete) at afterBookingCommit -> 404, nothing written.",
+    "AC-4  [unit, storage/engine] delete held open on a second connection; the save waits (pg_stat_activity wait_event_type='Lock'); delete commits -> link gone, nothing stored; delete rolls back -> booking stored.",
+    "AC-5  [unit] save held open (FOR SHARE taken, not committed); the owner's delete waits; save commits -> delete 204, link deleted, booking kept and listed in the owner's archive entry. No assertion created_at <= deleted_at (spec D-7).",
+    "AC-6  [unit] budget runs out while the save waits for a held delete; delete commits -> 404, never 503, nothing written.",
+    "AC-7  [unit] a link lock held longer than LinkLockTimeout (shortened) -> 500 {\"error\":\"internal error\"} (spec's 'booking failed' is the log label, contract md section 1), no booking row.",
+    "AC-8  [unit, api] delete committed via storage.GuardedCallHook after the invite's read and owner check -> 404 {\"error\":\"not found\"}, no host row for the invitee.",
+    "AC-9  [unit] delete held open; invite waits; commit -> 404 no row; rollback -> 201 pending row; lock held past the shortened bound -> 500, no row.",
+    "AC-10 [unit] PATCH co_host_emails [C] with B accepted; delete started at afterLinkPatchUpdate waits until the PATCH commits; PATCH 200; afterwards link deleted, fields = PATCH's, host rows = owner + C pending; no host row changes after the delete commits.",
+    "AC-11 [unit] existing TestPAC40_PatchRacingADeleteIs404AndWritesNothing passes unchanged; plus the same injection with co_host_emails set -> 404 and no host row changed.",
+    "AC-12 [unit] a co-host step fails (afterLinkPatchUpdate returns an error, or a failing lookup) -> 500 {\"error\":\"internal error\"}; neither fields nor host rows changed.",
+    "AC-13 [unit] delete held open; accept, decline (both spellings) and leave each wait; commit -> 404, host row unchanged; rollback -> 200 {\"status\":...} / 204 as today.",
+    "AC-14 [unit] invite: unknown or deleted link -> 404 {\"error\":\"not found\"}; live owned link and no domain-confirmed holder -> 404 {\"error\":\"user not found\"}; the bodies differ (API-072).",
+    "AC-15 [unit] concurrent rounds on one link (bookings of distinct free slots, invites, PATCHes with fields and co-hosts, accept, decline, leave, pause, resume, finally a delete): no 500, no SQLSTATE 40P01 and no 55P03 (read per lock, contract md section 4.2); every 201 booking exists and is in the archive; every 404 booking does not exist.",
+    "AC-16 [unit] two saves of different free slots on one live link held open at once: neither waits (no Lock waiter).",
+    "AC-17 [contract] the descriptions listed in operationsChanged (this revision).",
+    "AC-18 [unit, storage; added by the contract challenge C-5] pool capped at one connection: after a booking save, an invite, a PATCH and a 55P03 timeout, SHOW lock_timeout on that connection returns the server default '0'.",
+    "Spec section 6 regression set, unchanged: engine/pac90_test.go (3 tests), TestPAC81_BookingBudgetAfterCommitCompletesInBackground, TestPAC81_BookingBudgetBeforeInsertWritesNothing, TestPAC40_* named in spec section 2.6, TestSchedulingLinksReinviteKeepsExistingHostStatus, TestSchedulingLinksPatchCoHostsSetsListByDifference, TestSchedulingLinksRespondAndLeaveWithoutHostRowIs404, TestSchedulingLinksLeaveTwiceIs404, TestPAC40_PausedLinkStaysLiveAndResumes, api/pac71_midhandler_test.go."
+  ],
+  "resolvesFindings": [
+    "API-072 (low): Fixed (PAC-101). Bodies already distinct on main; contract names them as examples; AC-14 pins them. docs/factory/api-audit.md updated on this branch.",
+    "PAC-40 contract OQ-4 / challenge K4 'Uncertainties' item 2 (booking on a link deleted mid-request)."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "Spec OQ-1: factory default, web follow-up PAC-105.",
+    "Spec OQ-2: factory default, folded into PAC-82 (comment added).",
+    "Spec OQ-3: factory default, PAC-106 (low).",
+    "Spec OQ-4: factory default, closes with the D-8 code comment only.",
+    "Spec OQ-5: 10 s, per lock wait (contract md section 4.2)."
+  ],
+  "doesNotResolve": [
+    "API-069 (duplicate accept/decline routes): not inherited (spec N-3; challenge concurs).",
+    "Double booking of one slot and the single-use race: PAC-82.",
+    "Booking judged on settings edited mid-request: PAC-106.",
+    "Booking page 404 wording, and the web link editor not sending co_host_emails: PAC-105."
+  ],
+  "consumersAffected": [
+    {"consumer": "Enach/smart-calendar-flow PublicBooking.tsx", "breaks": "no", "detail": "racing 404 lands in the generic branch already used for a link deleted before submit; the bound's 500 shows PAC-83's 'may have been saved' (over-cautious, safe)."},
+    {"consumer": "Enach/smart-calendar-flow link editor and Links.tsx", "breaks": "no", "detail": "PATCH never sends co_host_emails, so the new co-host 500 is unreachable from the web; 404/500 on PATCH, invite, accept/decline/leave render as apiErrorMessage(e, 'write')."},
+    {"consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "drift only", "detail": "descriptions changed: regeneration-only commit paired with the stage-4 PR."},
+    {"consumer": "mcp", "breaks": "no", "detail": "does not call scheduling-link or booking operations."},
+    {"consumer": "backend fakes of BookingFlow", "breaks": "no", "detail": "compile unchanged if link gone is a sentinel error."},
+    {"consumer": "PAC-40 part B (erasure job, unbuilt)", "breaks": "no", "detail": "its contract sentence 'booking creation is one autocommitted insert' becomes stale; no lock cycle (contract md section 4.1)."}
+  ],
+  "mergeConditions": [
+    "This revision (or a later one) accepted by contract-challenger.",
+    "The stage-4 PR's bundle sha256 equals contractHash, or the recorded rebased hash with no fragment text change.",
+    "Paired web regeneration of src/api/generated against this bundle.",
+    "make verify output pasted in the PR body (factory section 3).",
+    "Lands before PAC-40 part B."
+  ],
+  "followUps": [
+    "PAC-105 (web): 404 on submit wording; link editor co-host removal / swallowed invite failures.",
+    "PAC-106 (low): booking judged on settings edited mid-request.",
+    "PAC-82: single-use / max-uses race folded in; must respect AC-16 or amend it explicitly."
+  ],
+  "rollback": "Revert the backend PR and the paired web regeneration. No migration, no data change; rows written under PAC-101 are valid under the old code."
+}
