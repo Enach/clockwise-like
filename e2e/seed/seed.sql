@@ -329,7 +329,14 @@ VALUES
 -- PAC-40: a link already DELETED (deleted_at set, active false: migration
 -- 037's CHECK), owned by USERS.second, with one booking. Read-only fixture of
 -- tests/pac40-lifecycle.spec.ts: gone from every live path, in its owner's
--- archive only.
+-- archive only. Its booking is in 2099 (part B): never due for the erasure
+-- job (latest end + 90 days), so a backend start-up run can never erase it
+-- whatever the order of boot and seeding.
+--
+-- PAC-40 part B: a second deleted link whose only booking was ALREADY erased
+-- (name and email '', booker_erased_at set: migration 037's CHECK). Read-only
+-- fixture of the erased archive state (AC-32 through the stack). The job never
+-- touches it again (nothing awaits erasure).
 INSERT INTO scheduling_links
   (id, owner_user_id, slug, title, duration_options, days_of_week,
    window_start_time, window_end_time, buffer_before, buffer_after,
@@ -337,7 +344,10 @@ INSERT INTO scheduling_links
 VALUES
   ('cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf', '22222222-2222-4222-8222-222222222222',
    'e2e-pac40-archived', 'E2E PAC-40 Archived Link', '{30}', '{1,2,3,4,5}',
-   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, false, '2026-01-15T12:00:00Z');
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, false, '2026-01-15T12:00:00Z'),
+  ('cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd', '22222222-2222-4222-8222-222222222222',
+   'e2e-pac40-erased', 'E2E PAC-40 Erased Link', '{30}', '{1,2,3,4,5}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, false, '2025-11-03T09:00:00Z');
 
 -- Host rows. 'accepted' is what storage.GetAcceptedHosts() filters on; a link
 -- with no accepted host renders with zero hosts and zero coverage. The UI and
@@ -355,7 +365,8 @@ INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUE
   ('c8888888-8888-4888-8888-888888888888', '44444444-4444-4444-8444-444444444444', 'accepted', NOW()),
   ('c9999999-9999-4999-8999-999999999999', 'b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'accepted', NOW()),
   ('cececece-cece-4ece-8ece-cececececece', '33333333-3333-4333-8333-333333333333', 'accepted', NOW()),
-  ('cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf', '22222222-2222-4222-8222-222222222222', 'accepted', NOW());
+  ('cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf', '22222222-2222-4222-8222-222222222222', 'accepted', NOW()),
+  ('cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd', '22222222-2222-4222-8222-222222222222', 'accepted', NOW());
 
 -- The booking that exhausts the single-use link. Dated far in the past so it
 -- can never overlap a window a live test books into.
@@ -371,7 +382,14 @@ VALUES
   -- PAC-40: the deleted fixture's booking, read back through the archive.
   ('dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf', 'cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf',
    'E2E PAC-40 Archived Booker', 'pac40.archived.booker@paceday.test',
-   '2020-01-08T10:00:00Z', '2020-01-08T10:30:00Z', 'confirmed', 'seeded — PAC-40 archive fixture');
+   '2099-01-08T10:00:00Z', '2099-01-08T10:30:00Z', 'confirmed', 'seeded — PAC-40 archive fixture');
+
+-- PAC-40 part B: the erased fixture's booking (no name, no email, the instant).
+INSERT INTO bookings (id, link_id, booker_name, booker_email, start_time, end_time, status, notes, booker_erased_at)
+VALUES
+  ('dcdcdcdc-dcdc-4dcd-8dcd-dcdcdcdcdcdc', 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+   '', '', '2025-11-03T08:00:00Z', '2025-11-03T08:30:00Z', 'confirmed', 'seeded — PAC-40 erased fixture',
+   '2026-02-02T03:00:00Z');
 
 -- ── PAC-88: booking page time zone (contract PAC-88 section 6) ───────────────
 -- Four hosts connected through the stand-in (seed/ids.ts PAC88_HOSTS, all in

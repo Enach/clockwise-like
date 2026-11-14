@@ -58,6 +58,30 @@ func cronJob(name string, fn func(ctx context.Context)) func() {
 	}
 }
 
+// bookerErasureJob is what the booker-erasure schedule runs
+// (*engine.BookerErasure in production).
+type bookerErasureJob interface {
+	Run(ctx context.Context) engine.BookerErasureSummary
+}
+
+// cronRegistrar is the part of a robfig/cron scheduler the schedule needs, so
+// a test can hold the periodic trigger (AC-35).
+type cronRegistrar interface {
+	AddFunc(spec string, cmd func()) (cron.EntryID, error)
+}
+
+// scheduleBookerErasure registers job @every 24h on c and returns the
+// start-up run (PAC-40 D-13, AC-35). Both are the same cronJob unit: the
+// drain awaits a run in progress and no run starts once shutdown has begun.
+// The caller invokes the start-up run once, before the first tick can come.
+func scheduleBookerErasure(c cronRegistrar, job bookerErasureJob) (startup func(), err error) {
+	unit := cronJob("booker-erasure", func(ctx context.Context) { job.Run(ctx) })
+	if _, err := c.AddFunc("@every 24h", unit); err != nil {
+		return nil, err
+	}
+	return unit, nil
+}
+
 func run() int {
 	// Sentry MUST be initialized before any DB open or cron start so a panic
 	// during startup is still captured; buffered events are flushed at the
@@ -271,6 +295,21 @@ func run() int {
 	}
 	mgrCron.Start()
 
+	// PAC-40 part B: bookers' names and emails on deleted links, 90 x 24 h
+	// after the link's latest booking end. Once at start-up, then every 24 h;
+	// both runs are cronJob units (PAC-81 drain). The start-up run is on its
+	// own goroutine so readiness never waits for it (contract §5 "Schedule").
+	erasureCron := cron.New()
+	erasureStartup, err := scheduleBookerErasure(erasureCron, &engine.BookerErasure{
+		DB: db, Now: time.Now, Logf: log.Printf,
+		Report: func(err error) { sentry.CaptureException(err) },
+	})
+	if err != nil {
+		log.Fatalf("booker-erasure cron registration error: %v", err)
+	}
+	erasureCron.Start()
+	go erasureStartup()
+
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET environment variable is required")
@@ -299,7 +338,7 @@ func run() int {
 
 	stopScheduling := func() {
 		focusCron.Stop()
-		for _, c := range []*cron.Cron{personalCron, autoDeclineCron, recapCron, mgrCron} {
+		for _, c := range []*cron.Cron{personalCron, autoDeclineCron, recapCron, mgrCron, erasureCron} {
 			c.Stop() // no new run; a running one is a tracked unit
 		}
 		stopEncryption()

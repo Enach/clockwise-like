@@ -1,9 +1,13 @@
 {
   "featureId": "PAC-40",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-40",
-  "status": "contract revision 3, challenged (K4, accept-with-changes, changes applied); awaiting stage 4",
+  "status": "contract revision 3, challenged (K4, accept-with-changes, changes applied); part A merged (#265); part B at stage 4 (impl/pac-40-b-api)",
   "contractRevision": "3",
-  "contractHash": "9c2c7cbc3abe8ae082b0b920cd39e0e6383fc175de6c6c1dfcd59c1a77426e4a",
+  "contractHash": "3fa2668c6ef88504c4d4357e250f94443133333c2f425b0fe7701151fe301d7d",
+  "contractHashHistory": [
+    "9c2c7cbc3abe8ae082b0b920cd39e0e6383fc175de6c6c1dfcd59c1a77426e4a: full revision 3 at 1c04056 on origin/main 68540f6 (contractHashOf).",
+    "3fa2668c6ef88504c4d4357e250f94443133333c2f425b0fe7701151fe301d7d: 2026-11-14, impl/pac-40-b-api on origin/main b98b6a8 (after PAC-97/98/41/101 and part A #265). Part B's only fragment change (1c04056 vs 07f912d: calendar.yaml AuditEntry.action + scheduling_link_bookers_erased and its two description paragraphs) re-applied with git apply onto main's calendar.yaml, clean, text unchanged; make openapi in an LF clone of the branch (golang:1.25-bookworm, oapi-codegen v2.4.1, api-gate pattern, host repo mounted read-only) rc 0, regenerated contracts/openapi/openapi.yaml and backend/api/gen/paceday.gen.go (AuditEntryAction gains SchedulingLinkBookersErased; no constant renamed); make openapi-check WEB=/nonexistent rc 0 (110 paths; MIGRATION.md 132 operations, 12 generated; gen matches); cd backend && go build ./... ok. Not a contract revision."
+  ],
   "contractHashPartA": "72e66cb1f2a71ae61b1ada9a3e52983482aaef9f60c5173fec44775c32b9a93f",
   "contractHashPartAHistory": [
     "d5cf6be903c182c18bc98a8b0f259c649dbe521982698e0de7ec68b4518ff9d9: part A at 07f912d on origin/main 68540f6 (bundle 5367da00...). Shipped by impl/pac-40-api @ 1cd9f62.",
@@ -165,8 +169,9 @@
       "pr": "B-api",
       "repo": "Enach/clockwise-like",
       "bundleCommit": "1c04056",
-      "bundleSha256": "9c2c7cbc3abe8ae082b0b920cd39e0e6383fc175de6c6c1dfcd59c1a77426e4a",
-      "contains": "erasure job, WriteAuditLogTx, PAC-67 enum test amendment, operator status, runbook, enabled=true; AC-7 (second half), AC-21 (due instant), AC-25..AC-37"
+      "bundleSha256": "3fa2668c6ef88504c4d4357e250f94443133333c2f425b0fe7701151fe301d7d",
+      "contains": "erasure job, WriteAuditLogTx, PAC-67 enum test amendment, operator status, runbook, enabled=true; AC-7 (second half), AC-21 (due instant), AC-25..AC-37",
+      "bundleSha256History": "9c2c7cbc... at 1c04056 on 68540f6; 3fa2668c... re-applied on origin/main b98b6a8 (contractHashHistory)"
     },
     {
       "pr": "B-web",

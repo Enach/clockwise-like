@@ -267,7 +267,8 @@ export const LINKS = {
   /**
    * PAC-40: seeded already DELETED (deleted_at 2026-01-15T12:00:00Z), owned by
    * USERS.second, one booking. Read-only: gone from every live path, present
-   * only in its owner's archive (tests/pac40-lifecycle.spec.ts).
+   * only in its owner's archive (tests/pac40-lifecycle.spec.ts). The booking
+   * is in 2099 so the erasure job (part B) never finds it due.
    */
   pac40Archived: {
     id: 'cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf',
@@ -279,8 +280,28 @@ export const LINKS = {
       id: 'dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf',
       name: 'E2E PAC-40 Archived Booker',
       email: 'pac40.archived.booker@paceday.test',
-      start: '2020-01-08T10:00:00Z',
-      end: '2020-01-08T10:30:00Z',
+      start: '2099-01-08T10:00:00Z',
+      end: '2099-01-08T10:30:00Z',
+    },
+  },
+  /**
+   * PAC-40 part B: seeded already DELETED and ERASED, owned by USERS.second:
+   * its one booking stores '' for name and email with booker_erased_at set
+   * (migration 037's CHECK). Read-only: the archive's erased state (AC-32)
+   * through the stack (tests/pac40-lifecycle.spec.ts).
+   */
+  pac40Erased: {
+    id: 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+    slug: 'e2e-pac40-erased',
+    title: 'E2E PAC-40 Erased Link',
+    ownerUserId: USERS.second.id,
+    deletedAt: '2025-11-03T09:00:00Z',
+    booking: {
+      id: 'dcdcdcdc-dcdc-4dcd-8dcd-dcdcdcdcdcdc',
+      start: '2025-11-03T08:00:00Z',
+      end: '2025-11-03T08:30:00Z',
+      erasedAt: '2026-02-02T03:00:00Z',
+      notes: 'seeded — PAC-40 erased fixture',
     },
   },
 } as const;

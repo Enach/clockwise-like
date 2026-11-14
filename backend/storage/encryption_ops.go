@@ -717,17 +717,23 @@ const (
 // EncryptionMigrationVersion is the number of this work's migration pair,
 // read from the embedded file name (it may be renumbered at merge time).
 func EncryptionMigrationVersion() (uint, error) {
+	return embeddedMigrationVersion("_encryption_at_rest.up.sql")
+}
+
+// embeddedMigrationVersion is the number of the embedded up migration whose
+// file name ends with suffix.
+func embeddedMigrationVersion(suffix string) (uint, error) {
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		return 0, err
 	}
 	for _, e := range entries {
-		if n := e.Name(); strings.HasSuffix(n, "_encryption_at_rest.up.sql") {
+		if n := e.Name(); strings.HasSuffix(n, suffix) {
 			v, err := strconv.ParseUint(strings.SplitN(n, "_", 2)[0], 10, 32)
 			return uint(v), err
 		}
 	}
-	return 0, errors.New("encryption migration not embedded")
+	return 0, fmt.Errorf("migration *%s not embedded", suffix)
 }
 
 // ErrDowngradeRefused: something is still encrypted (contract 7.2).

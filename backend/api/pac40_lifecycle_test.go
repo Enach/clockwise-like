@@ -632,7 +632,7 @@ func TestPAC40_CancelledBookingsKeepTheirUse(t *testing.T) {
 	e.publicGone(open.Slug, "AC-17 after exactly one more")
 }
 
-// AC-21 (part A), AC-22, AC-23, AC-24: the owner's archive.
+// AC-21 (with part B's due instant), AC-22, AC-23, AC-24: the owner's archive.
 func TestPAC40_OwnerArchive(t *testing.T) {
 	e := newPAC40Env(t, openTestDB(t))
 	owner := createConfirmedUser(t, "pac40-arch-owner@example.com")
@@ -643,7 +643,7 @@ func TestPAC40_OwnerArchive(t *testing.T) {
 	// AC-24: an owner who never deleted a link: 200, links [], the policy.
 	w := e.do(http.MethodGet, "/api/scheduling-links/archive", owner, "")
 	e.mustStatus(w, http.StatusOK, "AC-24 empty archive")
-	if got := strings.TrimSpace(w.Body.String()); got != `{"booker_erasure":{"enabled":false,"retention_days":90},"links":[]}` {
+	if got := strings.TrimSpace(w.Body.String()); got != `{"booker_erasure":{"enabled":true,"retention_days":90},"links":[]}` {
 		t.Fatalf("AC-24 body = %s", got)
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
@@ -672,7 +672,7 @@ func TestPAC40_OwnerArchive(t *testing.T) {
 	e.deleteLink(owner, link.ID)
 	deletedAt, _ := e.linkRow(link.ID)
 
-	// AC-21 without the due instant (bundle A).
+	// AC-21 with the due instant (part B: the later end + 90 x 24 h).
 	w = e.do(http.MethodGet, "/api/scheduling-links/archive", owner, "")
 	e.mustStatus(w, http.StatusOK, "AC-21 archive")
 	var list struct {
@@ -690,7 +690,8 @@ func TestPAC40_OwnerArchive(t *testing.T) {
 	for k, want := range map[string]any{
 		"id": link.ID.String(), "title": link.Title, "slug": link.Slug,
 		"deleted_at": deletedAt.Time.UTC().Format(time.RFC3339Nano), "bookings_count": float64(2),
-		"last_booking_end_at": wantEnd, "erasure_state": "awaiting_erasure", "erasure_due_at": nil, "erased_at": nil,
+		"last_booking_end_at": wantEnd, "erasure_state": "awaiting_erasure",
+		"erasure_due_at": later.EndTime.UTC().Add(90 * 24 * time.Hour).Format(time.RFC3339Nano), "erased_at": nil,
 	} {
 		if got, ok := entry[k]; !ok || got != want {
 			t.Errorf("AC-21 %s = %v (present %v); want %v", k, got, ok, want)
@@ -699,8 +700,8 @@ func TestPAC40_OwnerArchive(t *testing.T) {
 	if len(entry) != 9 {
 		t.Errorf("AC-21 entry has %d members: %v", len(entry), entry)
 	}
-	if list.BE["enabled"] != false || list.BE["retention_days"] != float64(90) {
-		t.Errorf("booker_erasure = %v; want enabled false, 90 days", list.BE)
+	if list.BE["enabled"] != true || list.BE["retention_days"] != float64(90) {
+		t.Errorf("booker_erasure = %v; want enabled true, 90 days", list.BE)
 	}
 
 	// AC-22: both bookings, each field equal to the live read before delete.
@@ -762,7 +763,7 @@ func TestPAC40_OwnerArchive(t *testing.T) {
 }
 
 // The archive's mapping of every display state (contract §2.2, §2.3): no
-// bookings; awaiting with no due date while the job is absent; erased with
+// bookings; awaiting with its due date (part B: the job runs); erased with
 // null name and email and the instant, never "".
 func TestPAC40_ArchiveDTOStates(t *testing.T) {
 	end := time.Date(2026, 5, 1, 10, 30, 0, 0, time.UTC)
@@ -779,8 +780,17 @@ func TestPAC40_ArchiveDTOStates(t *testing.T) {
 	}
 	for _, c := range cases {
 		dto := archivedLinkDTO(&c.in)
-		if string(dto.ErasureState) != c.want || dto.ErasureDueAt != nil {
-			t.Errorf("%s: state %q due %v; want %q and no due date (enabled=false)", c.name, dto.ErasureState, dto.ErasureDueAt, c.want)
+		if string(dto.ErasureState) != c.want {
+			t.Errorf("%s: state %q; want %q", c.name, dto.ErasureState, c.want)
+		}
+		// AC-21 (part B): a due instant exactly when awaiting erasure, the
+		// latest end + 90 x 24 h; none for no bookings or all erased.
+		if c.want == "awaiting_erasure" {
+			if want := end.Add(90 * 24 * time.Hour); dto.ErasureDueAt == nil || !dto.ErasureDueAt.Equal(want) {
+				t.Errorf("%s: erasure_due_at %v; want %v", c.name, dto.ErasureDueAt, want)
+			}
+		} else if dto.ErasureDueAt != nil {
+			t.Errorf("%s: erasure_due_at %v; want none", c.name, dto.ErasureDueAt)
 		}
 		if (c.in.ErasedAt == nil) != (dto.ErasedAt == nil) {
 			t.Errorf("%s: erased_at %v", c.name, dto.ErasedAt)
@@ -797,8 +807,8 @@ func TestPAC40_ArchiveDTOStates(t *testing.T) {
 	if !strings.Contains(string(raw), `"booker_name":"null"`) || !strings.Contains(string(raw), `"booker_erased_at":null`) {
 		t.Errorf("kept booking = %s; want the stored strings and no erasure instant", raw)
 	}
-	if p := bookerErasurePolicy(); p.Enabled || p.RetentionDays != 90 {
-		t.Errorf("policy = %+v; part A ships enabled=false, 90 days", p)
+	if p := bookerErasurePolicy(); !p.Enabled || p.RetentionDays != 90 {
+		t.Errorf("policy = %+v; part B ships enabled=true, 90 days", p)
 	}
 }
 
