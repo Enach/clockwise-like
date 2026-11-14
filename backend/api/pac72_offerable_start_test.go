@@ -160,9 +160,9 @@ type pac72Flow struct {
 	confirms atomic.Int64
 }
 
-func (f *pac72Flow) ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes string) (*storage.Booking, error) {
+func (f *pac72Flow) ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes, key string) (*storage.Booking, error) {
 	f.confirms.Add(1)
-	return f.BookingEngine.ConfirmBooking(ctx, link, name, email, start, end, notes)
+	return f.BookingEngine.ConfirmBooking(ctx, link, name, email, start, end, notes, key)
 }
 
 type pac72Bench struct {

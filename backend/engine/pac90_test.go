@@ -31,7 +31,7 @@ func pac90Book(t *testing.T, db *sql.DB, link *storage.SchedulingLink, start tim
 	var engErr error
 	h := budget.Middleware(5*time.Second, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(handlerDone)
-		booking, engErr = (&BookingEngine{DB: db}).ConfirmBooking(r.Context(), link, "B", "b@pac90.test", start, start.Add(30*time.Minute), "")
+		booking, engErr = (&BookingEngine{DB: db}).ConfirmBooking(r.Context(), link, "B", "b@pac90.test", start, start.Add(30*time.Minute), "", "")
 	}))
 	var repanicked any
 	func() {

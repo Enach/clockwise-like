@@ -48,8 +48,8 @@ func (f *pac101Flow) CollectiveSlotsDays(_ context.Context, _ *storage.Schedulin
 	return out, nil
 }
 
-func (f *pac101Flow) ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes string) (*storage.Booking, error) {
-	return f.eng.ConfirmBooking(ctx, link, name, email, start, end, notes)
+func (f *pac101Flow) ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes, key string) (*storage.Booking, error) {
+	return f.eng.ConfirmBooking(ctx, link, name, email, start, end, notes, key)
 }
 
 type pac101Env struct {
@@ -713,6 +713,6 @@ func (f *goneFlow) CollectiveSlotsDays(_ context.Context, _ *storage.SchedulingL
 	return out, nil
 }
 
-func (f *goneFlow) ConfirmBooking(context.Context, *storage.SchedulingLink, string, string, time.Time, time.Time, string) (*storage.Booking, error) {
+func (f *goneFlow) ConfirmBooking(context.Context, *storage.SchedulingLink, string, string, time.Time, time.Time, string, string) (*storage.Booking, error) {
 	return nil, engine.ErrLinkGone
 }

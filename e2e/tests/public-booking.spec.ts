@@ -47,6 +47,7 @@ import { fake } from '../fake';
 import { BOOKING_HOSTS, CONNECTED, LINKS, MISSING_SLUG, OFFERABLE_LINK } from '../seed/ids';
 import { atUtc, bookingDay, instant, isoDate, nextBookableWeekday } from '../lib/dates';
 import { pickBookingDate, slotButtons } from '../lib/ui';
+import { BASE_URL } from '../auth';
 
 test.describe('public booking — link info', () => {
   test('serves a live link to an anonymous visitor with its real hosts', async ({ api }) => {
@@ -828,3 +829,134 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
   });
 });
 
+
+/**
+ * PAC-82: a booking attempt carries an Idempotency-Key, and "Try again" after
+ * a lost answer re-sends the same attempt, so it can never book twice.
+ *
+ * AC-28: the first booking reaches the real server and is saved; only its
+ * answer is dropped at the browser's network layer (page.route: route.fetch
+ * sends the real request, then route.abort('failed') loses the answer, which
+ * is exactly a network failure after the server saved). Nothing is mocked:
+ * the second request goes to the server untouched and is answered by it.
+ *
+ * AC-20: a cross-origin preflight for the keyed booking allows the header,
+ * and the keyed booking from that origin succeeds (the e2e stack's
+ * ALLOWED_ORIGIN is "*"; the server-wide Allow-Headers value is the same for
+ * an exact origin, pinned by the backend unit test).
+ *
+ * Isolation: LINKS.uiBooking on bookingDay(8), a day no other journey of this
+ * file books; the journeys clear their own bookings and the host's stand-in
+ * calendar as the others do.
+ */
+test.describe('public booking — safe retry (PAC-82)', () => {
+  test('AC-28: an answer lost after the server saved; Try again shows the confirmation and one booking exists', async ({
+    page,
+    db,
+    assertNotDemo,
+  }) => {
+    test.setTimeout(90_000);
+    const slug = LINKS.uiBooking.slug;
+    const day = bookingDay(8);
+    const bookerPrefix = `e2e.booker.pac82retry.${Date.now()}`;
+    const bookerEmail = `${bookerPrefix}@paceday.test`;
+
+    const posts: Array<{ key: string | null; body: string | null }> = [];
+    let firstStatus: number | undefined;
+    await page.route(
+      (url) => url.pathname === `/api/book/${slug}`,
+      async (route) => {
+        const req = route.request();
+        if (req.method() !== 'POST') return route.continue();
+        posts.push({ key: await req.headerValue('idempotency-key'), body: req.postData() });
+        if (posts.length === 1) {
+          // The server saves the booking; the browser never gets the answer.
+          const res = await route.fetch();
+          firstStatus = res.status();
+          return route.abort('failed');
+        }
+        return route.continue();
+      },
+    );
+
+    try {
+      await page.goto(`/book/${slug}`);
+      await expect(page.getByRole('heading', { name: LINKS.uiBooking.title })).toBeVisible();
+      await pickBookingDate(page, day);
+      const slots = slotButtons(page);
+      await expect(slots.first()).toBeVisible();
+      await slots.first().click(); // 09:00 UTC
+      await page.getByLabel('Name', { exact: true }).fill('E2E PAC-82 Retry Booker');
+      await page.getByLabel('Email', { exact: true }).fill(bookerEmail);
+      await page.getByRole('button', { name: /confirm booking/i }).click();
+
+      // The answer is lost: "may have been saved" and one Try again.
+      const retry = page.getByTestId('booking-try-again');
+      await expect(retry).toBeVisible();
+      await expect(page.getByTestId('api-error')).toHaveAttribute('data-effect', 'booking');
+      await expect(page.getByRole('heading', { name: /you are confirmed/i })).toHaveCount(0);
+      expect(firstStatus, 'the first request reached the server and was saved').toBe(201);
+      expect(posts).toHaveLength(1);
+
+      await retry.click();
+      await expect(page.getByRole('heading', { name: /you are confirmed/i })).toBeVisible();
+      await expect(page.getByText(bookerEmail)).toBeVisible();
+      await assertNotDemo(page);
+
+      // One attempt, sent twice: the same key and the same body.
+      expect(posts).toHaveLength(2);
+      const [first, second] = [posts[0]!, posts[1]!];
+      expect(first.key).toMatch(/^[A-Za-z0-9_-]{16,255}$/);
+      expect(second.key).toBe(first.key);
+      expect(second.body).toBe(first.body);
+
+      const atThatTime = await db.query<{ booker_email: string }>(
+        'SELECT booker_email FROM bookings WHERE link_id = $1 AND start_time = $2',
+        [LINKS.uiBooking.id, atUtc(day, '09:00')],
+      );
+      expect(atThatTime).toEqual([{ booker_email: bookerEmail }]);
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await db.deleteBookingsByBooker(bookerPrefix);
+      await fake.clearCalendar(BOOKING_HOSTS.ui.email);
+    }
+  });
+
+  test('AC-20: a cross-origin preflight allows Idempotency-Key and the keyed booking succeeds', async ({ playwright, db }) => {
+    const slug = LINKS.uiBooking.slug;
+    const day = bookingDay(8);
+    const bookerPrefix = `e2e.booker.pac82cors.${Date.now()}`;
+    const origin = 'http://cross-origin.e2e.test';
+    const request = await playwright.request.newContext();
+    try {
+      const preflight = await request.fetch(`${BASE_URL}/api/book/${slug}`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: origin,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type, idempotency-key',
+        },
+      });
+      expect(preflight.status()).toBe(204);
+      const allowed = (preflight.headers()['access-control-allow-headers'] ?? '').toLowerCase().split(/\s*,\s*/);
+      expect(allowed).toContain('idempotency-key');
+
+      const key = `e2e-pac82-cors-${Date.now()}`;
+      const booked = await request.post(`${BASE_URL}/api/book/${slug}`, {
+        headers: { Origin: origin, 'Idempotency-Key': key },
+        data: { name: 'E2E PAC-82 CORS', email: `${bookerPrefix}@paceday.test`, start: atUtc(day, '10:00'), duration: 30 },
+      });
+      expect(booked.status(), await booked.text()).toBe(201);
+      expect(booked.headers()['access-control-allow-origin']).toBeTruthy();
+      const rows = await db.query('SELECT 1 FROM bookings WHERE link_id = $1 AND booker_email = $2', [
+        LINKS.uiBooking.id,
+        `${bookerPrefix}@paceday.test`,
+      ]);
+      expect(rows).toHaveLength(1);
+    } finally {
+      await request.dispose();
+      await db.deleteBookingsByBooker(bookerPrefix);
+      await fake.clearCalendar(BOOKING_HOSTS.ui.email);
+    }
+  });
+});

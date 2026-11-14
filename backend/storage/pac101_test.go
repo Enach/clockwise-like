@@ -235,12 +235,28 @@ func TestPAC101_DeleteWaitsForASaveInProgress(t *testing.T) {
 	}
 }
 
-// AC-16: two saves of different slots on one live link, both holding their
-// lock at once: neither waits.
+// AC-16, as amended by PAC-82 AC-5 and AC-8 (docs/specs/PAC-82.md): two
+// saves on one live link with NO use limit, of slots at least 15 minutes
+// apart (here one hour), both holding their locks at once: neither waits.
+// PAC-82 narrowed the original "any two different slots": slots less than 15
+// minutes apart, or any two saves of a use-limited link, may now wait for each
+// other for the length of a save (pinned by TestPAC82_UseLimitedSavesWaitAndRecount
+// and the second half below).
 func TestPAC101_SavesOnOneLinkDoNotWaitForEachOther(t *testing.T) {
 	db := openTestDB(t)
 	owner := mustUser(t, db, "pac101-parallel@example.com")
 	link := pac40Link(t, db, owner, "pac101-parallel")
+	// The two slots' bucket keys are disjoint, so "no wait" is the rule and
+	// not a hash accident.
+	k0 := BookingAdvisoryKeys([]uuid.UUID{owner}, link.ID, false, pac101Start(), pac101Start().Add(30*time.Minute))
+	k1 := BookingAdvisoryKeys([]uuid.UUID{owner}, link.ID, false, pac101Start().Add(time.Hour), pac101Start().Add(90*time.Minute))
+	for _, x := range k0 {
+		for _, y := range k1 {
+			if x.Class == BookingLockClassBucket && x == y {
+				t.Fatalf("bucket key %+v shared by slots an hour apart", x)
+			}
+		}
+	}
 	holds := []holdingQuerier{
 		{ran: make(chan struct{}), release: make(chan struct{})},
 		{ran: make(chan struct{}), release: make(chan struct{})},
@@ -273,6 +289,28 @@ func TestPAC101_SavesOnOneLinkDoNotWaitForEachOther(t *testing.T) {
 	wg.Wait()
 	if n := pac101Bookings(t, db, link.ID); n != 2 {
 		t.Fatalf("%d bookings, want 2", n)
+	}
+	pac101UseLimitedSavesWait(t, db, owner)
+}
+
+// pac101UseLimitedSavesWait is AC-16's amendment for use-limited links (PAC-82
+// AC-8): on a single-use link, the second save waits while the first holds its
+// keys, and proceeds (to the 410) when the first commits.
+func pac101UseLimitedSavesWait(t *testing.T, db *sql.DB, owner uuid.UUID) {
+	t.Helper()
+	seams := installPAC82Seams(t)
+	link := pac82LinkWith(t, db, owner, "single_use", nil)
+	gate := seams.atLocks("first-su@booker.test")
+	first := pac82Save(db, link.ID, pac101Start().Add(5*time.Hour), pac101Start().Add(330*time.Minute), "first-su@booker.test", "")
+	gate.wait(t, "first")
+	second := pac82Save(db, link.ID, pac101Start().Add(7*time.Hour), pac101Start().Add(450*time.Minute), "second-su@booker.test", "")
+	pac82AwaitAdvisoryWaiters(t, db, 1)
+	gate.open()
+	if r := pac82Await(t, first, "first"); r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r := pac82Await(t, second, "second"); !errors.Is(r.err, ErrLinkExhausted) {
+		t.Fatalf("second save on a single-use link: %v, want ErrLinkExhausted", r.err)
 	}
 }
 

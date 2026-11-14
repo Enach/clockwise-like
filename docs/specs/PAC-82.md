@@ -1,7 +1,7 @@
 # Spec — PAC-82: booking completion and idempotency (concurrent double booking, safe retry, single-use / max-uses race)
 
 - **Linear**: https://linear.app/paceday/issue/PAC-82
-- **Status**: accepted (self-challenged 2026-11-14, accept-with-changes; changes applied in place, see the Challenge log at the end)
+- **Status**: accepted (self-challenged 2026-11-14, accept-with-changes; changes applied in place, see the Challenge log at the end). Contract-stage amendments acknowledged and AC-27 amended by the orchestrator at stage 4, 2026-11-14 (see "Stage 4 — orchestrator decisions" at the end).
 - **Author**: spec-author
 - **Base**: origin/main `d520775` (after PAC-101 `b98b6a8`, PAC-40 part B `d520775`, PAC-72, PAC-81 Part A, PAC-90). Web: smart-calendar-flow origin/main `d935bcc`.
 - **Scope sources**: the issue body (items 1-3); the issue comment of 2026-11-14 folding in PAC-101 OQ-2 (the single-use / max-uses race, PAC-40 spec OQ-4 case 1) with the constraint that PAC-101 AC-16 holds unless this spec amends it explicitly; PAC-83 §3.5 (`docs/specs/PAC-83.md:436-440`), which hands this spec the revisit of the "may have been saved" wording.
@@ -342,14 +342,17 @@ request was sent until it is pressed; pressing it sends exactly one request
 with the same key and the same body as the first. Nothing re-sends without the
 press (reconnect, focus, timer: PAC-83 AC-25 holds). [unit]
 
-AC-27. Given the "Try again" request answers 201, then the confirmation is
-shown (whether the first or the retry saved the booking). Given it answers a
-slot 409 or a 410, the page says the time is no longer available and that the
-earlier attempt was not saved. Given it answers AC-11's 409 or a 404, the page
-says the booking may have been saved and to check email, and offers no further
-retry of that attempt. Given it is lost again or any 5xx (the budget 503
-included, because the first send is still unresolved), the "may have been
-saved" message and "Try again" stay. [unit]
+AC-27 (amended at stage 4 by the orchestrator's C-8 decision, 2026-11-14).
+Given the "Try again" request answers 201, then the confirmation is shown
+(whether the first or the retry saved the booking). Given it answers a slot
+409 or a 410, the page says exactly "This time can't be booked now. Your
+earlier attempt may still have been saved — check your email before booking
+another time." (it never claims the earlier attempt was not saved) and offers
+no further retry of that attempt. Given it answers AC-11's 409 or a 404, the
+page says the booking may have been saved and to check email, and offers no
+further retry of that attempt. Given it is lost again, any 5xx (the budget 503
+included, because the first send is still unresolved), a 429 or a 400, the
+"may have been saved" message and "Try again" stay. [unit]
 
 AC-28. Given the e2e stack, when the first booking's answer is dropped by
 request interception after the server saved it, and the booker presses "Try
@@ -638,3 +641,34 @@ above. Nothing blocking remains.
 - e2e keyless bookings (`e2e/tests/edge.spec.ts:86`, PAC-72/PAC-40 journeys) —
   unaffected (AC-18).
 - MCP — no booking caller.
+
+## Stage 4 — orchestrator decisions (2026-11-14)
+
+Recorded by the stage-4 implementer on the orchestrator's instruction. Not
+owner decisions: the owner raised no question on PAC-82.
+
+1. **Contract-stage changes to accepted criteria, acknowledged.** The contract
+   (`contracts/features/PAC-82.{md,yaml}` revision 1.1, contractHash
+   `85187c94…`) amended this spec, and the orchestrator accepts each change as
+   part of the criteria implemented at stage 4:
+   - **AC-5 narrowed** to fine saves (contract section 4.3, challenge C-5): a
+     save whose lock hosts times 15-minute UTC buckets exceeds 64
+     (`BookingKeyCap`) is coarse and waits for every save of its hosts.
+   - **AC-10 extended** (challenge C-4): the replay also wins when the link's
+     duration list no longer contains the booked duration.
+   - **The keyed 400 order** (contract section 1.1, challenge C-4): with a
+     key, the link-independent body 400s come before the replay decision, and
+     "invalid duration" comes after the replay and the 410. The order in
+     section 9.4 above is superseded by the contract's for keyed requests;
+     keyless requests are unchanged (AC-18).
+   - **AC-29..AC-32 added**: the re-lookup of a keyed request's key before any
+     409 or 410 (C-3), the pinned advisory-key derivation (C-5), the re-checks
+     as separate READ COMMITTED statements (C-2), and the contract text itself.
+2. **C-8 decided: what a refused "Try again" says.** A slot 409 or a 410 on
+   "Try again" must NOT claim the earlier attempt was not saved (the server
+   only proves no booking with that key existed when the refusal was decided).
+   The web shows: "This time can't be booked now. Your earlier attempt may
+   still have been saved — check your email before booking another time."
+   This text is the factory default. AC-27 is amended accordingly (above). A
+   429 or a 400 on "Try again" keeps "may have been saved" and "Try again"
+   (this supersedes the manifest's reading of a 400 as a slot refusal).

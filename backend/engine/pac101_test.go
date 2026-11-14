@@ -90,7 +90,7 @@ func pac101Fixture(t *testing.T, label string) *pac101World {
 }
 
 func (w *pac101World) book(ctx context.Context, start time.Time) (*storage.Booking, error) {
-	return (&BookingEngine{DB: w.db}).ConfirmBooking(ctx, w.link, "B", "b@pac101.test", start, start.Add(30*time.Minute), "")
+	return (&BookingEngine{DB: w.db}).ConfirmBooking(ctx, w.link, "B", "b@pac101.test", start, start.Add(30*time.Minute), "", "")
 }
 
 // assertNothing: no booking row, no completion unit (no host event, no email,

@@ -148,7 +148,7 @@ func offerableStarts(n int) []time.Time {
 	return out
 }
 
-func (f *countingBookingFlow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes string) (*storage.Booking, error) {
+func (f *countingBookingFlow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes, _ string) (*storage.Booking, error) {
 	f.confirmed.Add(1)
 	return &storage.Booking{ID: uuid.New(), LinkID: link.ID, BookerName: name, BookerEmail: email, StartTime: start, EndTime: end, Notes: notes}, nil
 }
