@@ -1664,8 +1664,8 @@ paths:
       description: |
         Same gate as createSsoProvider, in the same order (spec §4.2), with no
         body to check: membership (403 `org membership required` / `org not
-        found`), then the `{domain}` segment (percent-decoded, not trimmed)
-        must equal the caller's org domain exactly, case-insensitive for
+        found`), then the `{domain}` segment (as the router yields it, see
+        below; not trimmed) must equal the caller's org domain exactly, case-insensitive for
         ASCII letters only; any other difference, including non-ASCII case
         folding, is a different domain (createSsoProvider's DOMAIN MATCH,
         PAC-75; 403 `provider_domain_mismatch`, owner decision 2026-10-27; a
@@ -1673,7 +1673,13 @@ paths:
         `%20acme.com`, nor `%E2%84%AAcme.com` for org `kcme.com`, nor
         `acme%C5%BF.com` for org `acmes.com`; no grant is consumed). Before
         PAC-75 the segment was lower-cased with Unicode rules before the
-        comparison, so the Kelvin sign and `İ` passed; they no longer do. Then
+        comparison, so the Kelvin sign and `İ` passed; they no longer do.
+        The segment is percent-decoded only when the request path uses the
+        canonical escaping (upper-case hex, escapes only where needed:
+        `%E2%84%AAcme.com` is `Kcme.com` with the Kelvin sign); a path with
+        any other escape (`%41cme.com`, `%e2%84%aacme.com`) yields the
+        escaped text itself, which never matches an org domain (403), as
+        before PAC-75 (chi routes on the raw path then). Then
         authorization (a live step-up grant, consumed, or break-glass with a
         fresh session; otherwise 403 `sso_write_requires_admin_stepup` with
         `stepup_url`, `stepup_scopes` and `without_stepup`, or
@@ -1788,7 +1794,7 @@ paths:
            "last one wins" decides a kill switch; then `state` is `active` or
            `suspended` (`state must be 'active' or 'suspended'`, for a missing
            or `null` state too).
-        3. Domain: `{domain}` (percent-decoded, not trimmed) must equal the
+        3. Domain: `{domain}` (as deleteSsoProvider's segment, not trimmed) must equal the
            caller's org domain exactly, case-insensitive for ASCII letters
            only; any other difference, including non-ASCII case folding, is
            a different domain (createSsoProvider's DOMAIN MATCH, PAC-75), else 403
