@@ -9,9 +9,12 @@
 //	                              [-keep-calendar-credentials] [-remove slack,notion,zoom,ai-keys,external]
 //	paceday-operator advance-all  -operator <name> -reason <text>
 //	paceday-operator encryption status|convert|rotate-data-key|decrypt-all|reset-lost-key|downgrade-schema [flags]
+//	paceday-operator booker-erasure status [--check]
 //
-// (encryption: PAC-84, contracts/features/PAC-84.md section 8; it opens the
-// database itself, with its own application_name and exit codes.)
+// (encryption: PAC-84, contracts/features/PAC-84.md section 8; booker-erasure:
+// PAC-40, contracts/features/PAC-40.md section 5. Both open the database
+// themselves, without migrating, with their own application_name and exit
+// codes; booker-erasure is read-only and not audited.)
 // DATABASE_URL names the database. Migrations are applied first, as the server
 // does on start.
 package main
@@ -24,6 +27,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
@@ -32,6 +36,11 @@ import (
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "encryption" {
 		os.Exit(runEncryption(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+	// PAC-40 (K4-5): read-only, dispatched before the PAC-71 path below,
+	// whose storage.OpenAs applies migrations.
+	if len(os.Args) > 1 && os.Args[1] == "booker-erasure" {
+		os.Exit(runBookerErasure(os.Args[2:], os.Getenv, os.Stdout, os.Stderr, time.Now))
 	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -56,7 +65,7 @@ func main() {
 	}
 }
 
-const usage = "usage: paceday-operator free-address|reassign|advance-all|encryption [flags] (see -h on each; encryption: docs/runbook.md, \"Encryption key\")"
+const usage = "usage: paceday-operator free-address|reassign|advance-all|encryption|booker-erasure [flags] (see -h on each; encryption: docs/runbook.md, \"Encryption key\"; booker-erasure: \"Booker erasure (PAC-40)\")"
 
 // run executes one operator command against db and reports on out.
 func run(ctx context.Context, db *sql.DB, args []string, out io.Writer) error {

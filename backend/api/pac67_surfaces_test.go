@@ -468,8 +468,10 @@ func TestPAC67_AuditEnumMatchesTheWriters(t *testing.T) {
 	// PAC-71: request paths write through WriteAuditLogCtx(ctx, db, ...), the
 	// same writer under the in-request re-check; its generated wrapper
 	// (storage/guarded_writes.go) only forwards the caller's action.
-	call := regexp.MustCompile(`WriteAuditLog(Ctx)?\(`)
-	literal := regexp.MustCompile(`WriteAuditLog(?:Ctx\([^,]+,\s*|\()[^,]+,\s*[^,]+,\s*"([a-z_]+)"`)
+	// PAC-40 part B: the booker-erasure job writes through the transactional
+	// sibling WriteAuditLogTx(tx, ...), which returns its error (contract §5).
+	call := regexp.MustCompile(`WriteAuditLog(Ctx|Tx)?\(`)
+	literal := regexp.MustCompile(`WriteAuditLog(?:Ctx\([^,]+,\s*|Tx\(|\()[^,]+,\s*[^,]+,\s*"([a-z_]+)"`)
 	writers := map[string][]string{}
 	err := filepath.Walk("..", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -486,7 +488,7 @@ func TestPAC67_AuditEnumMatchesTheWriters(t *testing.T) {
 			return err
 		}
 		for i, line := range strings.Split(string(data), "\n") {
-			if !call.MatchString(line) || strings.Contains(line, "func WriteAuditLog(") {
+			if !call.MatchString(line) || strings.Contains(line, "func WriteAuditLog(") || strings.Contains(line, "func WriteAuditLogTx(") {
 				continue
 			}
 			m := literal.FindStringSubmatch(line)
@@ -514,7 +516,7 @@ func TestPAC67_AuditEnumMatchesTheWriters(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	if len(enum) != 10 {
-		t.Errorf("enum has %d values, want 10: %v", len(enum), enum)
+	if len(enum) != 11 {
+		t.Errorf("enum has %d values, want 11: %v", len(enum), enum)
 	}
 }

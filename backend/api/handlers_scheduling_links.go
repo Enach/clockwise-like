@@ -860,17 +860,19 @@ func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Reques
 // --- Owner archive of deleted links (PAC-40 §3.2, contract §2.1-§2.4) -------
 
 // bookerErasureEnabled is BookerErasurePolicy.enabled: a property of the
-// server build, never an operator setting (contract §2.4). It is false in
-// this build (PR split A, contract §6): the erasure job is not here, so no
-// archived link carries an erasure_due_at and no booking is ever erased.
-// Part B sets it true together with the job.
-const bookerErasureEnabled = false
+// server build, never an operator setting (contract §2.4). True from part B
+// on (PR split B, contract §6): this build runs the erasure job
+// (engine.BookerErasure, started in main.go), so the delete confirmation may
+// promise erasure and every archived link awaiting it carries its
+// erasure_due_at.
+const bookerErasureEnabled = true
 
 // bookerRetentionDays is BookerErasurePolicy.retention_days: erasure is due
 // 90 x 24 h after a deleted link's last booking end (owner, 2026-10-27). The
 // contract pins it (minimum = maximum = 90); a different value is a contract
-// change, not a setting.
-const bookerRetentionDays = 90
+// change, not a setting. It is storage.BookerRetention in days, the figure
+// the job itself uses.
+const bookerRetentionDays = int(storage.BookerRetention / (24 * time.Hour))
 
 func bookerErasurePolicy() gen.BookerErasurePolicy {
 	return gen.BookerErasurePolicy{Enabled: bookerErasureEnabled, RetentionDays: bookerRetentionDays}
@@ -898,7 +900,7 @@ func archivedLinkDTO(a *storage.ArchivedLink) gen.ArchivedSchedulingLink {
 	case a.AwaitingErasure > 0:
 		dto.ErasureState = gen.AwaitingErasure
 		if bookerErasureEnabled && dto.LastBookingEndAt != nil {
-			due := dto.LastBookingEndAt.Add(bookerRetentionDays * 24 * time.Hour)
+			due := dto.LastBookingEndAt.Add(storage.BookerRetention)
 			dto.ErasureDueAt = &due
 		}
 	default:
