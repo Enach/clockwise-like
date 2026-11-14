@@ -15,7 +15,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { SINK_ADDRESS, SINK_HOSTS, sink } from '../fake';
+import { SINK_ADDRESS, SINK_HOSTS, isSealedOpenAIProbe, sink } from '../fake';
 import { docker, E2E_NETWORK } from '../lib/docker';
 import { COMPOSE_FILE, COMPOSE_PROJECT } from '../global-setup';
 
@@ -37,10 +37,12 @@ test.describe('AC-23 — the recording sink after the whole run', () => {
   // AC-23: nothing in the run reached a real Google host. Before PAC-65 the
   // status endpoint called Google userinfo on every dashboard load and this
   // had to excuse those connections; it no longer does, so none are excused.
-  // The only connections allowed are the positive control's own probe.
+  // The only connections allowed are the positive control's own probe and
+  // (PAC-111) the BYO-key journeys' OpenAI handshakes, refused by the sink
+  // before any request byte is sent (fake.ts isSealedOpenAIProbe).
   test('AC-23: the sink records no connection at all', async () => {
     const all = await sink.connections();
-    const escaped = all.filter((c) => c.path !== PROBE_PATH);
+    const escaped = all.filter((c) => c.path !== PROBE_PATH && !isSealedOpenAIProbe(c));
     expect(escaped, `connections reached the sink:
 ${JSON.stringify(escaped, null, 2)}`).toEqual([]);
   });

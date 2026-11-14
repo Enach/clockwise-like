@@ -175,6 +175,7 @@ services:
       - "slack.com:10.143.43.20"
       - "api.notion.com:10.143.43.20"
       - "zoom.us:10.143.43.20"
+      - "api.openai.com:10.143.43.20"
     depends_on:
       postgres:
         condition: service_healthy
