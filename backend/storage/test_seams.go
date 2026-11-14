@@ -55,6 +55,8 @@ var (
 	afterBookerErasureUpdate  seam[func(linkID uuid.UUID) error]
 	afterLinkPatchUpdate      seam[func(linkID uuid.UUID) error]
 	afterStepupDenialUpsert   seam[func(userID uuid.UUID)]
+	afterBookingLocks         seam[func(b *Booking)]
+	afterBookingInsert        seam[func(b *Booking) error]
 )
 
 // InstallGuardedCallHook installs the mid-request seam (PAC-71 review of
@@ -115,4 +117,21 @@ func fireAfterStepupDenialUpsert(userID uuid.UUID) {
 	if fn, ok := afterStepupDenialUpsert.get(); ok {
 		fn(userID)
 	}
+}
+
+// InstallAfterBookingLocks installs the seam that runs inside the booking
+// save after every advisory key is held and before the re-checks (PAC-82
+// contract §6), so a test can hold one save under its keys and observe a
+// concurrent one.
+func InstallAfterBookingLocks(tb TB, fn func(b *Booking)) (uninstall func()) {
+	tb.Helper()
+	return afterBookingLocks.install(tb, fn)
+}
+
+// InstallAfterBookingInsert installs the seam that runs inside the booking
+// save after the insert and before COMMIT (PAC-82 contract §6). A non-nil
+// error rolls the save back and is returned.
+func InstallAfterBookingInsert(tb TB, fn func(b *Booking) error) (uninstall func()) {
+	tb.Helper()
+	return afterBookingInsert.install(tb, fn)
 }

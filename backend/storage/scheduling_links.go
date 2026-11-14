@@ -594,16 +594,6 @@ var (
 // errBookingKeyConflict is the insert's 23505 on (link, key).
 var errBookingKeyConflict = errors.New("idempotency key conflict")
 
-// AfterBookingLocks is a test seam (PAC-82 contract section 6): it runs inside
-// the save after every advisory key is held and before the re-checks. Nil in
-// production.
-var AfterBookingLocks func(b *Booking)
-
-// AfterBookingInsert is a test seam (PAC-82 contract section 6): it runs
-// after the insert and before COMMIT; a non-nil error rolls the save back and
-// is returned. Nil in production.
-var AfterBookingInsert func(b *Booking) error
-
 // BookingIdempotencyTTL is how long a stored key replays (PAC-82 D-7).
 const BookingIdempotencyTTL = 24 * time.Hour
 
@@ -696,7 +686,7 @@ func saveBookingInTx(ctx context.Context, tx *sql.Tx, b *Booking, wrap func(Quer
 		}
 	}
 	// 5. The seam.
-	if f := AfterBookingLocks; f != nil {
+	if f, ok := afterBookingLocks.get(); ok {
 		f(b)
 	}
 	// 6. The key, decided under the keys. Steps 6-8 are separate statements
@@ -779,7 +769,7 @@ func saveBookingInTx(ctx context.Context, tx *sql.Tx, b *Booking, wrap func(Quer
 		return nil, err
 	}
 	out.IdempotencyKey = b.IdempotencyKey
-	if f := AfterBookingInsert; f != nil {
+	if f, ok := afterBookingInsert.get(); ok {
 		if err := f(b); err != nil {
 			return nil, err
 		}

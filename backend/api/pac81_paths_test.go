@@ -214,11 +214,10 @@ func TestPAC81_BookingInsertFailsAfterBudgetIs500(t *testing.T) {
 	// failure is injected at the save's own seam instead: the insert is
 	// sent, the budget runs out while the save is held, then the save fails
 	// and rolls back. The assertion is unchanged.
-	storage.AfterBookingInsert = func(*storage.Booking) error {
+	storage.InstallAfterBookingInsert(t, func(*storage.Booking) error {
 		time.Sleep(700 * time.Millisecond) // past the 400 ms budget
 		return errors.New("pac81: injected insert failure")
-	}
-	defer func() { storage.AfterBookingInsert = nil }()
+	})
 	rec := serveAt(r, http.MethodPost, "/api/book/"+link.Slug, pac81BookingBody("pac81-fail", pac81Start(49)))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d %s, want 500", rec.Code, rec.Body.String())
