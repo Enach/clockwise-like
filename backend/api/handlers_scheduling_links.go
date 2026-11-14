@@ -133,8 +133,16 @@ func dayNames(days []int) []string {
 	return out
 }
 
-func dayNumbers(days []string) []int {
-	out := make([]int, 0, len(days))
+// unrecognisedDayMsg is the 422 for a `days` alias entry that names no day
+// (PAC-112 contract md §3.4, API-053): such an entry is refused, never
+// dropped, and a mixed list is refused too.
+const unrecognisedDayMsg = "days contains an unrecognised day name"
+
+// dayNumbers maps the `days` alias to day numbers. ok is false when any entry,
+// trimmed and ignoring case, is not a day name or digit (API-053: before
+// PAC-112 such an entry was silently dropped).
+func dayNumbers(days []string) (out []int, ok bool) {
+	out = make([]int, 0, len(days))
 	for _, raw := range days {
 		switch strings.ToLower(strings.TrimSpace(raw)) {
 		case "sun", "sunday", "0":
@@ -151,9 +159,11 @@ func dayNumbers(days []string) []int {
 			out = append(out, 5)
 		case "sat", "saturday", "6":
 			out = append(out, 6)
+		default:
+			return nil, false
 		}
 	}
-	return out
+	return out, true
 }
 
 func normalizeSlug(raw string) string {
@@ -186,7 +196,12 @@ func (in schedulingLinkInput) normalized() (storage.SchedulingLink, error) {
 	case in.DaysOfWeek != nil:
 		days = in.DaysOfWeek
 	case in.Days != nil:
-		days = dayNumbers(in.Days)
+		// PAC-112 contract md §3.4: the days check comes at alias
+		// resolution, before every other field 422 (title included).
+		var ok bool
+		if days, ok = dayNumbers(in.Days); !ok {
+			return storage.SchedulingLink{}, &httpError{Code: http.StatusUnprocessableEntity, Msg: unrecognisedDayMsg}
+		}
 	default:
 		days = []int{1, 2, 3, 4, 5}
 	}
@@ -361,9 +376,81 @@ func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.
 	return dto, nil
 }
 
-func (h *schedulingLinkHandlers) writeLink(w http.ResponseWriter, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID) {
+// PAC-112 (contract md §2): SchedulingLinkSaved, the create and PATCH answer.
+// It is SchedulingLink plus co_host_changes, present exactly when the request
+// carried co_host_emails (non-null, [] included).
+type schedulingLinkSavedDTO struct {
+	schedulingLinkDTO
+	CoHostChanges *coHostChangesDTO `json:"co_host_changes,omitempty"`
+}
+
+type coHostChangesDTO struct {
+	Addresses     []coHostOutcomeDTO `json:"addresses"`
+	Removed       []removedHostDTO   `json:"removed"`
+	InvitedCount  int                `json:"invited_count"`
+	RemovedCount  int                `json:"removed_count"`
+	NotAddedCount int                `json:"not_added_count"`
+}
+
+type coHostOutcomeDTO struct {
+	Email   string `json:"email"`
+	Outcome string `json:"outcome"`
+}
+
+type removedHostDTO struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Status string `json:"status"`
+}
+
+// The PAC-112 422 texts (contract md §4).
+const (
+	blankCoHostMsg       = "co_host_emails must not contain a blank address"
+	coHostListTooLongMsg = "a co-host list longer than 5 can only keep or remove co-hosts, and this one names someone who is not a current host of the link"
+)
+
+// blankCoHostEntry reports the 422 for a co-host entry with no character
+// outside ECMA-262 \s, the set of the items' `pattern: '\S'` (the PAC-67 test,
+// contract md §3.4): U+0085 is not blank, U+FEFF is.
+func blankCoHostEntry(entries []string) (string, bool) {
+	for _, e := range entries {
+		if storage.BlankECMA(e) {
+			return blankCoHostMsg, true
+		}
+	}
+	return "", false
+}
+
+func toCoHostChangesDTO(c *storage.CoHostChanges) *coHostChangesDTO {
+	if c == nil {
+		return nil
+	}
+	out := &coHostChangesDTO{
+		Addresses:     make([]coHostOutcomeDTO, 0, len(c.Addresses)),
+		Removed:       make([]removedHostDTO, 0, len(c.Removed)),
+		InvitedCount:  c.InvitedCount,
+		RemovedCount:  c.RemovedCount,
+		NotAddedCount: c.NotAddedCount,
+	}
+	for _, a := range c.Addresses {
+		out.Addresses = append(out.Addresses, coHostOutcomeDTO{Email: a.Email, Outcome: a.Outcome})
+	}
+	for _, r := range c.Removed {
+		out.Removed = append(out.Removed, removedHostDTO{UserID: r.UserID.String(), Email: r.Email, Status: r.Status})
+	}
+	return out
+}
+
+// writeSavedLink answers a create (201) or PATCH (200) with SchedulingLinkSaved.
+// The roster is built non-strictly, as before PAC-112; co_host_changes was
+// computed inside the write and is never degraded.
+func (h *schedulingLinkHandlers) writeSavedLink(w http.ResponseWriter, code int, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, changes *storage.CoHostChanges) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(toSchedulingLinkDTO(h.db, link, loc, viewer, true))
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(schedulingLinkSavedDTO{
+		schedulingLinkDTO: toSchedulingLinkDTO(h.db, link, loc, viewer, true),
+		CoHostChanges:     toCoHostChangesDTO(changes),
+	})
 }
 
 // zoneOf reads the link owner's zone for SchedulingLink.time_zone (PAC-72
@@ -385,6 +472,10 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		e := err.(*httpError)
 		writeError(w, e.Msg, e.Code)
+		return
+	}
+	if msg, bad := blankCoHostEntry(input.CoHostEmails); bad {
+		writeError(w, msg, http.StatusUnprocessableEntity)
 		return
 	}
 	owner, err := storage.GetUserByID(h.db, userID)
@@ -417,26 +508,21 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	link.OwnerUserID = userID
-	created, err := storage.CreateSchedulingLinkCtx(r.Context(), h.db, &link)
+	// PAC-112 contract md §3.1: the link, the owner's accepted row (a plain
+	// insert, never the upsert that demoted the owner, API-048) and every
+	// invitation in one transaction, with or without a session guard. Any
+	// failure is the 500 with no link and no host row; a list over the limit
+	// that adds someone is the 422, decided inside it.
+	created, changes, err := storage.CreateSchedulingLinkWithCoHostsCtx(r.Context(), h.db, &link, input.CoHostEmails)
+	if errors.Is(err, storage.ErrCoHostListTooLong) {
+		writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "create failed", err, http.StatusInternalServerError)
 		return
 	}
-	if _, err = storage.AddLinkHostCtx(r.Context(), h.db, created.ID, userID, "accepted"); err != nil {
-		writeServerError(w, r, "owner host failed", err, http.StatusInternalServerError)
-		return
-	}
-	for _, email := range input.CoHostEmails {
-		// PAC-71 granting site: only the one domain-confirmed holder.
-		inviteeID, ok, e := storage.ConfirmedHolder(h.db, email)
-		if e != nil || !ok {
-			continue
-		}
-		_, _ = storage.AddLinkHostCtx(r.Context(), h.db, created.ID, inviteeID, "pending")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	h.writeLink(w, created, loc, userID)
+	h.writeSavedLink(w, http.StatusCreated, created, loc, userID, changes)
 }
 
 // GET /api/scheduling-links
@@ -570,7 +656,14 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	case patch.DaysOfWeek != nil:
 		updated.DaysOfWeek = patch.DaysOfWeek
 	case patch.Days != nil:
-		updated.DaysOfWeek = dayNumbers(patch.Days)
+		// PAC-112 contract md §3.4: refused before every other field 422
+		// (slug cannot be empty included), never dropped (API-053).
+		days, ok := dayNumbers(patch.Days)
+		if !ok {
+			writeError(w, unrecognisedDayMsg, http.StatusUnprocessableEntity)
+			return
+		}
+		updated.DaysOfWeek = days
 	}
 	if patch.WindowStart != nil {
 		updated.WindowStart = *patch.WindowStart
@@ -614,6 +707,10 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, validationErr.Msg, validationErr.Code)
 		return
 	}
+	if msg, bad := blankCoHostEntry(patch.CoHostEmails); bad {
+		writeError(w, msg, http.StatusUnprocessableEntity)
+		return
+	}
 	// Read before the update, so a failed read changes nothing (PAC-72
 	// revision 2.1).
 	loc, err := h.zoneOf(existing.OwnerUserID)
@@ -636,7 +733,15 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	// co-host lookup or write is a 500 with nothing changed; a delete
 	// committed before the UPDATE is the 404 with nothing changed (PAC-40
 	// K4-1, AC-6b); a delete started after it waits for this PATCH.
-	result, err := storage.UpdateSchedulingLinkAndCoHostsCtx(r.Context(), h.db, id, &updated, userID, patch.CoHostEmails)
+	//
+	// PAC-112 (contract md §3.2, §3.3): the same transaction reads the host
+	// set after the UPDATE, decides the over-5 rule there (422, nothing
+	// changed) and reports what it did in co_host_changes.
+	result, changes, err := storage.UpdateSchedulingLinkReportingCoHostsCtx(r.Context(), h.db, id, &updated, userID, patch.CoHostEmails)
+	if errors.Is(err, storage.ErrCoHostListTooLong) {
+		writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
@@ -645,7 +750,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.writeLink(w, result, loc, userID)
+	h.writeSavedLink(w, http.StatusOK, result, loc, userID, changes)
 }
 
 // DELETE /api/scheduling-links/{id}

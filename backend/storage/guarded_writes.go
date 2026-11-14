@@ -382,15 +382,46 @@ func UpdateSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID, l *Sche
 // transaction. A nil result with a nil error means the link was deleted before the UPDATE: nothing
 // changed. Any error rolls back the fields and the co-hosts together.
 func UpdateSchedulingLinkAndCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, err error) {
+	r0, _, err = UpdateSchedulingLinkReportingCoHostsCtx(ctx, db, id, l, ownerID, coHostEmails)
+	return r0, err
+}
+
+// UpdateSchedulingLinkReportingCoHostsCtx is UpdateSchedulingLinkAndCoHostsCtx that also returns
+// what the save did to the co-hosts (PAC-112 contract md §2, §3.2): changes is nil exactly when
+// coHostEmails is nil. ErrCoHostListTooLong is a list over the limit that names someone who is
+// not a current host, decided after the UPDATE: nothing changed.
+func UpdateSchedulingLinkReportingCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
 	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, e = updateSchedulingLinkAndCoHosts(q, id, l, ownerID, coHostEmails)
+		r0, changes, e = updateSchedulingLinkAndCoHosts(q, id, l, ownerID, coHostEmails)
 		return e
 	})
 	if errors.Is(err, ErrLinkGone) {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return r0, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return r0, changes, nil
+}
+
+// CreateSchedulingLinkWithCoHostsCtx is a link create as one transaction (PAC-112 contract md
+// §3.1), opened with or without a session guard through withLinkWriteTx: under a guard the
+// PAC-71 re-check is its first statement, then every lock wait is bounded (PAC-101's
+// LinkLockTimeout; each invitation takes FOR KEY SHARE on the invitee's users row). It writes
+// the link, the owner's accepted host row (plain insert) and, when coHostEmails is not nil,
+// the co-host list; changes is nil exactly when coHostEmails is nil. Any error, including
+// ErrCoHostListTooLong, leaves no link and no host row.
+func CreateSchedulingLinkWithCoHostsCtx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
+		var e error
+		r0, changes, e = createSchedulingLinkWithCoHosts(q, l, coHostEmails)
+		return e
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return r0, changes, nil
 }
 
 // UpdateZoomCredentialCtx is UpdateZoomCredential under the in-request re-check (PAC-71, contract §5).

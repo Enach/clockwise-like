@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -839,47 +841,36 @@ func removeLinkHostLocked(q Querier, linkID, userID uuid.UUID) (bool, error) {
 // D-5): the guarded link UPDATE is the transaction's first lock on the link
 // (exclusive; never FOR SHARE first and an upgrade after, which would let two
 // PATCHes deadlock), then, when coHostEmails is not nil, the co-host list is
-// set by difference (PAC-61) on the same transaction. A link deleted before
-// the UPDATE is ErrLinkGone; any error makes the caller roll everything back.
-func updateSchedulingLinkAndCoHosts(q Querier, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (*SchedulingLink, error) {
+// set by difference (PAC-61) on the same transaction and reported (PAC-112
+// contract md §3.2: H is read after the UPDATE, so the over-5 rule is decided
+// under the lock and a deleted link is ErrLinkGone first). A link deleted
+// before the UPDATE is ErrLinkGone; any error makes the caller roll
+// everything back. changes is nil exactly when coHostEmails is nil.
+func updateSchedulingLinkAndCoHosts(q Querier, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (*SchedulingLink, *CoHostChanges, error) {
 	result, err := UpdateSchedulingLink(q, id, l)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if result == nil {
-		return nil, ErrLinkGone
+		return nil, nil, ErrLinkGone
 	}
 	if f, ok := afterLinkPatchUpdate.get(); ok {
 		if err := f(id); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if coHostEmails == nil {
-		return result, nil
+		return result, nil, nil
 	}
 	// PAC-71: the keep set is a KEEPING site (every account carrying a listed
 	// address, any standing, ignoring letter case, AC-43); new entries are a
-	// GRANTING site (only the one domain-confirmed holder).
-	keep, err := CarrierIDs(q, coHostEmails)
+	// GRANTING site (only the one domain-confirmed holder). The owner's row is
+	// never written (PAC-112 contract md §2.2 rule 1).
+	changes, err := setCoHostList(q, id, ownerID, coHostEmails)
 	if err != nil {
-		return nil, fmt.Errorf("co-host lookup: %w", err)
+		return nil, nil, err
 	}
-	if err := RemoveLinkHostsExcept(q, id, ownerID, keep); err != nil {
-		return nil, fmt.Errorf("co-host removal: %w", err)
-	}
-	for _, email := range coHostEmails {
-		uid, ok, err := ConfirmedHolder(q, email)
-		if err != nil {
-			return nil, fmt.Errorf("co-host lookup: %w", err)
-		}
-		if !ok || uid == ownerID {
-			continue
-		}
-		if _, _, err := InviteLinkHost(q, id, uid); err != nil {
-			return nil, fmt.Errorf("co-host invite: %w", err)
-		}
-	}
-	return result, nil
+	return result, changes, nil
 }
 
 func HasOverlappingBooking(db DBTX, linkID uuid.UUID, start, end time.Time) (bool, error) {
@@ -1106,4 +1097,342 @@ func scanArchivedLink(row rowScanner) (*ArchivedLink, error) {
 		a.ErasedAt = &t
 	}
 	return &a, nil
+}
+
+// --- PAC-112: the co-host list on create and PATCH --------------------------
+
+// ECMASpace reports whether r is in ECMA-262's \s set (WhiteSpace and
+// LineTerminator), the set the contract's `pattern: '\S'` uses. Neither Go's
+// unicode.IsSpace (it adds U+0085 and lacks U+FEFF) nor regexp's ASCII-only \s
+// is that set. Moved here from api/handlers_credentials.go (PAC-67, API-052)
+// unchanged, so the co-host list (PAC-112 contract md §3.4) applies the same
+// test.
+func ECMASpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', '\u00a0', '\u1680', '\u2028', '\u2029', '\u202f', '\u205f', '\u3000', '\ufeff':
+		return true
+	}
+	return unicode.Is(unicode.Zs, r)
+}
+
+// BlankECMA reports whether s has no character outside ECMA-262 \s: the
+// schema's `pattern: '\S'` fails on exactly these strings.
+func BlankECMA(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return !ECMASpace(r) }) < 0
+}
+
+// TrimECMASpace removes leading and trailing ECMA-262 \s characters.
+func TrimECMASpace(s string) string {
+	return strings.TrimFunc(s, ECMASpace)
+}
+
+// Co-host outcomes (PAC-112 contract md §2.2), as on the wire.
+const (
+	CoHostOwnAddress  = "own_address"
+	CoHostAlreadyHost = "already_host"
+	CoHostInvited     = "invited"
+	CoHostNotAdded    = "not_added"
+)
+
+// CoHostListLimit is the length above which a co-host list may only keep or
+// remove hosts (PAC-112 spec D-8, contract md §3.3).
+const CoHostListLimit = 5
+
+// ErrCoHostListTooLong is a list longer than CoHostListLimit with an entry
+// that reaches no current host of the link, decided inside the write's
+// transaction; the caller answers 422 and nothing is written.
+var ErrCoHostListTooLong = errors.New("co-host list longer than 5 names someone who is not a current host")
+
+// CoHostOutcome is the outcome of one request entry; Email is the entry
+// trimmed of ECMA-262 \s, letter case kept.
+type CoHostOutcome struct {
+	Email   string
+	Outcome string
+}
+
+// RemovedCoHost is a non-owner host a save removed, with the status it had.
+type RemovedCoHost struct {
+	UserID uuid.UUID
+	Email  string
+	Status string
+}
+
+// CoHostChanges is what one save did to a link's co-hosts (contract md §2.1).
+type CoHostChanges struct {
+	Addresses     []CoHostOutcome
+	Removed       []RemovedCoHost
+	InvitedCount  int
+	RemovedCount  int
+	NotAddedCount int
+}
+
+// linkHostEntry is one row of a link's host set as read inside a write.
+type linkHostEntry struct {
+	status string
+	email  string
+}
+
+// readLinkHostSet reads every host row of linkID with its account's stored
+// address, on the write's transaction (contract md §2.2's H).
+func readLinkHostSet(q Querier, linkID uuid.UUID) (map[uuid.UUID]linkHostEntry, error) {
+	rows, err := q.QueryContext(context.Background(), `
+		SELECT h.user_id, h.status, u.email
+		FROM scheduling_link_hosts h JOIN users u ON u.id = h.user_id
+		WHERE h.link_id = $1`, linkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[uuid.UUID]linkHostEntry{}
+	for rows.Next() {
+		var id uuid.UUID
+		var e linkHostEntry
+		if err := rows.Scan(&id, &e.status, &e.email); err != nil {
+			return nil, err
+		}
+		out[id] = e
+	}
+	return out, rows.Err()
+}
+
+// lowerAll returns PostgreSQL's lower() of each value, in order: the same
+// lowercasing the carriers lookup applies, so two entries share one lookup
+// only when the database would resolve them identically (contract md §3.3
+// rule 1; a Go-side ToLower is not that comparison for non-ASCII text).
+func lowerAll(q Querier, values []string) ([]string, error) {
+	if len(values) == 0 {
+		return []string{}, nil
+	}
+	rows, err := q.QueryContext(context.Background(), `
+		SELECT lower(v) FROM unnest($1::text[]) WITH ORDINALITY AS t(v, n) ORDER BY n`, pq.Array(values))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, len(values))
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) != len(values) {
+		return nil, fmt.Errorf("lowerAll: %d values, %d results", len(values), len(out))
+	}
+	return out, nil
+}
+
+// coHostLookupResult is one distinct address's lookup and outcome.
+type coHostLookupResult struct {
+	carriers []Carrier
+	outcome  string
+	holder   uuid.UUID // the invitee when outcome is invited
+}
+
+// setCoHostList writes entries as linkID's complete co-host list on q (the
+// create's or the PATCH's transaction, after the link's lock) and reports
+// what it did (PAC-112 contract md §2, §3.2, §3.3). It reads the host set H
+// first; each distinct address (identical after the ECMA trim and lower())
+// is looked up once, in request order, and a list longer than
+// CoHostListLimit is refused with ErrCoHostListTooLong at the first address
+// that reaches no current host, before any further lookup and before any
+// write. Then every non-owner host not carried by an entry (the PAC-71 keep
+// rule) is removed and every new domain-confirmed holder is invited
+// (pending; an existing host keeps its status, PAC-61). The owner's row is
+// never written. Any error leaves the caller to roll back.
+func setCoHostList(q Querier, linkID, ownerID uuid.UUID, entries []string) (*CoHostChanges, error) {
+	hosts, err := readLinkHostSet(q, linkID)
+	if err != nil {
+		return nil, fmt.Errorf("co-host host set: %w", err)
+	}
+	trimmed := make([]string, len(entries))
+	for i, e := range entries {
+		trimmed[i] = TrimECMASpace(e)
+	}
+	keys, err := lowerAll(q, trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("co-host lookup: %w", err)
+	}
+	limited := len(entries) > CoHostListLimit
+	results := make(map[string]*coHostLookupResult, len(keys))
+	order := make([]string, 0, len(keys))
+	for i, key := range keys {
+		if _, seen := results[key]; seen {
+			continue
+		}
+		r, err := lookupCoHost(q, trimmed[i], ownerID, hosts)
+		if err != nil {
+			return nil, err
+		}
+		if limited && !r.reaches {
+			return nil, ErrCoHostListTooLong
+		}
+		results[key] = &r.coHostLookupResult
+		order = append(order, key)
+	}
+
+	changes := &CoHostChanges{Addresses: make([]CoHostOutcome, 0, len(entries)), Removed: make([]RemovedCoHost, 0)}
+	// Keep set: every account carrying a listed address (PAC-71 AC-43).
+	keep := make([]string, 0, len(order))
+	for _, key := range order {
+		for _, c := range results[key].carriers {
+			keep = append(keep, c.ID.String())
+		}
+	}
+	if changes.Removed, err = removeCoHostsExcept(q, linkID, ownerID, keep, hosts); err != nil {
+		return nil, err
+	}
+
+	invited := map[uuid.UUID]bool{}
+	for _, key := range order {
+		r := results[key]
+		if r.outcome != CoHostInvited || invited[r.holder] {
+			continue
+		}
+		if err := coHostInvite(q, linkID, r.holder); err != nil {
+			return nil, err
+		}
+		invited[r.holder] = true
+	}
+
+	notAdded := map[string]bool{}
+	for i, key := range keys {
+		r := results[key]
+		changes.Addresses = append(changes.Addresses, CoHostOutcome{Email: trimmed[i], Outcome: r.outcome})
+		if r.outcome == CoHostNotAdded {
+			notAdded[key] = true
+		}
+	}
+	changes.InvitedCount = len(invited)
+	changes.RemovedCount = len(changes.Removed)
+	changes.NotAddedCount = len(notAdded)
+	return changes, nil
+}
+
+// coHostLookupReach is a lookupCoHost result: the outcome, and whether some
+// carrier of the address is a current host (the owner included).
+type coHostLookupReach struct {
+	coHostLookupResult
+	reaches bool
+}
+
+// lookupCoHost is one lookup of the co-host list (one read of an address's
+// carriers, contract md §3.3) and the outcome it gives, in the binding order
+// of contract md §2.2. hosts is H, read under the link's lock.
+func lookupCoHost(q Querier, address string, ownerID uuid.UUID, hosts map[uuid.UUID]linkHostEntry) (coHostLookupReach, error) {
+	out := coHostLookupReach{coHostLookupResult: coHostLookupResult{outcome: CoHostNotAdded}}
+	if address == "" {
+		return out, nil
+	}
+	if err := fireSeamErr(&coHostLookup, address); err != nil {
+		return out, fmt.Errorf("co-host lookup: %w", err)
+	}
+	carriers, err := carriersOfTrimmed(q, address)
+	if err != nil {
+		return out, fmt.Errorf("co-host lookup: %w", err)
+	}
+	out.carriers = carriers
+	nonOwnerHost := false
+	for _, c := range carriers {
+		_, isHost := hosts[c.ID]
+		if isHost || c.ID == ownerID {
+			out.reaches = true
+			if c.ID != ownerID {
+				nonOwnerHost = true
+			}
+		}
+	}
+	confirmed := len(carriers) == 1 && carriers[0].Standing == AddressDomainConfirmed
+	switch {
+	case confirmed && carriers[0].ID == ownerID:
+		out.outcome = CoHostOwnAddress
+	case nonOwnerHost:
+		out.outcome = CoHostAlreadyHost
+	case confirmed:
+		out.outcome, out.holder = CoHostInvited, carriers[0].ID
+	}
+	return out, nil
+}
+
+// removeCoHostsExcept deletes every non-owner host of linkID whose account is
+// not in keep and returns them with the status they had and the address read
+// in H. A removed host without an address in H fails the save: the answer's
+// removed list is never degraded (contract md §2.1).
+func removeCoHostsExcept(q Querier, linkID, ownerID uuid.UUID, keep []string, hosts map[uuid.UUID]linkHostEntry) ([]RemovedCoHost, error) {
+	rows, err := q.QueryContext(context.Background(), `
+		DELETE FROM scheduling_link_hosts
+		WHERE link_id = $1 AND user_id <> $2 AND NOT (user_id::text = ANY($3::text[]))
+		RETURNING user_id, status`, linkID, ownerID, pq.Array(keep))
+	if err != nil {
+		return nil, fmt.Errorf("co-host removal: %w", err)
+	}
+	defer rows.Close()
+	removed := make([]RemovedCoHost, 0)
+	for rows.Next() {
+		var rh RemovedCoHost
+		if err := rows.Scan(&rh.UserID, &rh.Status); err != nil {
+			return nil, fmt.Errorf("co-host removal: %w", err)
+		}
+		h, ok := hosts[rh.UserID]
+		if !ok {
+			return nil, fmt.Errorf("co-host removal: no address read for %s", rh.UserID)
+		}
+		rh.Email = h.email
+		removed = append(removed, rh)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("co-host removal: %w", err)
+	}
+	return removed, nil
+}
+
+// coHostInvite writes one new pending co-host row. The invitee was not in the
+// host set read under the link's lock, so the row must be new; a conflict
+// means that read was wrong and fails the save rather than misreport it.
+func coHostInvite(q Querier, linkID, userID uuid.UUID) error {
+	if fn, ok := coHostWrite.get(); ok {
+		if err := fn(linkID, userID); err != nil {
+			return fmt.Errorf("co-host invite: %w", err)
+		}
+	}
+	_, created, err := InviteLinkHost(q, linkID, userID)
+	if err != nil {
+		return fmt.Errorf("co-host invite: %w", err)
+	}
+	if !created {
+		return fmt.Errorf("co-host invite: %s became a host during the save", userID)
+	}
+	return nil
+}
+
+// createSchedulingLinkWithCoHosts is a create as one unit (PAC-112 contract
+// md §3.1): the link, the owner's accepted host row by a plain insert (never
+// the upsert that could demote the owner, API-048), and, when coHostEmails is
+// not nil, the co-host list with its outcomes. Any error makes the caller
+// roll everything back.
+func createSchedulingLinkWithCoHosts(q Querier, l *SchedulingLink, coHostEmails []string) (*SchedulingLink, *CoHostChanges, error) {
+	created, err := CreateSchedulingLink(q, l)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := fireSeamErr(&createOwnerHost, created.ID); err != nil {
+		return nil, nil, fmt.Errorf("owner host: %w", err)
+	}
+	if _, err := q.ExecContext(context.Background(), `
+		INSERT INTO scheduling_link_hosts (link_id, user_id, status) VALUES ($1, $2, 'accepted')`,
+		created.ID, created.OwnerUserID); err != nil {
+		return nil, nil, fmt.Errorf("owner host: %w", err)
+	}
+	if coHostEmails == nil {
+		return created, nil, nil
+	}
+	changes, err := setCoHostList(q, created.ID, created.OwnerUserID, coHostEmails)
+	if err != nil {
+		return nil, nil, err
+	}
+	return created, changes, nil
 }
