@@ -551,7 +551,10 @@ func TestPAC101_ConcurrentWritesOnOneLinkNeverDeadlock(t *testing.T) {
 	b := e.user("pac101-ac15-b@example.com")
 	c := e.user("pac101-ac15-c@example.com")
 	d := e.user("pac101-ac15-d@example.com")
-	link := createSchedulingLinkRecord(t, owner, "pac101-ac15", "PAC-101 AC-15")
+	// Unique per run: the api package shares one database, and -count=N
+	// reruns this test against it.
+	sfx := uuid.NewString()[:8]
+	link := createSchedulingLinkRecord(t, owner, "pac101-ac15-"+sfx, "PAC-101 AC-15")
 	if _, err := storage.AddLinkHost(e.db, link.ID, b, "accepted"); err != nil {
 		t.Fatal(err)
 	}
@@ -568,12 +571,30 @@ func TestPAC101_ConcurrentWritesOnOneLinkNeverDeadlock(t *testing.T) {
 	var failures []string
 	slot := 0
 	const rounds = 4
+	createdIn := make([]int, rounds)
 	for round := 0; round < rounds; round++ {
+		// Every round starts live. A title-only PATCH writes back the active
+		// flag it read, so without this a round can begin paused (the previous
+		// round's pause committing last), and every booking then reads no live
+		// link: the flake where no booking succeeded.
+		if round > 0 {
+			e.mustStatus(e.do(http.MethodPatch, p, owner, `{"active":true}`), http.StatusOK, "round start resume")
+		}
+		// The pause, resume and delete of a round wait until one of its
+		// bookings has committed (or all of them have answered), so each round
+		// stores at least one booking while the other writes still race it.
+		firstSaved := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(firstSaved) }) }
+		var roundBookings sync.WaitGroup
 		var wg sync.WaitGroup
-		run := func(what string, f func() *httptest.ResponseRecorder) {
+		run := func(what string, gated bool, f func() *httptest.ResponseRecorder) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				if gated {
+					<-firstSaved
+				}
 				w := f()
 				if w.Code >= 500 {
 					mu.Lock()
@@ -583,33 +604,42 @@ func TestPAC101_ConcurrentWritesOnOneLinkNeverDeadlock(t *testing.T) {
 			}()
 		}
 		for i := 0; i < 4; i++ {
-			i, email := slot, fmt.Sprintf("r%d-%d@booker.test", round, slot)
+			i, email, r := slot, fmt.Sprintf("r%d-%d-%s@booker.test", round, slot, sfx), round
 			slot++
-			run("booking", func() *httptest.ResponseRecorder {
+			roundBookings.Add(1)
+			run("booking", false, func() *httptest.ResponseRecorder {
+				defer roundBookings.Done()
 				w := e.book(link.Slug, i, email)
 				mu.Lock()
 				bookings = append(bookings, booked{email, w.Code})
+				if w.Code == http.StatusCreated {
+					createdIn[r]++
+				}
 				mu.Unlock()
+				if w.Code == http.StatusCreated {
+					release()
+				}
 				return w
 			})
 		}
+		go func() { roundBookings.Wait(); release() }()
 		emails := `["pac101-ac15-b@example.com","pac101-ac15-c@example.com"]`
 		if round%2 == 1 {
 			emails = `["pac101-ac15-b@example.com","pac101-ac15-c@example.com","pac101-ac15-d@example.com"]`
 		}
-		run("invite", func() *httptest.ResponseRecorder {
+		run("invite", false, func() *httptest.ResponseRecorder {
 			return e.do(http.MethodPost, p+"/hosts", owner, `{"email":"pac101-ac15-d@example.com"}`)
 		})
-		run("patch", func() *httptest.ResponseRecorder {
+		run("patch", false, func() *httptest.ResponseRecorder {
 			return e.do(http.MethodPatch, p, owner, fmt.Sprintf(`{"title":"round %d","co_host_emails":%s}`, round, emails))
 		})
-		run("accept", func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/accept", c, "") })
-		run("decline", func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/decline", d, "") })
-		run("leave", func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/leave", d, "") })
-		run("pause", func() *httptest.ResponseRecorder { return e.do(http.MethodPatch, p, owner, `{"active":false}`) })
-		run("resume", func() *httptest.ResponseRecorder { return e.do(http.MethodPatch, p, owner, `{"active":true}`) })
+		run("accept", false, func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/accept", c, "") })
+		run("decline", false, func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/decline", d, "") })
+		run("leave", false, func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/leave", d, "") })
+		run("pause", true, func() *httptest.ResponseRecorder { return e.do(http.MethodPatch, p, owner, `{"active":false}`) })
+		run("resume", true, func() *httptest.ResponseRecorder { return e.do(http.MethodPatch, p, owner, `{"active":true}`) })
 		if round == rounds-1 {
-			run("delete", func() *httptest.ResponseRecorder { return e.do(http.MethodDelete, p, owner, "") })
+			run("delete", true, func() *httptest.ResponseRecorder { return e.do(http.MethodDelete, p, owner, "") })
 		}
 		wg.Wait()
 	}
@@ -643,8 +673,13 @@ func TestPAC101_ConcurrentWritesOnOneLinkNeverDeadlock(t *testing.T) {
 			t.Errorf("booking %s answered %d", bk.email, bk.code)
 		}
 	}
-	if created == 0 {
-		t.Error("no booking succeeded: the rounds did not exercise saves")
+	for r, n := range createdIn {
+		if n == 0 {
+			t.Errorf("round %d: no booking succeeded although the round started live and its pause and delete waited", r)
+		}
+	}
+	if created < rounds {
+		t.Errorf("%d bookings succeeded, want at least one per round (%d)", created, rounds)
 	}
 }
 
