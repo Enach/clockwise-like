@@ -469,6 +469,30 @@ func UpsertTeamAnalyticsCtx(ctx context.Context, db DBTX, r *TeamAnalyticsRow) (
 	return err
 }
 
+// GetOrCreateUserProfileCtx is GetOrCreateUserProfile under the in-request
+// re-check (PAC-80 item 2): a request whose session is stale gets
+// ErrStaleSession and no default row is created. Without a session guard
+// (the scheduled detection job) it is GetOrCreateUserProfile.
+func GetOrCreateUserProfileCtx(ctx context.Context, db DBTX, userID uuid.UUID) (r0 *UserProfile, err error) {
+	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+		var e error
+		r0, e = GetOrCreateUserProfile(q, userID)
+		return e
+	})
+	return r0, err
+}
+
+// GetUserProfileCtx is GetUserProfile under the in-request re-check (PAC-80
+// item 2): sql.ErrNoRows when userID has no profile row.
+func GetUserProfileCtx(ctx context.Context, db DBTX, userID uuid.UUID) (r0 *UserProfile, err error) {
+	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+		var e error
+		r0, e = GetUserProfile(q, userID)
+		return e
+	})
+	return r0, err
+}
+
 // UpsertUserProfileCtx is UpsertUserProfile under the in-request re-check (PAC-71, contract §5).
 func UpsertUserProfileCtx(ctx context.Context, db DBTX, p *UserProfile) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {

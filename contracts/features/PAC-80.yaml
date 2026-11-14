@@ -1,0 +1,87 @@
+{
+  "featureId": "PAC-80",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-80",
+  "status": "no contract change (spec docs/specs/PAC-80.md accepted 2026-11-14, section 'Inherited scope' and D-9); stage 4 on impl/pac-80-api",
+  "contractRevision": "unchanged: PAC-80 changes no HTTP operation. PAC-80 manifest revision 1.",
+  "contractHash": "3fa2668c6ef88504c4d4357e250f94443133333c2f425b0fe7701151fe301d7d",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml on origin/main d520775 (LF blob) and on this branch (byte-identical: git diff origin/main -- contracts/ is empty). Reproduce with: `git show origin/main:contracts/openapi/openapi.yaml | sha256sum` (a CRLF Windows checkout hashes differently) and `python3 scripts/openapi_assemble.py --check`. If main's bundle moves before PAC-80 merges, record main's new hash here and change nothing else: PAC-80 must not alter the bundle.",
+  "contractDoc": "none (no interface change; the internal test seams are described in backend/storage/test_seams.go)",
+  "specDoc": "docs/specs/PAC-80.md (accepted, self-challenged 2026-11-14; branch factory/pac-80-spec d3ac083)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "Five PAC-71 follow-ups: (1) storage test seams race-free and not exported assignable globals; (2) the manager-profile default row created only under the session re-check on request paths; (3) a renewal for a stale or unreadable session makes no provider call; (4) the loss decision/record and the renewal save finish after a requester hang-up (WithoutCancel, 5 s bound, re-check kept); (5) the Microsoft key-fetch single flight always ends, a panic becoming an error. No HTTP, schema, migration or configuration change.",
+  "interfaceKind": "No HTTP change. GET and POST /api/manager/profile keep their requests, responses and status sets (a stale session was already a 401 from the session middleware).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/storage/test_seams.go (new), session.go, booker_erasure.go, scheduling_links.go (seam holders only)",
+        "backend/storage/manager.go, guarded_writes.go (profile get-or-create under the re-check)",
+        "backend/api/handlers_manager.go (getProfile, postProfile)",
+        "backend/engine/manager.go (DetectTeam's profile step)",
+        "backend/auth/credential_lifecycle.go, ms_idtoken.go",
+        "tests: backend/{storage,api,engine,auth}/pac80*_test.go (new); seam call sites in api/pac71_midhandler_test.go (AC-9 amendment), api/pac101_test.go, engine/booker_erasure_test.go, storage/booker_erasure_test.go; storage/pac71_guarded_writes_test.go (extended)",
+        "contracts/features/PAC-80.yaml"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** and backend/api/gen (no contract change)",
+        "backend/storage/migrations/** (no migration)",
+        "the analytics-sharing default with no profile row (engine/manager.go team analytics): split out as F-A, a separate ticket (owner question)",
+        "main.go's scheduled detection job",
+        "mcp/ (unaffected)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [],
+      "forbiddenPaths": ["every path: no web change, no regeneration (bundle unchanged)."]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [],
+  "componentsChanged": [],
+  "operationsNotChanged": [
+    {"operationId": "getManagerProfile / postManagerProfile (GET and POST /api/manager/profile)", "reason": "Only the storage step behind them changes (spec D-9, PAC-101 precedent); API-086 not inherited."}
+  ],
+  "gates": {
+    "assembler": "make openapi-check, api half (WEB absent): bundle in sync, MIGRATION.md covers every operation, backend/api/gen matches the contract.",
+    "webGate": "Not applicable: bundle unchanged, nothing to regenerate.",
+    "race": "Spec D-2: -race is not in the gate (no C toolchain in golang:1.25-alpine); the implementer runs it on the touched packages and pastes the output in the PR.",
+    "defaultBranch": "main",
+    "ci": "GitHub Actions .github/workflows/ci.yml runs make verify",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  storage TestPAC80_NoExportedFuncVariableInStorage",
+    "AC-2  storage TestPAC80_GuardedCallHookIsRaceFree (under -race, implementer-run)",
+    "AC-3  storage TestPAC80_SeamsNeverOutliveTheirTest; api/pac71_midhandler_test.go and api/pac101_test.go pass on the new seam form",
+    "AC-4  api TestPAC80_GetProfileAfterTheBindingCreatesNoRow",
+    "AC-5  api TestPAC80_PostProfileAfterTheBindingCreatesNoRow",
+    "AC-6  engine TestPAC80_DetectionForAStaleRequestWritesNoProfileRow; storage TestPAC80_ProfileGetOrCreateUnderTheReCheck",
+    "AC-7  engine TestPAC80_ScheduledDetectionCreatesTheDefaultRow",
+    "AC-8  existing api/handlers_manager_test.go, api/pac26_wire_keys_test.go, api/pac21_error_bodies_test.go unchanged",
+    "AC-9  api TestPAC71_MidHandler_SpawnedDetectionKeepsTheSessionGuard (amended: binding at re-check 2, after the spawn; no profile row at all)",
+    "AC-10..AC-12 auth TestPAC80_RenewalForAStaleSessionNeverReachesTheProvider (google, outlook, zoom without expiry; stale and unavailable)",
+    "AC-13 auth/credential_lifecycle_test.go unchanged",
+    "AC-14, AC-15 auth TestPAC80_LossIsRecordedAfterAHangUp",
+    "AC-16 auth TestPAC80_HangUpFinishingStepKeepsTheReCheck",
+    "AC-17 auth TestPAC80_RotatedRenewalIsStoredAfterAHangUp",
+    "AC-18 auth TestPAC80_FinishingStepIsBounded",
+    "AC-19 auth TestPAC80_HangUpBeforeTheAnswerRecordsNothing; TestTemporaryFailure_RecordsNothing unchanged",
+    "AC-20..AC-22 auth TestPAC80_KeyFetchPanicEndsTheFlightForEveryone",
+    "AC-23 auth/ms_idtoken_test.go and auth/pac89_stepup_idtoken_test.go unchanged"
+  ],
+  "resolvesFindings": ["PAC-71 review follow-ups (Enach/clockwise-like#242) items 1-4; PAC-71 tidy-round comment of 2026-11-01 (item 5)."],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [],
+  "doesNotResolve": [
+    "F-A: no profile row vs. default row for analytics sharing (product/consent question; separate ticket).",
+    "Enabling -race in the gate (spec D-2).",
+    "API-086 (global team_member_count on GET /api/manager/profile)."
+  ],
+  "consumersAffected": [
+    {"consumer": "Enach/smart-calendar-flow", "breaks": "no", "detail": "No operation changes; no regeneration."},
+    {"consumer": "mcp", "breaks": "no", "detail": "Unaffected."},
+    {"consumer": "backend tests installing storage seams", "breaks": "migrated", "detail": "storage.GuardedCallHook / AfterLinkPatchUpdate / AfterBookerErasure* assignments become storage.Install* calls."}
+  ],
+  "rollback": "Revert the backend PR. No migration, no data change; rows written under PAC-80 are rows the old code also writes."
+}

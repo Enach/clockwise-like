@@ -214,7 +214,9 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 	}
 	byEmail := collectOneOnOneCandidates(events, managerEmail)
 
-	profile, err := storage.GetOrCreateUserProfile(e.DB, managerID)
+	// PAC-80 item 2: for a request, the default row is created only under
+	// the session re-check; the scheduled job (no session) is unchanged.
+	profile, err := storage.GetOrCreateUserProfileCtx(ctx, e.DB, managerID)
 	if err != nil {
 		return nil, fmt.Errorf("load manager profile: %w", err)
 	}

@@ -161,9 +161,7 @@ func WithSessionGeneration(ctx context.Context, db DBTX, fn func(q Querier) erro
 		// PAC-81 AC-A9: the pool wait ends with the context.
 		return fn(Bind(ctx, db))
 	}
-	if GuardedCallHook != nil {
-		GuardedCallHook(ctx)
-	}
+	fireGuardedCallHook(ctx)
 	return withGenerationTx(ctx, db, g.UserID, g.Gen, g, fn)
 }
 
@@ -182,9 +180,7 @@ func withLinkWriteTx(ctx context.Context, db DBTX, fn func(q Querier) error) err
 		return fn(q)
 	}
 	if g := SessionGuardFrom(ctx); g != nil {
-		if GuardedCallHook != nil {
-			GuardedCallHook(ctx)
-		}
+		fireGuardedCallHook(ctx)
 		return withGenerationTx(ctx, db, g.UserID, g.Gen, g, bounded)
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -259,9 +255,3 @@ func (s *txScope) Rollback() error {
 	}
 	return nil
 }
-
-// GuardedCallHook is a deterministic test seam (PAC-71 review of #242): it
-// runs before every in-request re-check of a request with a session, so a
-// test can commit a binding between a handler's first and second storage
-// call, or after it spawned background work. Production leaves it nil.
-var GuardedCallHook func(ctx context.Context)

@@ -469,9 +469,10 @@ func piiFault(tag string) error {
 
 func setErasureFault(t *testing.T, f func(uuid.UUID) error) {
 	t.Helper()
-	prev := storage.AfterBookerErasureUpdate
-	storage.AfterBookerErasureUpdate = f
-	t.Cleanup(func() { storage.AfterBookerErasureUpdate = prev })
+	if f == nil { // no fault: a seam that never fails
+		f = func(uuid.UUID) error { return nil }
+	}
+	storage.InstallAfterBookerErasureUpdate(t, f)
 }
 
 // AC-33: a failure on link A rolls A back entirely (no change, no entry),
