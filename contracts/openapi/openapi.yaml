@@ -3358,8 +3358,9 @@ paths:
         for another reason (400, 409, 410, 429, 503) keeps that answer even when the link was deleted
         meanwhile, and writes nothing either way. This ordering against the delete never makes two bookings
         wait for each other; the PAC-82 ordering below can, only for the length of a save. A save that
-        must wait for a delete, pause or edit of the same link, or for another booking''s save, still
-        in progress waits at most 10 seconds per wait; past that it is the 500 and nothing is written.
+        must wait for a delete, pause or edit of the same link, for a co-host invitation on it (PAC-120),
+        or for another booking''s save, still in progress waits at most 10 seconds per wait; past that
+        it is the 500 and nothing is written.
 
 
         Concurrent bookings (PAC-82). However many requests arrive at once, a host is never booked twice
@@ -3521,11 +3522,11 @@ paths:
             when the insert was sent and its result is lost (for example the database connection drops),
             the outcome is unknown and the answer is this 500 (PAC-81 contract revision 2). Only the 503
             proves that nothing was saved. Also this 500, with `{"error":"internal error"}` and nothing
-            written: the save waited 10 seconds for a delete, pause or edit of the same link still in
-            progress (PAC-101), or for another booking''s save on a common host or the same use-limited
-            link (PAC-82); the client cannot tell this case from the others. A 500 answered to a request
-            carrying an `Idempotency-Key` may be retried with the same key and the same details: if the
-            first request was saved, the retry is its replay.'
+            written: the save waited 10 seconds for a delete, pause or edit of the same link, or a co-host
+            invitation on it, still in progress (PAC-101, PAC-120), or for another booking''s save on
+            a common host or the same use-limited link (PAC-82); the client cannot tell this case from
+            the others. A 500 answered to a request carrying an `Idempotency-Key` may be retried with
+            the same key and the same details: if the first request was saved, the retry is its replay.'
           content:
             application/json:
               schema:
@@ -7832,8 +7833,8 @@ paths:
         the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted
         before the request arrived and no host row changes; if the write commits first it takes full effect
         and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it.
-        A write that must wait for a delete or edit of the same link still in progress waits at most 10
-        seconds; past that it is the 500 and nothing changes.'
+        A write that must wait for a delete or edit of the same link, or for a co-host invitation (PAC-120),
+        still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -7883,7 +7884,8 @@ paths:
         rows, so accept/decline on it match and return 200 (PAC-30 D-5). A deleted link answers 404 and
         no host row changes (PAC-40 AC-5). PAC-101: as for accept, a delete committed while the request
         is handled is a 404 with nothing changed, a decline committed first is kept, and the wait for
-        a delete or edit in progress is at most 10 seconds (then the 500).'
+        a delete or edit, or a co-host invitation (PAC-120), in progress is at most 10 seconds (then the
+        500).'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -8219,8 +8221,8 @@ paths:
         same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host
         row changes; if the write commits first it takes full effect and the delete then keeps the resulting
         host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or
-        edit of the same link still in progress waits at most 10 seconds; past that it is the 500 and
-        nothing changes.'
+        edit of the same link, or for a co-host invitation (PAC-120), still in progress waits at most
+        10 seconds; past that it is the 500 and nothing changes.'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -8319,7 +8321,8 @@ paths:
         keeps its host rows, so accept/decline on it match and return 200 (PAC-30 D-5). A deleted link
         answers 404 and no host row changes (PAC-40 AC-5). PAC-101: as for accept, a delete committed
         while the request is handled is a 404 with nothing changed, a decline committed first is kept,
-        and the wait for a delete or edit in progress is at most 10 seconds (then the 500).'
+        and the wait for a delete or edit, or a co-host invitation (PAC-120), in progress is at most 10
+        seconds (then the 500).'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -8382,10 +8385,13 @@ paths:
         is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no
         host row changes; if the write commits first it takes full effect and the delete then keeps the
         resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for
-        a delete or edit of the same link still in progress waits at most 10 seconds; past that it is
-        the 500 and nothing changes. A refusal decided before the write (400, 403, the 404 "user not found",
-        the 500 of a failed link read or a failed address lookup) keeps its answer even if the link was
-        deleted meanwhile; nothing is written either way.
+        a delete, edit, booking save, host response or other invitation of the same link still in progress
+        waits at most 10 seconds per wait; past that it is the 500 and nothing changes. The bound is per
+        wait, not in total (PAC-120): a booking save or host response that arrives while the invitation
+        is waiting can take the link first, so on a busy link the invitation can wait longer than 10 seconds
+        in all, until the request budget ends it, but it never deadlocks. A refusal decided before the
+        write (400, 403, the 404 "user not found", the 500 of a failed link read or a failed address lookup)
+        keeps its answer even if the link was deleted meanwhile; nothing is written either way.
 
 
         PAC-120 (spec docs/specs/PAC-120.md §3.2): a link holds at most 5 co-hosts. A co-host is any host
@@ -8503,8 +8509,8 @@ paths:
         If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link
         deleted before the request arrived and no host row changes; if the write commits first it takes
         full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does
-        not block it. A write that must wait for a delete or edit of the same link still in progress waits
-        at most 10 seconds; past that it is the 500 and nothing changes.'
+        not block it. A write that must wait for a delete or edit of the same link, or for a co-host invitation
+        (PAC-120), still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
