@@ -40,6 +40,15 @@ browser ──HTTPS──▶ your proxy ──HTTP──▶ nginx (compose, :80)
   that adds its own `X-Frame-Options` or `frame-ancestors` breaks embedding
   of the booking page: do not. The CSP's operator settings are
   `NGINX_CSP_SENTRY_ORIGIN` and `NGINX_CSP_CONNECT_ORIGINS` (`.env.example`).
+- **Web error monitoring (PAC-121).** The web app has no built-in Sentry DSN
+  (PAC-86). Its DSN is baked into the frontend image at build time from the
+  GitHub repository variable `VITE_SENTRY_DSN` (a *variable*, not a secret: a
+  frontend DSN ships in the public bundle), which the release workflow
+  passes to `docker/frontend.dockerfile`. Unset or empty means web monitoring
+  is off. To turn it on, set the variable, cut a release, and set
+  `NGINX_CSP_SENTRY_ORIGIN` on the deployment to that DSN's `scheme://host`
+  origin (DSN `https://public@o1.ingest.example.test/2` gives
+  `https://o1.ingest.example.test`); otherwise the CSP blocks the events.
 
 ## 2. Forward the client address and scheme
 
