@@ -154,7 +154,7 @@ lint:
 	@echo "lint OK (generated files carry a DO NOT EDIT header and are excluded by golangci-lint)"
 
 # ── Tests ────────────────────────────────────────────────────────────────────
-# scripts/test-backend.sh runs the suite inside golang:1.25-alpine against a
+# scripts/test-backend.sh runs the suite inside golang:1.26-alpine against a
 # throwaway postgres, which is why the backend needs docker and mcp does not.
 
 ## Unit + contract tests for both modules
