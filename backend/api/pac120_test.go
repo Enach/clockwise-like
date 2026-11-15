@@ -130,6 +130,26 @@ func (e *pac120Env) coHosts(link *storage.SchedulingLink) int {
 	return n
 }
 
+// hostRow is userID's host row on link as status and responded_at (the
+// columns accept, decline and leave write), or "absent".
+func (e *pac120Env) hostRow(link, userID uuid.UUID) string {
+	e.t.Helper()
+	var s string
+	var resp sql.NullTime
+	err := e.db.QueryRow(`SELECT status, responded_at FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`,
+		link, userID).Scan(&s, &resp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "absent"
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if !resp.Valid {
+		return s + " responded_at=null"
+	}
+	return s + " responded_at=" + resp.Time.UTC().Format(time.RFC3339Nano)
+}
+
 func pac120Is422(t *testing.T, w *httptest.ResponseRecorder, what string) {
 	t.Helper()
 	if w.Code != http.StatusUnprocessableEntity || strings.TrimSpace(w.Body.String()) != pac120LimitBody {
@@ -641,6 +661,18 @@ func TestPAC120_AC11_MixedLoadAtTheLimit(t *testing.T) {
 	var bookings []booked
 	var failures []string
 	invited404 := map[uuid.UUID]bool{}
+	type responder struct {
+		what, path string
+		who        int // index into ids
+		before     string
+		code       int
+	}
+	responders := []*responder{
+		{what: "accept", path: "/accept", who: 0},
+		{what: "decline", path: "/decline", who: 1},
+		{what: "leave", path: "/leave", who: 3},
+	}
+	var listPatch int
 	slot := 0
 	const rounds = 10
 	for round := 0; round < rounds; round++ {
@@ -707,14 +739,36 @@ func TestPAC120_AC11_MixedLoadAtTheLimit(t *testing.T) {
 					return w
 				})
 		}
-		run("accept", false, nil, func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/accept", ids[0], "") })
-		run("decline", false, nil, func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/decline", ids[1], "") })
-		run("leave", false, nil, func() *httptest.ResponseRecorder { return e.do(http.MethodPost, p+"/leave", ids[3], "") })
+		// The last round's accept, decline and leave race the delete: they
+		// wait for the same first booking the delete waits for, so some of
+		// them land after it. Each one's host row is recorded before the
+		// round; one answered 404 ran after the delete and must have changed
+		// nothing (AC-11).
+		last := round == rounds-1
+		for _, r := range responders {
+			if last {
+				r.before = e.hostRow(link.ID, ids[r.who])
+			}
+			r.code = 0
+		}
+		for _, r := range responders {
+			run(r.what, last, nil, func() *httptest.ResponseRecorder {
+				w := e.do(http.MethodPost, p+r.path, ids[r.who], "")
+				mu.Lock()
+				r.code = w.Code
+				mu.Unlock()
+				return w
+			})
+		}
 		run("fields patch", false, nil, func() *httptest.ResponseRecorder {
 			return e.do(http.MethodPatch, p, owner, fmt.Sprintf(`{"title":"round %d"}`, round))
 		})
 		run("list patch", false, nil, func() *httptest.ResponseRecorder {
-			return e.do(http.MethodPatch, p, owner, pac112JSON(t, map[string]any{"co_host_emails": emails}))
+			w := e.do(http.MethodPatch, p, owner, pac112JSON(t, map[string]any{"co_host_emails": emails}))
+			mu.Lock()
+			listPatch = w.Code
+			mu.Unlock()
+			return w
 		})
 		run("pause", true, nil, func() *httptest.ResponseRecorder { return e.do(http.MethodPatch, p, owner, `{"active":false}`) })
 		run("resume", true, nil, func() *httptest.ResponseRecorder { return e.do(http.MethodPatch, p, owner, `{"active":true}`) })
@@ -733,6 +787,25 @@ func TestPAC120_AC11_MixedLoadAtTheLimit(t *testing.T) {
 	if at, _ := e.linkRow(link.ID); !at.Valid {
 		t.Fatal("the final delete did not delete the link")
 	}
+	// A 404 answer came after the delete. The only other writer of these
+	// rows in the round is the list PATCH, and when it answered 200 it ran
+	// before the delete, so before the 404: it re-adds a co-host that had
+	// left as a fresh pending row and leaves the others exactly as they are.
+	answered404 := 0
+	for _, r := range responders {
+		if r.code != http.StatusNotFound {
+			continue
+		}
+		answered404++
+		want := r.before
+		if want == "absent" && listPatch == http.StatusOK {
+			want = "pending responded_at=null"
+		}
+		if got := e.hostRow(link.ID, ids[r.who]); got != want {
+			t.Errorf("last round: %s answered 404 but its host row is %q; want unchanged %q (list patch %d)", r.what, got, want, listPatch)
+		}
+	}
+	t.Logf("last round: %d of accept, decline, leave answered 404 (list patch %d)", answered404, listPatch)
 	hosts := e.hostRows(link.ID)
 	for id := range invited404 {
 		if _, found := hosts[id]; found {

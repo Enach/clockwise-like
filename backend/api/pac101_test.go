@@ -543,13 +543,16 @@ func TestPAC101_InviteNotFoundBodiesDiffer(t *testing.T) {
 // every booking answered 404 does not exist.
 func TestPAC101_ConcurrentWritesOnOneLinkNeverDeadlock(t *testing.T) {
 	e := newPAC101Env(t)
-	owner := e.user("pac101-ac15-owner@example.com")
-	b := e.user("pac101-ac15-b@example.com")
-	c := e.user("pac101-ac15-c@example.com")
-	d := e.user("pac101-ac15-d@example.com")
 	// Unique per run: the api package shares one database, and -count=N
-	// reruns this test against it.
+	// reruns this test against it. The accounts too, not only the slug: a
+	// rerun's owner would otherwise still hold the first run's bookings in
+	// the same slots, and every booking would answer 409.
 	sfx := uuid.NewString()[:8]
+	addr := func(who string) string { return "pac101-ac15-" + who + "-" + sfx + "@example.com" }
+	owner := e.user(addr("owner"))
+	b := e.user(addr("b"))
+	c := e.user(addr("c"))
+	d := e.user(addr("d"))
 	link := createSchedulingLinkRecord(t, owner, "pac101-ac15-"+sfx, "PAC-101 AC-15")
 	if _, err := storage.AddLinkHost(e.db, link.ID, b, "accepted"); err != nil {
 		t.Fatal(err)
@@ -619,12 +622,12 @@ func TestPAC101_ConcurrentWritesOnOneLinkNeverDeadlock(t *testing.T) {
 			})
 		}
 		go func() { roundBookings.Wait(); release() }()
-		emails := `["pac101-ac15-b@example.com","pac101-ac15-c@example.com"]`
+		emails := fmt.Sprintf(`[%q,%q]`, addr("b"), addr("c"))
 		if round%2 == 1 {
-			emails = `["pac101-ac15-b@example.com","pac101-ac15-c@example.com","pac101-ac15-d@example.com"]`
+			emails = fmt.Sprintf(`[%q,%q,%q]`, addr("b"), addr("c"), addr("d"))
 		}
 		run("invite", false, func() *httptest.ResponseRecorder {
-			return e.do(http.MethodPost, p+"/hosts", owner, `{"email":"pac101-ac15-d@example.com"}`)
+			return e.do(http.MethodPost, p+"/hosts", owner, fmt.Sprintf(`{"email":%q}`, addr("d")))
 		})
 		run("patch", false, func() *httptest.ResponseRecorder {
 			return e.do(http.MethodPatch, p, owner, fmt.Sprintf(`{"title":"round %d","co_host_emails":%s}`, round, emails))
