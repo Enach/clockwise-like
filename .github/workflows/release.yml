@@ -230,6 +230,12 @@ jobs:
         with:
           context: .
           file: docker/frontend.dockerfile
+          # PAC-121: the web Sentry DSN, baked into the bundle. A repository
+          # variable, not a secret: a frontend DSN is public in the bundle.
+          # Unset or empty = web monitoring off. NGINX_CSP_SENTRY_ORIGIN on the
+          # deployment must equal its scheme://host origin.
+          build-args: |
+            VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN }}
           push: true
           tags: |
             ghcr.io/${{ steps.names.outputs.owner }}/paceday-frontend:${{ needs.plan.outputs.version }}

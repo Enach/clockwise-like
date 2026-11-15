@@ -1,0 +1,407 @@
+# Paceday silent-failure register (PAC-122, phase 1)
+
+## 1. What this is
+
+PAC-122 asks where Paceday fails without telling anyone. Four finder agents each
+swept one area: backend handlers, backend internals (engines, storage, auth,
+calendar clients, crons), the web app, and MCP plus the open rows of
+`api-audit.md`. Together they reported about 90 candidates. A separate verifier
+then re-read every cited site at current `origin/main` and wrote this register.
+The verifier did not write any of the findings.
+
+A **silent failure** is an error, a rejected input or a partial write that ends
+up as one of these:
+
+- a 2xx, a default or an empty value instead of an error;
+- input dropped or coerced without telling anyone;
+- a success message for something that did not happen;
+- a background failure that nobody sees.
+
+**Caveat on method.** Everything here comes from reading source and tests:
+`git show`, `git grep` and file reads of `Enach/clockwise-like` at `0f11003` and
+`Enach/smart-calendar-flow` at `66b340e` (both `origin/main` on 2026-11-15).
+**No request was issued against a running server, no Postgres instance was
+consulted, and no test, linter or `make` target was run for this document.** The
+only command output quoted is a `git grep` count (§8). A row marked
+**confirmed** means the code path was re-read and does what the row says, given
+the trigger it names. Where the trigger is an ordinary storage or provider error,
+the row counts as confirmed, because any `_ =` on a write fires on the first DB
+hiccup. A row marked **likely** means the code path is real but the trigger
+depends on something this pass could not establish. Examples: an external error
+body shape, two failures at once, or input that only a non-web client sends.
+
+Line numbers are as of the commits above; where a finder's number had drifted,
+the register carries the corrected one.
+
+**Severity** (one rubric for both repos and MCP):
+
+| Severity | Meaning |
+|---|---|
+| critical | Security-relevant: access kept after removal, token kept after disconnect, expired invite accepted, a session left live behind a "signed out" screen. |
+| high | Wrong data persisted, or a side effect on a real calendar (events created over meetings, orphaned events, wrong-length meetings). |
+| medium | Wrong data shown (a status, a count, an empty list or a success message that is not true). |
+| low | Missing signal only: the failure is not reported, or is reported as the wrong kind of error. |
+
+**Contract** is `yes` when the fix changes the wire contract (a status code,
+a documented message or a documented behaviour in `contracts/openapi/`) or an
+MCP tool schema or configuration. Many swallowed errors already have a `500` in
+the contract, so returning it is not a contract change. Some silent behaviours
+are written into the contract as fact, per factory rule §7.2 ("the contract
+describes what is"). Examples: the `200 {connected:false}` fallback on
+`getAuthStatus`, the `200 []` on `/api/org/members`, and the priority-0 WARNING on
+habit create. Fixing those edits the contract, so they are `yes`.
+
+**Process** is `full` (spec → contract → plan → implement, README §2) when
+Contract is `yes`, and `light` otherwise.
+
+**API-audit** names the `api-audit.md` row the finding extends, where there is one.
+
+## 2. Summary
+
+100 register rows from about 90 candidates. Duplicates across reports were merged
+(see §9); F3, F6, F14, F24 and L-k were split because their parts differ in
+severity or domain. In total, 89 rows are confirmed and 11 are likely. Four candidates
+or parts were rejected (§4), and seven finder claims were corrected in place.
+SF-100 was added after review (PR #288) and keeps its number; it sits in its
+sorted position in the register.
+
+| Domain | critical | high | medium | low | total |
+|---|---:|---:|---:|---:|---:|
+| scheduling-links/booking | · | 1 | 4 | 3 | 8 |
+| calendar | · | 1 | 7 | 3 | 11 |
+| auth | · | 1 | 1 | 3 | 5 |
+| teams/manager | 2 | 5 | 3 | 5 | 15 |
+| habits/analytics | · | 5 | · | 2 | 7 |
+| focus | · | 2 | · | · | 2 |
+| personal-calendars | · | 2 | 3 | · | 5 |
+| integrations | 1 | 2 | 1 | 1 | 5 |
+| recap | · | · | 1 | 2 | 3 |
+| web-only | 1 | 1 | 14 | 10 | 26 |
+| mcp | · | 2 | 5 | 2 | 9 |
+| observability | · | · | · | 4 | 4 |
+| **total** | **4** | **22** | **39** | **35** | **100** |
+
+| | count |
+|---|---:|
+| confirmed | 89 |
+| likely | 11 |
+| contract change (`full` process) | 16 |
+| no contract change (`light` process) | 84 |
+
+By shape of failure:
+
+| Pattern | Rows | What it looks like |
+|---|---:|---|
+| Discarded error becomes a default | 41 | `_ = storage.X(...)`, `v, _ := storage.Y(...)`, `err != nil \|\| ok` read as "absent", answered with 2xx, `[]`, `false` or 0 |
+| Optimistic or invented UI claim | 29 | a success toast before or regardless of the answer, a field the request never carries, a count the client makes up, an error state never rendered |
+| Validation gap or silent coercion | 16 | input accepted that later fails or is replaced (priority 0 → 50, any booker email, any personal-calendar provider) |
+| Background failure logged only | 9 | a job or detached unit that logs (or says nothing) and never reaches Sentry |
+| Partial write with no compensation | 5 | one side written, the other side's failure ignored (DB row deleted while the calendar event stays, or the reverse) |
+
+## 3. Register
+
+Sorted by severity, then by domain in PAC-122 order. Paths are relative to
+`backend/` unless marked `mcp/` or `web` (`smart-calendar-flow`). The Source
+column gives the finder IDs: handlers `H-*`, `M-a`..`M-i` and `L-*` (with a hyphen); internals `F*`;
+web `web H*`, `web M*` and `web L*`; MCP `M1`..`M11` (no hyphen) and `X1`.
+
+| ID | Sev | Domain | Status | Contract | Process | API-audit | Finding | Where (origin/main) | What happens | Source |
+|---|---|---|---|---|---|---|---|---|---|---|
+| SF-001 | critical | teams/manager | confirmed | no | light | — | **Removing a manager-team member answers 204 while access stays** | `api/handlers_manager.go:370`, `:381-397` | `DELETE /api/manager/team/members/{email}`: `DeleteManagerTeamMemberByEmailCtx` (unscoped), `RemoveTeamMemberCtx`, `UnassignManagerTeamMemberCtx` and the pending-invite `DELETE` are all `_ =`. A `GetTeamMember` error is read as "not a member", so that target is skipped. Any DB error leaves team membership and the pending invite in place behind a 204. Fix: check every error, treat only `sql.ErrNoRows` as absent, one transaction. | H-a |
+| SF-002 | critical | teams/manager | likely | no | light | — | **An expired team invite can be accepted when the expiry sweep fails** | `api/handlers_teams.go:241`, `:302`; `storage/teams.go:240-255` | Preview and accept run `_ = storage.ExpireOldInvites` and then trust `status='pending'`; `GetTeamInviteByToken` never compares `expires_at`. If the sweep `UPDATE` fails and the read succeeds, a past-expiry invite is accepted. Trigger needs the write to fail while the read works. Fix: compare `expires_at < now()` in the read. | H-e |
+| SF-003 | critical | integrations | confirmed | no | light | — | **Slack/Notion disconnect answers 204 while the token stays stored** | `api/handlers_integrations.go:92`, `:230` | `_ = storage.DeleteWorkspaceConnectionCtx`. A DB error still gives 204 "disconnected"; the token stays and meeting briefs keep using it. 500 is already in the contract for both operations. | H-d |
+| SF-004 | critical | web-only | likely | no | light | — | **A failed sign-out clears local state only** | web `src/contexts/AuthContext.tsx:121-128` | `POST /api/auth/logout` failures are caught and ignored; the UI shows signed-out while the HttpOnly session cookie may still be valid, so the next person on a shared machine reloads into the previous session. Trigger: the logout request fails. Fix: say sign-out was not confirmed and offer a retry. | web M9 |
+| SF-005 | high | scheduling-links/booking | confirmed | yes | full | — | **Public booking accepts any non-blank booker email** | `api/handlers_booking.go:376-380` | `POST /api/book/{slug}` (public) checks only non-blankness. An invalid address is persisted and answered 201; the host event (invalid attendee) and the confirmation email then fail later (both reported to Sentry, never to the booker). Fix: `mail.ParseAddress`, new 400 message (the contract lists the 400 messages, so this is a contract edit). | H-i |
+| SF-006 | high | calendar | likely | no | light | API-082 | **Auto-decline falls back to UTC for an unloadable timezone** | `engine/auto_decline.go:139-148` | `settingsLocation` returns UTC for an empty or unknown zone, so "outside work hours" is computed in UTC and RSVPs are declined (irreversibly, from the attendee's side) for the wrong hours. `validateSettings` rejects unknown zones since PAC-24 (`api/handlers_settings.go:307`), so only legacy rows or an empty zone reach this. Fix: skip the user and report. | F24 (part) |
+| SF-007 | high | auth | likely | no | light | API-009 (same code, different defect) | **Outlook token load returns nil,nil on any read error** | `auth/microsoft_oauth.go:160-165`; `:118-121` | Any `Scan` error (not only `ErrNoRows`) reads as "no credential": status shows disconnected and freebusy "unknown" (confirmed). In `SaveMicrosoftToken`, a renewal without a refresh token plus a failed load stores the credential with an empty refresh token (likely: needs both at once). Google's loader (`auth/token_store.go:138-143`) does this correctly. | F20 |
+| SF-008 | high | teams/manager | confirmed | no | light | — | **Creating a team can leave it with no owner** | `api/handlers_teams.go:54-61`; `storage/teams.go:52-58` | `CreateTeam` inserts the team only; the owner row is a separate `_ = AddTeamMemberCtx` after commit. On failure: 201, then every owner-gated call on the team is 403 and nobody can delete it. Fix: one transaction, 500 on failure. | H-b |
+| SF-009 | high | teams/manager | confirmed | no | light | T9 | **Manager profile POST echoes a value that was not saved** | `api/handlers_manager.go:113-123` | `_ = storage.UpsertUserProfileCtx`, then the in-memory struct is encoded with 200. Paired with the web's fire-and-forget call (SF-049), manager mode can show "enabled" with nothing stored at either end. | H-c (+ web H3) |
+| SF-010 | high | teams/manager | confirmed | no | light | — | **A lookup error stores a manager-team member as external** | `api/handlers_manager.go:336`; `engine/manager.go:247` | `ConfirmedHolder` errors are treated as "not a Paceday user", so `member_user_id` is persisted NULL (the COALESCE in the upsert keeps an existing id, so only new rows are hit). The member then reads as external in roster and analytics. Same pattern in weekly detection (`engine/manager.go:247`). | H-g; engine/manager.go:246 |
+| SF-011 | high | teams/manager | confirmed | no | light | — | **Weekly manager detection overwrites a manually set cadence** | `storage/manager.go:91-92`; called from `engine/manager.go:270` (Sunday cron, `main.go:316-330`) | The upsert keeps `display_name` and `source` for manual rows but sets `cadence` and `cadence_custom_days` from the detected value unconditionally. The manager's choice is silently replaced every Sunday. Fix: keep cadence when `source='manual'`. | F13 |
+| SF-012 | high | teams/manager | confirmed | yes | full | API-090 | **Re-inviting the same address creates another pending invite and email** | `api/handlers_teams.go:183-212`; `storage/teams.go:229-238`; no unique index in `migrations/013_teams.up.sql` | No check for an existing pending invite, no partial unique index. Each re-invite adds a row with its own valid token and sends another email. Fix: return the existing pending invite (200 or 409) and add the index. | API-090 |
+| SF-013 | high | habits/analytics | confirmed | no | light | — | **Habits are placed over meetings when the calendar read fails** | `engine/habits.go:100-124` | `listEvents` error leaves the busy list empty and skips buffers, but `calConnected` stays true, so occurrences are placed on top of meetings and created in Google. Fix: skip the day when the read fails. | F1 |
+| SF-014 | high | habits/analytics | confirmed | no | light | — | **Displaced and missed occurrences leave the old Google event behind** | `engine/habits.go:175-215`; upsert `storage/habits.go:149-161` | A displaced occurrence is re-upserted with a new `calendar_event_id` (or `""` on the missed branch) on the same `(habit_id, scheduled_date)` row; the old event is never deleted. Orphan habit events accumulate on the real calendar. No test covers displacement. | F2 |
+| SF-015 | high | habits/analytics | confirmed | no | light | — | **An occurrence is stored as "scheduled" with no calendar event** | `engine/habits.go:203-212`, `:242-245`; upserts at `:184`, `:192`, `:207` | `createHabitEvent` turns a create error into `""`, and the occurrence is upserted as `scheduled` anyway; every upsert error is discarded and `ReoptimizeAll` always returns nil. Paceday shows a habit slot that is not on the calendar. | F3 (data part) |
+| SF-016 | high | habits/analytics | confirmed | yes | full | — | **A habit created with priority 0 is stored as 50** | `api/handlers_habits.go:111-113` | `if body.Priority == 0 { body.Priority = 50 }` cannot tell absent from explicit 0. PATCH honours 0. The contract documents this as a WARNING (create `minimum: 1`), so the fix (decode `*int`) is a contract edit. Not pinned by a test. | H-h |
+| SF-017 | high | habits/analytics | confirmed | no | light | — | **A calendar failure is stored as "zero meetings" and served for 24 h** | `engine/analytics.go:79-80`, `:89`, `:118-158`, `:191`; cache `:39-46` | `calOpsForUser`/`listEvents` errors, and the focus/habit reads, are ignored; the row is upserted into `analytics_weeks` anyway and `ComputeWeek` serves it for 24 h. Manager analytics reads the same rows with `DataAvailable=true` (`engine/manager.go:470-482`). Fix: return the error, do not store. | F4 |
+| SF-018 | high | focus | confirmed | no | light | — | **Clear-week deletes the DB row even when the Google delete failed** | `engine/focus_time_cleaner.go:33-40` | Both deletes run per block; a failed event delete still deletes the row. The first call is 500, a retry is 200 `{deleted:0}` and the focus event stays on the calendar, untracked. Fix: delete the row only after success or a 404/410. | X1 / F10 |
+| SF-019 | high | focus | confirmed | no | light | — | **A focus-minutes read error creates overlapping focus blocks** | `engine/focus_time.go:116` | `existingMinutes, _ := FocusMinutesForDay` reads 0 on error; existing focus events are transparent and skipped by `buildBusy` (`:223`), so new blocks are created over old ones. The save-failure half (`:194`) is reported in `errors[]` (see Rejected). | F8 (part) |
+| SF-020 | high | personal-calendars | confirmed | no | light | — | **A failed blocker delete still drops the DB row** | `engine/personal_blocker.go:128-131` | `_ = calOps.deleteEvent(...)` then `DeletePersonalBlockerCtx` unconditionally. A "[Personal] Busy" block stays on the work calendar for good and Paceday no longer knows it exists. | F5 |
+| SF-021 | high | personal-calendars | confirmed | no | light | — | **Personal sync creates extra blockers after a read error** | `engine/personal_blocker.go:109`, `:140`, `:161-164` | A settings read error leaves `s == nil`, and `personalEventDuringWorkHours` then answers true for every event (blockers outside work hours). A `GetPersonalBlocker` error reads as "not found", so a duplicate blocker is created. | F6 (parts) |
+| SF-022 | high | integrations | confirmed | yes | full | — | **Refreshing a meeting brief regenerates it from an empty event** | `api/handlers_meeting_briefs.go:75-78`, `:126`; `engine/meeting_brief_service.go:84`, `:90-96`, `:104`, `:125` | The handler passes `&Event{Id: eventID}` (a stub; its own comment says so), so search terms, prompt, title and attendees are empty; `Generate(force)` upserts a contextless brief over the good one and answers 200 `ready`. Slack/Notion fetch errors and every upsert error are discarded. Fix: fetch the event first (an absent event needs a 404 the operation does not list). | H-f / F15 |
+| SF-023 | high | integrations | likely | no | light | — | **The Notion callback never checks the token response status** | `api/handlers_integrations.go:262-291` | Only a JSON `error` field is checked. A non-2xx JSON body without `error` yields an empty `access_token`, which is stored and reported as connected. Trigger depends on Notion's error body shape. | L-j |
+| SF-024 | high | web-only | likely | no | light | — | **A failed re-read after a successful write is shown as a failed save** | web `src/api/teams.ts:325-335`, `:338-342`, `:356-371`; `src/api/manager.ts:266-301` | createTeam, renameTeam and inviteMember write, then re-read via `remoteTeam`; manager addMember/updateMember re-read the roster and throw "backend did not return the new team member". A failed re-read surfaces as an error for a write that happened; retrying createTeam creates a duplicate team. | web H6 |
+| SF-025 | high | mcp | confirmed | yes | full | — | **A bad duration silently becomes a 30-minute meeting** | `mcp/tools.go:278-283`, `:331-340` (used at `:41`, `:253`) | `parseDuration` maps "1h", "90 min", "-5" or a JSON number (dropped by `strArg`) to 30. `create_event` then creates a 30-minute event on the real calendar. Accepting numbers changes the tool schema. | M4 |
+| SF-026 | high | mcp | confirmed | no | light | — | **create_event does not enforce its required title and attendees** | `mcp/tools.go:33-81`; backend `api/handlers_schedule.go:178-200` has no title check either | The schema marks both required, the handler never checks, so an untitled or attendee-less event is created on the real calendar. MCP-side enforcement needs no schema change. | M11 |
+| SF-027 | medium | scheduling-links/booking | confirmed | no | light | — | **The public booking page can show no hosts** | `api/handlers_booking.go:97-107` | `hosts, _ := GetAcceptedHosts`; a failed read gives `hosts: []` and coverage `{0,0}`; a host whose user read fails is skipped. Public, unauthenticated surface. 500 is in the contract. | M-e |
+| SF-028 | medium | scheduling-links/booking | confirmed | no | light | — | **A booking confirmation can list no hosts** | `api/handlers_booking.go:112-120` | Inline `hosts, _ :=` after commit, on both the 201 and the idempotent replay. The booking exists; the confirmation says nobody hosts it. | M-f |
+| SF-029 | medium | scheduling-links/booking | confirmed | no | light | API-006 (pattern) | **Link list and create/PATCH answers degrade the host roster** | `api/handlers_scheduling_links.go:321-323` (used at `:451`, `:549`) | `toSchedulingLinkDTO` calls `buildSchedulingLinkDTO(..., strict=false)` and drops the error; a roster error empties hosts or blanks emails. PAC-25 made only `GET /{id}` strict. The "as before" comment at `:444-446` documents it; no test pins the degraded form. | M-g |
+| SF-030 | medium | scheduling-links/booking | confirmed | no | light | — | **Host-invite lists drop entries on a DB error** | `api/handlers_scheduling_links.go:889-896` | `if e != nil \|\| link == nil { continue }` (and the same for the owner): a read error is treated like a deleted link. | M-h |
+| SF-031 | medium | calendar | confirmed | yes | full | API-071 | **Adding a custom link to an event that has a conference discards the URL** | `api/handlers_credentials.go:284-289`; web `src/components/MeetingLinkRow.tsx:61-65` | `requested == "custom"` on an event with a conference returns 200 with the existing link; the supplied URL is dropped and the web toasts "Custom URL link added" (`MeetingLinkRow.tsx:13`, `:65`). The contract documents the echo (booking.yaml `addEventConference` branch 1), so a 409 is a contract change. | API-071 |
+| SF-032 | medium | calendar | confirmed | no | light | — | **A calendar the provider could not read is reported as known and free** | `calendar/freebusy.go:30-38`; `calendar/outlook_client.go:131-142`; `engine/freebusy_service.go:178-183` | Google's per-calendar `Errors` and Outlook's per-schedule error are ignored; the empty busy list is cached 15 min with coverage `known`. Feeds Find a time and manager analytics for external members. | F18 |
+| SF-033 | medium | calendar | confirmed | yes | full | — | **The freebusy cache key ignores the end of the range** | `engine/freebusy_service.go:106`, `:114`; long-lived service `api/handlers_freebusy.go:30` | Key is `user:email:startdate`. A one-day query followed by a week query from the same start returns the one-day busy list for 15 min. The contract states the key (`POST /api/freebusy` description), so the fix edits it. | F19 |
+| SF-034 | medium | calendar | confirmed | yes | full | API-077 | **An inverted freebusy window answers 200 with nothing busy** | `api/handlers_freebusy.go:59-70`; `api/handlers_calendar.go:188-197` | No `end > start` check on either endpoint; MCP `find_free_slots` uses the GET. "Everyone free" instead of a 400. | API-077 |
+| SF-035 | medium | calendar | confirmed | no | light | API-076 | **Personal blockers render as meetings** | `api/handlers_calendar.go:31` (never assigned); `engine/personal_blocker.go:19`; web `src/pages/Dashboard.tsx:315`, `src/components/EventDetailView.tsx:62`, `src/lib/eventOwnership.ts:23` | `is_personal_block` is declared and never set. The web relies on it, and its title fallback `/personal time/i` does not match the blocker title "[Personal] Busy", so blockers get meeting controls. Worse than the audit row's "dead field". | API-076 |
+| SF-036 | medium | calendar | confirmed | no | light | — | **Conference providers show disconnected on a token-load error** | `api/handlers_conferencing.go:192-193` | `token, _ :=` for Google and Microsoft. The pinned case (undecryptable token → disconnected, `pac84_decrypt_failure_test.go`) must stay; other errors should be 500. | M-d |
+| SF-037 | medium | calendar | confirmed | no | light | — | **NLP parse swallows scheduler and LLM errors** | `nlp/parser.go:235-238`, `:245-256`, `:289-294` | A `Suggest` error leaves `suggested_slots` empty (the web then says "No available slots found", `Dashboard.tsx:181-182`); an attendee-extraction error leaves attendees nil; a bad range date becomes the zero time. All 200 with no `error`. `ParseResult.error` already exists. | MCP M10 |
+| SF-038 | medium | auth | confirmed | yes | full | — | **Calendar status reports "not connected" on storage errors** | `api/handlers_auth.go:79-83`, `:93-94`, `:108-113` | Settings, token and credential-loss read errors all become 200 `{connected:false}`; the web and MCP prompt a reconnect. The contract documents this fallback, and `TestAuthStatus_NotConnected` (`handlers_auth_test.go:14`) reaches it through a no-user request, so the fix edits both. Keep the PAC-84 undecryptable case. | M-b / MCP M9 |
+| SF-039 | medium | teams/manager | confirmed | no | light | — | **A team's member list comes back empty on error** | `api/handlers_teams.go:113` | `members, _ :=` gives 200 with `members: []`. Only the null→`[]` encoding is pinned (`TestTeamDetailBody_NoMembers_EncodesEmptyArray`, `empty_arrays_test.go:77`), not the swallow. | M-a |
+| SF-040 | medium | teams/manager | confirmed | no | light | API-022 (related) | **Manager engine errors produce false gaps and cached "no data"** | `engine/manager.go:410-419`, `:466-482`, `:486-501`, `:504-513`; `api/handlers_manager.go:262-263`, `:594` | `hasFutureEvent` ignores its `Scan` error (a false "no upcoming 1:1" gap); a DB or freebusy error sets `DataAvailable=false`, which is then cached; the cache upsert error is ignored; the handlers drop `GetMemberWeek` errors. | F14 |
+| SF-041 | medium | teams/manager | confirmed | no | light | — | **Team analytics averages missing members as zero** | `engine/team_availability.go:194-209` | `row, _ := GetAnalyticsWeek`; a member with no row or a read error contributes 0 and still counts in `n`. Distinct from the pinned FindSlots behaviour (`TestPAC81_TeamAvailabilityUnreadableMemberTreatedFree`). | F23 |
+| SF-042 | medium | personal-calendars | confirmed | no | light | — | **Per-calendar sync failures are invisible and last_synced_at goes stale** | `engine/personal_blocker.go:57-65`; `storage/personal_calendars.go:116`; `api/handlers_personal.go:202`; `main.go:261-282` | `SyncAllForUser` logs a calendar's error and returns nil, so the cron's Sentry capture fires only for list-level errors. Only the manual sync handler stamps `last_synced_at`, so the UI's last-sync time never moves for cron syncs. Must keep `TestPAC84_PersonalBlockerSkipsOnlyTheUndecryptableCalendar`. | F6 (parts) |
+| SF-043 | medium | personal-calendars | likely | yes | full | API-075 | **Personal calendars accept providers and URLs that can never sync** | `api/handlers_personal.go:68-98`; `calendar/personal_reader.go:19-40` | Any `provider` string and an unchecked URL are stored. There is no credentials path for non-webcal providers, so `ReadPersonalEvents` fails every tick (log only). `enabled` omitted means disabled (API-075). Masked because the web sends `webcal` and `enabled:true`; reachable through the API. | H-j; F6 (part); API-075 |
+| SF-044 | medium | personal-calendars | likely | no | light | — | **The webcal parser drops events it cannot read** | `calendar/webcal_client.go:114-124` | Events with no DTEND (DURATION form) or an unparseable date are skipped silently, and RRULE is never expanded, so recurring personal events block only their first instance. Skipped events count as absent, so an existing blocker for them is deleted. | F7 (part) |
+| SF-045 | medium | integrations | confirmed | no | light | — | **Slack/Notion status reports "not connected" on any error** | `api/handlers_integrations.go:96-101`, `:234-239` | `err != nil \|\| conn.TokenErr != nil` → `connected:false`. Only not-found and the pinned undecryptable token should mean disconnected. | M-c |
+| SF-046 | medium | recap | confirmed | no | light | — | **A failed recap query reads as "a clear calendar today"** | `engine/daily_recap.go:377-400`, `:402-452` | `fetchMeetings` returns nil on a query error, ignores `Scan` errors and never checks `rows.Err`; its "meetings" are today's meeting-brief rows titled "Meeting" at 00:00. Focus uses the DB session zone in `date_trunc`. Only user scoping is pinned (`daily_recap_scope_test.go`). | F12 |
+| SF-047 | medium | web-only | confirmed | no | light | — | **Settings "Calendar ID" is never saved** | web `src/pages/Settings.tsx:602-610`; `src/api/client.ts:948-966` | `calendar_id` is not in `SettingsUpdate`, so `settingsPatchBody` drops it (that drop is pinned by `settingsAdapter.test.ts:220-223`); the page still says "Settings saved" and the field reverts to an invented "primary". Fix: remove or make read-only (making it work needs a contract change). | web H1 |
+| SF-048 | medium | web-only | confirmed | no | light | — | **The "Attach Microsoft Teams links" toggle is never saved** | web `src/components/ConferencingSection.tsx:308-312` | `teams_enabled` is dropped the same way; non-Outlook users see "Settings saved". | web H2 |
+| SF-049 | medium | web-only | confirmed | no | light | — | **Manager mode on/off claims success before the server answers** | web `src/pages/Team.tsx:189-193`; `src/pages/Settings.tsx:852-868` | `void managerApi.remote.setProfile(...)` then an unconditional success toast; Settings never rolls back, Team reads the profile before the POST writes local state. Pairs with SF-009 on the backend. | web H3 |
+| SF-050 | medium | web-only | confirmed | no | light | — | **Typed focus requests always say "Focus time scheduled"** | web `src/pages/Dashboard.tsx:186-191`; `src/components/QuickActions.tsx:36-39` | The run result (`createdBlocks` may be empty, `errors[]`) is ignored; QuickActions shows the count but drops `errors`. | web H4 |
+| SF-051 | medium | web-only | confirmed | no | light | — | **A team invite drops the display name and promises a Pending entry** | web `src/components/team/ProtectedHoursTab.tsx:582-646`; `src/api/teams.ts:356-371` | The name is collected but never sent (no field in the request); "Invite sent to X" although email is fire-and-forget and skipped when SMTP is unset (SF-066); the dialog promises a Pending row that never appears. Minimal fix is copy and removing the field; sending the name or listing pending invites needs a contract change. | web H5 |
+| SF-052 | medium | web-only | confirmed | no | light | — | **The new-link "Public URL" preview is false** | web `src/api/schedulingLinks.ts:195-210`; `src/components/links/LinkEditDrawer.tsx:248-251`, `:322`, `:662-670` | The drawer shows `/book/<slugified-title>` and says the address comes from the title, but `backendLinkBody` never sends `slug`, so the server generates one from the owner's name and duration (`handlers_scheduling_links.go:493-498`). The backend already accepts `slug`. | web M1 |
+| SF-053 | medium | web-only | confirmed | no | light | — | **Team Analytics attributes numbers to the wrong people** | web `src/api/teams.ts:441-465` | Name match falls back to the same index in a differently filtered list; missing rows show 0; `free_minutes` is invented as `2400 - meeting - focus`; the week label is always the current week even when a date is passed. | web M2 |
+| SF-054 | medium | web-only | confirmed | no | light | — | **"Find a time" always shows N of N free** | web `src/api/teams.ts:426-436` | `free_count` is set to the member count for every slot. (The server treating unreadable members as free is pinned; the client claim is not.) | web M3 |
+| SF-055 | medium | web-only | confirmed | no | light | — | **A failed status read shows "Not connected" with a Connect button** | web `src/components/ConnectionStatus.tsx:17`, `:73-76`; `src/components/WorkCalendarConnection.tsx:40`, `:138` | `isError` is never rendered. | web M4 |
+| SF-056 | medium | web-only | confirmed | no | light | — | **A failed provider list makes every meeting provider look disconnected** | web `src/components/MeetingLinkRow.tsx:27-40` | `data` defaults to `[]`; the error is not handled. | web M5 |
+| SF-057 | medium | web-only | confirmed | no | light | — | **Reschedule suggestions can offer busy times** | web `src/components/RescheduleSuggestions.tsx:129-150`; `src/pages/Dashboard.tsx:636-641` | Candidates span today plus five business days, but only the visible range's events are loaded; work hours default to 09:00-18:00 if settings failed. | web M6 |
+| SF-058 | medium | web-only | confirmed | no | light | — | **"No meetings today" while another week is displayed** | web `src/components/TodayAgenda.tsx:30-41`; `src/pages/Dashboard.tsx:607` | The agenda filters the displayed week's events for today. | web M7 |
+| SF-059 | medium | web-only | confirmed | no | light | — | **"Calendar has not been scanned yet" is always shown** | web `src/api/manager.ts:511-513`; `src/pages/Team.tsx:646-648` | `last_scan_at` is read from local state and never written outside demo mode. | web M8 |
+| SF-060 | medium | web-only | likely | no | light | — | **A member row shows "0m focus" for an unmeasured week** | web `src/pages/Team.tsx:938-940`, `:1030-1036` | The row gates on the member-level `data_available` (any bucket measured) and ignores the last week's own flag. | web M10 |
+| SF-061 | medium | mcp | confirmed | no | light | — | **Every tool error is returned as a successful result** | `mcp/tools.go:342-347`, `:123-124`, `:161-162` | `jsonResult` and both delete handlers return `NewToolResultText("Error: ...")` with `isError=false`. Keep the not-configured NLP relay as text (pinned by `TestParseCommand_RelaysNotConfigured`). | M1 |
+| SF-062 | medium | mcp | confirmed | yes | full | — | **The MCP backend client sends no credentials** | `mcp/client.go:22-88`; `mcp/main.go:23-29`; backend `api/middleware.go:85-101` | No `Authorization` header or cookie, while every `/api` route the tools call is behind `requireAuth`; every call is a 401 (relayed per SF-061), and `/health` stays ok. `MCP_AUTH_TOKEN` guards only the inbound side. Not run against a live server. Needs a per-user credential design (config contract). | M2 |
+| SF-063 | medium | mcp | confirmed | no | light | — | **apply_compression decodes the plan with the wrong field names** | `mcp/tools.go:272-276`, `:308-329`; backend `engine/compression.go:16-25`, `api/handlers_schedule.go:86-110` | Compress emits camelCase (`eventId`, `proposedStart`), MCP decodes snake_case, so every proposal is empty and the backend answers 200 `{applied:[], failed:[": invalid time format"...]}`, relayed as success. `tools_test.go:216` uses a hand-written snake_case fixture. | M3 |
+| SF-064 | medium | mcp | confirmed | no | light | API-079 | **clear_focus_blocks says "all" and drops the count** | `mcp/tools.go:157-165`; `api/handlers_focus.go:87-106`; `engine/focus_time_cleaner.go:26` | The backend clears the current Monday-Sunday week only; the tool always replies "Focus blocks cleared" and drops `deleted`. | M5 |
+| SF-065 | medium | mcp | confirmed | no | light | API-079 | **list_focus_blocks says "all" but returns one week** | `mcp/tools.go:150-155`; `api/handlers_focus.go:64-84` | The backend lists the 7 days from now. Adding a `week` argument would be a schema change; fixing the description is not. | M6 |
+| SF-066 | low | scheduling-links/booking | confirmed | no | light | — | **With SMTP unset, emails are skipped as if sent** | `engine/booking.go:822-824`; `api/handlers_teams.go:652-660` | Both senders `return nil` when `SMTP_HOST` or `SMTP_FROM` is empty, so no failure is logged or reported and there is no startup warning; the invite sender also defaults `BASE_URL` to `https://paceday.app`. Not pinned (only the failure path is, `TestPAC81_InviteEmailFailureLogged`). | F16 / L-e |
+| SF-067 | low | scheduling-links/booking | confirmed | no | light | — | **A failed booking-event save is ignored** | `engine/booking.go:718` | `_ = storage.SaveBookingEvent`. The host event exists but is not recorded; `booking_events` is read by the account-emptiness check (`storage/emptiness.go:42`). | F17 |
+| SF-068 | low | scheduling-links/booking | confirmed | no | light | — | **Inviting a co-host answers "user not found" on a storage error** | `api/handlers_scheduling_links.go:854-857` | `if err != nil \|\| !found` → 404. The not-found/unconfirmed answer is deliberate (API-072); the error branch should be 500. | L-k (part) |
+| SF-069 | low | calendar | confirmed | no | light | API-071 (adjacent) | **A Zoom/Teams meeting is orphaned when the calendar update fails** | `api/handlers_credentials.go:332-347` | The provider meeting is created, then `UpdateEvent` fails (500) and the meeting is never deleted at the provider. | L-i |
+| SF-070 | low | calendar | confirmed | no | light | — | **Audit details become invalid JSON when a title contains a quote** | `api/handlers_schedule.go:212`; `api/handlers_nlp.go:69`; `engine/smart_schedule.go:331` | Details are built by string concatenation; `audit_log.details` is TEXT and `/api/audit` serves it as a string, so consumers parsing it get malformed JSON. | L-c |
+| SF-100 | low | calendar | confirmed | yes | full | API-071 (adjacent) | **Any GetEvent failure on the conference routes answers 404 "event not found"** | `api/handlers_credentials.go:280-283`; `api/handlers_conferencing.go:305-308`; contract `contracts/openapi/openapi.yaml:4258-4262`, `:4306` | `POST` and `DELETE /api/events/{id}/conference` map every `GetEvent` error to 404, so a Google outage reads as "the event does not exist". The contract states it as fact ("Any GetEvent failure maps to 404 ... spec D-10: unchanged on purpose"), and no test pins it for these routes (the `handlers_events_test.go` tables pin the events routes, which answer 500 for a Google 500/403). Per §1, a contract-documented silent behaviour stays a row; the fix edits the contract (PAC-67 D-10). | L-k (conference half) |
+| SF-071 | low | auth | confirmed | no | light | — | **Sign-in drops org association errors** | `api/handlers_pac71_auth.go:188`, `:314`; `api/handlers_sso.go:199` | `_ = storage.AssociateUserWithOrg`; the user is signed in without org membership and nothing is logged. Retried on the next sign-in. | L-h |
+| SF-072 | low | auth | confirmed | no | light | — | **/api/auth/me and SSO lookups answer 404 on a storage error** | `api/handlers_me.go:22-25`; `api/handlers_sso.go:58-61`, `:128-131` | Any error reads as "user not found" / "SSO not configured for this domain". | L-k (part) |
+| SF-073 | low | auth | confirmed | no | light | — | **A failed save of a renewed token is logged only** | `auth/credential_lifecycle.go:206-213` | For a provider that rotates refresh tokens the stored one is now dead, so the user is later asked to reconnect with no trace in Sentry. | F21 |
+| SF-074 | low | teams/manager | confirmed | no | light | API-090 (note) | **Owner checks answer 403 on a storage error** | `api/handlers_manager.go:644-647`; `api/handlers_teams.go:190-193` (requireOwner) | `err != nil \|\| role != owner` → 403, so an outage reads as "forbidden". | L-k (part) |
+| SF-075 | low | teams/manager | confirmed | yes | full | API-047 | **GET /api/org/members answers 200 [] when the caller cannot be read** | `api/handlers_org.go:24-28` | Documented in the contract as current behaviour; no web consumer (API-091). | API-047 |
+| SF-076 | low | teams/manager | confirmed | no | light | API-086 | **A failed count reads as team_member_count 0** | `api/handlers_manager.go:69-70` | `_ = ...Scan(&count)`. Nothing reads the field. | L-a |
+| SF-077 | low | teams/manager | confirmed | no | light | — | **Invite emails fall back to generic names on read errors** | `api/handlers_teams.go:213-221` | `team, _` / `inviter, _` give "Someone" and "a Paceday team". | L-f |
+| SF-078 | low | teams/manager | confirmed | yes | full | T6 | **Deleting an unknown no-meeting zone answers 204** | `api/handlers_teams.go:503-508`; `storage/teams.go:306-308` | No `RowsAffected` check; the operation lists no 404. | L-g |
+| SF-079 | low | habits/analytics | confirmed | yes | full | — | **Analytics accepts a malformed date and returns the current week** | `api/handlers_analytics.go:105-116` | Documented in the contract as "SILENTLY ignored" (habits.yaml analytics `date`), not pinned by a test. | L-d |
+| SF-080 | low | habits/analytics | confirmed | no | light | — | **Corrupt stored JSON and dates read as empty** | `storage/analytics.go:140`, `:176`; `storage/meeting_briefs.go:103-104`; `storage/habits.go:237`, `:248` | `_ = json.Unmarshal` / `time.Parse` errors give empty lists and the zero date. | F25 |
+| SF-081 | low | integrations | confirmed | no | light | API-085 | **An empty redirect URI sends the user to the provider's error page** | `api/handlers_integrations.go:34-50`, `:174-190` | The 503 guard checks only the client id. | API-085 |
+| SF-082 | low | recap | confirmed | no | light | API-082 (related) | **Daily recap errors return silently; a recap can be sent twice** | `engine/daily_recap.go:45-53`, `:72-120` | Settings and Slack-connection errors return silently, a bad send time returns, `recapAlreadySent` ignores its `Scan` error (a read failure resends), the send failure is log-only and `insertRecapSend`'s error is dropped. | F11 |
+| SF-083 | low | recap | confirmed | yes | full | — | **A channel recap can be saved with no channel** | `api/handlers_daily_recap.go:101-110`; `api/handlers_settings.go:369-370` | `send_to=channel` with an empty `channel_id` is accepted on both PATCH routes; the send then fails at the cron (see SF-082). | M-i |
+| SF-084 | low | web-only | confirmed | no | light | — | **Settings spins forever when its load fails** | web `src/pages/Settings.tsx:137`, `:245-254` | `isLoading \|\| !draft` keeps the spinner after an error. | web L1 |
+| SF-085 | low | web-only | confirmed | no | light | — | **A manager analytics error shows "Data unavailable" on every row** | web `src/pages/Team.tsx:459-462`, `:1032-1042` | The query error is not surfaced. | web L2 |
+| SF-086 | low | web-only | confirmed | no | light | — | **Co-host availability chips stay "loading" on error** | web `src/components/links/LinkEditDrawer.tsx:262-293` | A failed coverage query falls through to `loading`. | web L3 |
+| SF-087 | low | web-only | confirmed | no | light | — | **Attendee suggestions swallow rejections** | web `src/components/ParticipantPicker.tsx:41-50` | `try/finally` with no `catch`: an unhandled rejection and stale suggestions. | web L4 |
+| SF-088 | low | web-only | confirmed | no | light | — | **An invite refresh error is hidden when invites are cached** | web `src/pages/Links.tsx:237-240` | The error banner shows only with no cached invites. | web L5 |
+| SF-089 | low | web-only | confirmed | no | light | — | **"Member removed." when nothing was removed** | web `src/api/teams.ts:369-377`; `src/components/team/ProtectedHoursTab.tsx:671` | `if (!member) return;` resolves, so the success toast shows. | web L6 |
+| SF-090 | low | web-only | likely | no | light | — | **A recorded Org AI confirmation can be reported as a failure** | web `src/hooks/useOrganizationAI.ts:34-42` | Confirm succeeds, the follow-up choice write fails, and the mutation rejects as a whole. | web L7 |
+| SF-091 | low | web-only | confirmed | no | light | — | **Onboarding starts an OAuth connect when the status read fails** | web `src/pages/Onboarding.tsx:86-92` | `.catch(() => ({ connected: false }))`. | web L8 |
+| SF-092 | low | web-only | likely | no | light | — | **The signed-in user is assumed to own the first team** | web `src/api/teams.ts:313-314` | `current_user_email = teams[0].owner_email`, so a member of someone else's team can be treated as its owner in the UI. | web L9 |
+| SF-093 | low | web-only | confirmed | no | light | API-019 (residual) | **The owner's bookings list invents titles and slugs** | web `src/api/schedulingLinks.ts:446-469` | `title ?? "Booking"`, `link_slug ?? ""`, `hosts ?? []`, and a non-array body becomes `[]` silently. The start/end half of API-019 is fixed (e39987b). | API-019 residual |
+| SF-094 | low | mcp | confirmed | no | light | — | **update_event cannot clear a field and reports an empty update as success** | `mcp/tools.go:83-115` | Empty strings are dropped; an all-empty call sends `{}` and the backend answers 200 with the unchanged event. | M7 (part) |
+| SF-095 | low | mcp | confirmed | no | light | — | **A truncated backend body is returned as success** | `mcp/client.go:36`, `:83` | `body, _ := io.ReadAll(...)`. | M8 |
+| SF-096 | low | observability | confirmed | no | light | API-083 (adjacent) | **Detached units discard their errors; recovered panics are log-only** | `internal/lifecycle/lifecycle.go:117-128`; `api/handlers_habits.go:139-141`, `:240-242`, `:383-385`; `api/handlers_analytics.go:95-97`; `api/handlers_manager.go:107-111` | `_ = ReoptimizeAll`, `_, _ = ForceCompute`, `_, _ = DetectTeam` in tracked units; `Group.Go` recovers a panic and only logs it. See the Observability section. | L-b; F3 (obs part); F14 (part) |
+| SF-097 | low | observability | confirmed | no | light | — | **robfig cron jobs have no panic recovery** | `main.go:52-62` (`cronJob`), `:261`, `:289`, `:304`, `:316`, `:339`; `github.com/robfig/cron/v3 v3.0.1` | `cron.New()` with v3's empty default chain and a `cronJob` wrapper without `recover`: a panic in the personal, auto-decline, recap, manager or erasure job kills the process. See the Observability section. | internals obs. |
+| SF-098 | low | observability | confirmed | no | light | API-082 (related) | **Background jobs that log only** | `scheduler/cron.go:186-191`; `main.go:316-330`; `engine/auto_decline.go:39-56` | The focus cron logs an error count; the manager cron logs per-user errors; auto-decline reports only the first error. None reaches Sentry per failure. | F9; F14 (cron); F24 (part) |
+| SF-099 | low | observability | confirmed | no | light | — | **Encryption conversion and key-refresher failures are logged only** | `encryption.go:162-169`; `storage/encryption_keys.go:521-553` | Not routed through the existing `secretbox.SetReporter` hook (`encryption.go:57`). | F22 |
+
+## 4. Rejected
+
+| Candidate | Reason |
+|---|---|
+| API-057 — `buffer_minutes` always 0 | The behaviour is deliberate and pinned, so it is not a silent failure. PAC-42 resolved U-10 by stating "always 0" as fact on both analytics schemas, and `TestPAC42ContractBufferMinutesStatedAsFact` (`api/pac42_contract_test.go:67`) pins that wording. The audit row stays open as a missing feature. |
+| API-036 — out-of-hours refusal is a 500 | Not silent. Since PAC-21 the body is `{"error":"out-of-hours meeting allowance reached"}`, which names the refusal (`api/handlers_schedule.go:223-226`). The wrong status code stays tracked as API-036 / batch C2. |
+| MCP M7, `send_updates` half — attendees never notified from MCP | The backend default `none` is deliberate (PAC-29 D-5, `api/handlers_events.go:51-61`) and pinned by `TestPAC29PatchSendUpdates` (`api/handlers_events_test.go:255`). The MCP tools never claim to notify anyone, so this is a feature gap, not a silent failure. The other half (fields cannot be cleared; an empty update is reported as success) is SF-094. |
+| Dead code `calendar/client_factory.go` `NewProvider` | It has no caller: `git grep "NewProvider("` finds only `conference.NewProvider` and `gooidc.NewProvider`. Code that never runs cannot fail silently. Deleting it is hygiene. |
+
+**Finder claims corrected in place** (the finding stands, with the correction):
+
+1. **H-a** (SF-001). "The owner check is skipped" is wrong. A failed
+   `GetTeamMember` skips that target entirely, so the owner is never removed by
+   it. The silent non-removal is the defect.
+2. **F16** (SF-066). "`emailSent=true` is reported" overstates it. The flag only
+   appears in the completion detail log line (`engine/booking.go:651-652`),
+   never on the wire. The defect is the missing failure signal and the missing
+   startup warning.
+3. **F17** (SF-067). "Nothing reads `booking_events`" is wrong. The
+   account-emptiness check reads it (`storage/emptiness.go:42`).
+4. **L-c** (SF-070). "`WriteAuditLogCtx` discards the write error" is wrong.
+   `WriteAuditLog` logs insert failures (`storage/focus_blocks.go:87-89`); the
+   discarded value is the stale-session path. The invalid-JSON half stands.
+5. **F7** (SF-044). The "no HTTP status check" half does not fail silently. A
+   non-2xx body is not a VCALENDAR, so `parseICS` errors and the sync reports
+   it. The dropped-events half stands.
+6. **F8** (SF-019). The save-failure half (`engine/focus_time.go:194`) is
+   reported in `FocusRunResult.errors`, so it is not silent at the API. The
+   orphaned event is real, but the silence is the web's: it drops `errors[]`
+   (SF-050).
+7. **F20** (SF-007). The disconnected status on a read error is confirmed.
+   "Can drop the stored refresh token" is downgraded to likely, because it
+   needs a renewal with no refresh token and a failed read at the same time.
+
+Upgraded: **API-076** (SF-035) is worse than the audit row's "dead field". The
+web reads `is_personal_block`, and its title fallback `/personal time/i` does not
+match the blocker title `[Personal] Busy`.
+
+## 5. Fine by design (pinned)
+
+These look like silent failures but are decisions with a test behind them. A fix
+in the register must not break them.
+
+| Behaviour | Pinned by |
+|---|---|
+| Analytics `trends?weeks=` outside 1..52 clamps to 8 | `TestPAC42TrendsOrderLimitAndFieldSet` (`api/pac42_analytics_test.go`) |
+| `PATCH /api/settings` ignores read-only properties | `TestPatchSettings_RoundTripKeepsKeyAndIgnoresReadOnly` (`api/handlers_settings_test.go:223`) |
+| An undecryptable token reads as disconnected (status routes), not as an error | `api/pac84_decrypt_failure_test.go` (`TestPAC84_GoogleUndecryptable` and siblings) |
+| `GET /api/scheduling-links/{id}` reads the roster strictly (500, never a degraded 200) | `TestPAC25GetLink*` (`api/handlers_scheduling_links_test.go:683-`) |
+| One failed compression day fails the whole request | `TestPAC36CompressWeekDayFailureIsReported` (`api/pac36_strict_json_test.go:150`) |
+| An unrecognised `days` alias name is refused (422), not dropped | `TestPAC112_AC27_CreateUnrecognisedDayName` (`api/pac112_test.go:576`) |
+| An invalid `login_hint` is dropped, never a 400 | `TestPAC35_GoogleAndMicrosoftStart_ForwardOnlyValidHints` (`api/pac35_auth_flows_test.go:520`), `TestPAC35_SSOStart_EveryDocumentedStatusAndHint` (`:433`) |
+| A link owner with no or an unloadable zone is UTC | `TestPAC72_NoProfileZoneIsUTC` (`api/pac72_rev2_test.go:373`) |
+| The confirmation email uses the link's zone, then UTC | `TestPAC88_E1_EmailInLinkZoneThenUTC` (`engine/pac88_email_test.go:64`) |
+| A team-invite email failure is logged and reported | `TestPAC81_InviteEmailFailureLogged` (`api/pac81_paths_test.go:469`) |
+| A meeting-brief provider failure is reported and stored as a failed brief | `TestPAC73P2_EveryRowOneAnswer` (`api/pac73p2_rows_test.go:164`) |
+| The audit list default limit is the contract's 50 | `TestListAuditEntries_DefaultLimitMatchesContract` (`api/handlers_audit_test.go:177`) |
+| Manager analytics carries `data_available` and `is_paceday_user` per member | `TestPAC34ManagerAnalyticsMemberFlags` (`api/pac34_invite_analytics_test.go:178`) |
+| Freebusy degrades to coverage `unknown` on a provider failure (PAC-72 D-6) | `api/pac67_surfaces_test.go:66` |
+| Team availability treats an unreadable member as free | `TestPAC81_TeamAvailabilityUnreadableMemberTreatedFree` (`engine/pac81_test.go:268`) |
+| A failed focus-cron run still advances its watermark | `TestFocusCron_FailedRunAdvancesAndOthersRun` (`scheduler/cron_test.go`, around `:453`) |
+| Personal sync skips only the undecryptable calendar | `TestPAC84_PersonalBlockerSkipsOnlyTheUndecryptableCalendar` (`engine/pac84_test.go:51`) |
+| `PATCH`/`DELETE /api/events/{id}` default `send_updates` to `none` | `TestPAC29PatchSendUpdates` (`api/handlers_events_test.go:255`) |
+| `buffer_minutes` is stated as always 0 | `TestPAC42ContractBufferMinutesStatedAsFact` (`api/pac42_contract_test.go:67`) |
+| MCP relays the NLP "not configured" answer as plain text | `TestParseCommand_RelaysNotConfigured` (`mcp/nlp_not_configured_test.go:14`) |
+| A nil team member list encodes as `[]` (encoding only; the swallowed error is SF-039) | `TestTeamDetailBody_NoMembers_EncodesEmptyArray` (`api/empty_arrays_test.go:77`) |
+| The web never sends a settings property the contract lacks (the drop behind SF-047/048; the UI around it is not pinned) | web `src/api/settingsAdapter.test.ts:220-223` |
+
+## 6. Observability
+
+Background work runs in two places, and neither has one reporting path.
+
+**Tracked units (`internal/lifecycle`).** Handlers start detached work with
+`lifecycle.Go`/`GoFrom`: habit reoptimize, analytics recompute, manager
+detection, the team-invite email and booking completion. `Group.Go`
+(`internal/lifecycle/lifecycle.go:117-128`) recovers a panic and only
+`logf`s it. The unit functions return nothing, so the callers write
+`_ = h.eng.ReoptimizeAll(...)`, `_, _ = h.eng.ForceCompute(...)` and
+`_, _ = eng.DetectTeam(...)` (SF-096). The units that do report (the invite
+email via `reportEmailFailure`, booking completion, booker erasure) each call
+`sentry.CaptureException` by hand.
+
+**Cron jobs (`robfig/cron/v3`).** `main.go` builds five schedulers with
+`cron.New()`: personal blocker `:261`, auto-decline `:289`, daily recap
+`:304`, manager detection `:316` and booker erasure `:339`. v3's default
+chain is empty, and the `cronJob` wrapper (`main.go:52-62`) tracks the unit but
+has no `recover`. A panic in any of these jobs therefore runs on a robfig
+goroutine with nothing to catch it, and **takes the process down** (SF-097).
+The focus scheduler (`scheduler/cron.go`) is the exception: `runOne` recovers
+per user (`:176-181`, `recover` at `:178`), but it then logs only an error count (SF-098).
+
+**What reports today and what does not:**
+
+| Reports to Sentry | Logs only, or says nothing |
+|---|---|
+| personal blocker, list-level and per-user (`main.go:265-277`, but per-calendar errors never reach it, SF-042) | focus cron (SF-098) |
+| auto-decline, first error only (SF-098) | daily recap: send, settings and insert (SF-082) |
+| booker erasure (`Report:` hook, `main.go:339-343`) — the model to copy | manager cron and async detection (SF-098, SF-096) |
+| booking completion (`engine/booking.go:724-736`) | habits reoptimize, analytics recompute (SF-096) |
+| team-invite email (`api/handlers_teams.go:226-229`, `reportEmailFailure` at `:681`) | meeting-brief saves (SF-022) |
+| decrypt failures (`secretbox.SetReporter`, `encryption.go:57`) | encryption conversion and key refresher (SF-099); renewed-token save (SF-073) |
+
+**Proposed central fix** (one light-process change, no contract impact):
+
+1. Give `lifecycle` a reporter hook, for example `SetReporter(func(Unit, error))`,
+   installed in `main` with `sentry.CaptureException` and tagged with
+   `unit.kind` and `unit.id`. Recovered panics go through it too.
+2. Add an error-returning variant (`GoErr` / `GoFromErr`, `func(ctx) error`)
+   so that units return their error instead of `_ =`-ing it. Have `cronJob`
+   take `func(ctx) error` and report through the same hook.
+3. Recover in `cronJob` with a deferred `recover()`, or build the schedulers
+   with `cron.New(cron.WithChain(cron.Recover(logger)))`, reporting through the
+   hook. The deferred recover is preferable because it keeps the unit tracking
+   and the report in one place.
+4. Make `ReoptimizeAll`, `SyncAllForUser` and `RunAll` collect per-item errors
+   (`errors.Join`) instead of logging and returning nil, so the hook sees them.
+
+This is the shared dependency of most `light` fixes: once a reporter exists,
+"log and capture" is one line.
+
+## 7. Proposed phase 2 batches
+
+The batches follow the PAC-122 order: scheduling-links/booking, calendar, auth,
+teams, habits/analytics, web-only, MCP. The critical rows come first as their
+own batch, and the observability hook (§6) lands alongside it, because the
+later light fixes call it. Domains outside the PAC-122 list are folded in as
+follows: **focus** and **personal-calendars** go with *calendar*,
+**integrations** with *auth* (both are about connections and tokens), and
+**recap** with *habits/analytics*.
+
+| Batch | Rows | Light (ship fast, no contract change) | Full (spec + contract) |
+|---|---|---|---|
+| **0. Critical** | SF-001, SF-002, SF-003, SF-004 | all four: check the three manager-delete writes in one transaction; compare `expires_at` in the invite read; 500 on a failed disconnect (500 is already documented); web logout says "not confirmed, retry" | — |
+| **O. Observability hook** | SF-096, SF-097, SF-098, SF-099, SF-073, SF-082 (reporting half: Sentry on send and insert failures), SF-042 (reporting half) | all | — |
+| **1. Scheduling links / booking** | SF-005, SF-027, SF-028, SF-029, SF-030, SF-066, SF-067, SF-068 | SF-027, SF-028, SF-029 (strict roster everywhere, the PAC-25 pattern), SF-030, SF-066 (sentinel and startup warning), SF-067, SF-068 | SF-005 (booker email 400) |
+| **2. Calendar** (+ focus, personal-calendars) | SF-006, SF-018, SF-019, SF-020, SF-021, SF-031, SF-032, SF-033, SF-034, SF-035, SF-036, SF-037, SF-042, SF-043, SF-044, SF-069, SF-070, SF-100 | SF-018 and SF-020 (delete the row only after the event delete succeeds), SF-019, SF-021, SF-035 (set `is_personal_block`), SF-032, SF-036, SF-037, SF-042, SF-044, SF-006, SF-069, SF-070 | SF-031 (API-071, 409), SF-033 (cache key in the contract text), SF-034 (API-077, 400), SF-043 (API-075, provider and URL validation), SF-100 (conference `GetEvent` → 404 is contract text, PAC-67 D-10) |
+| **3. Auth** (+ integrations) | SF-007, SF-022, SF-023, SF-038, SF-045, SF-071, SF-072, SF-081 | SF-007, SF-023, SF-045, SF-071, SF-072, SF-081 | SF-038 (`getAuthStatus` fallback is in the contract; `TestAuthStatus_NotConnected` changes), SF-022 (brief refresh needs a 404) |
+| **4. Teams / manager** | SF-008 – SF-012, SF-039, SF-040, SF-041, SF-074 – SF-078 | SF-008, SF-009, SF-010, SF-011, SF-039, SF-040, SF-041, SF-074, SF-076, SF-077 | SF-012 (API-090, 409 and unique index), SF-075 (API-047), SF-078 (zone 404) |
+| **5. Habits / analytics** (+ recap) | SF-013 – SF-017, SF-046, SF-079, SF-080, SF-082 (behaviour half: `recapAlreadySent` and silent returns), SF-083 | SF-013, SF-014, SF-015, SF-017 (do not store a week computed from a failed read), SF-046, SF-080 | SF-016 (priority 0), SF-079 (date 400), SF-083 (channel 400) |
+| **6. Web-only** | SF-024, SF-047 – SF-060, SF-084 – SF-093 | all, as light web PRs. The quickest: SF-047 and SF-048 (remove the dead fields), SF-049 (await the mutation), SF-050, SF-052 (send `slug`, which the backend already accepts), SF-055, SF-056, SF-059 | none needed for the honest-copy fixes. Making SF-047, SF-048 or SF-051 *work* (calendar id, Teams toggle, invite name, pending list) is new contract work, filed separately if wanted. |
+| **7. MCP** | SF-025, SF-026, SF-061 – SF-065, SF-094, SF-095 | SF-026, SF-061 (`NewToolResultError`), SF-063 (accept camelCase, fix the fixture), SF-064, SF-065 (descriptions and count), SF-094, SF-095 | SF-025 (numeric duration in the schema), SF-062 (a backend credential for MCP: a design decision, and nothing else in MCP works until it lands) |
+
+**Quick light list** (each a few lines, a test-first fix with no contract edit
+and no cross-repo ordering): SF-001, SF-003, SF-008, SF-009, SF-010, SF-011,
+SF-018, SF-020, SF-027, SF-028, SF-030, SF-035, SF-036, SF-039, SF-045, SF-061,
+SF-063, SF-095 (backend and MCP), and SF-047, SF-048, SF-049, SF-052, SF-055,
+SF-056 (web).
+
+**Pairs that must ship together or in order:** SF-009 (backend profile write)
+with SF-049 (web toggle); SF-018 (clear-week) with SF-064 (MCP clear wording);
+SF-050 (web drops focus `errors[]`) after SF-019; SF-062 before any other MCP
+row can be verified end to end.
+
+## 8. Guardrail candidate
+
+The most common pattern is a **discarded error that becomes a default** (41
+of 100 rows): `_ = storage.X(...)`, `v, _ := storage.Y(...)`, or
+`if v, ok, err := ...; err == nil && ok` read as "absent". The backend's
+`errcheck` is enabled (`.golangci.yml`), but with its default
+`check-blank: false`, which accepts every `_ =`. One count, run for this
+document:
+
+```
+$ git grep -c "_ = storage\.\|, _ := storage\.\|_ = h\.db\.\|, _ = storage\." -- 'backend/*.go' ':!*_test.go'   # summed
+44
+```
+
+Proposal: a `make lint` rule (`forbidigo` or a `ruleguard` rule under
+golangci-lint) that refuses a blank-assigned error from `storage.*`,
+`auth.Load*` and the calendar-ops interfaces in non-test code. Like the design
+gate, it would ratchet against a baseline file, and a new baseline entry would
+need a PAC issue. A blanket `check-blank: true` would also flag the deliberate
+`_ = json.NewEncoder(w).Encode(...)` lines, so it is the noisier option.
+
+The web counterpart is the **optimistic UI claim** (29 rows). It matches
+`@typescript-eslint/no-floating-promises` (which catches `void
+api.setProfile(...)`, SF-049) and a review checklist line: "a success toast
+quotes the server's answer, never the request". Neither guardrail has been
+tried here.
+
+## 9. Deduplication map
+
+| Reported as | Register row |
+|---|---|
+| X1 (MCP report) and F10 (internals) — focus clear-week | SF-018 |
+| H-f (handlers) and F15 (internals) — meeting brief from a stub | SF-022 |
+| M-b (handlers) and M9 (MCP) — auth status | SF-038 |
+| F16 (internals) and L-e (handlers) — SMTP unset | SF-066 |
+| F3 (internals) and L-b (handlers) — habits / detached units | SF-015 (data), SF-096 (signal) |
+| H-j (handlers), F6 (internals) and API-075 (audit) — personal calendars | SF-043 (validation), SF-021 (read errors create blockers), SF-042 (visibility) |
+| H-g (handlers) and the same pattern in `engine/manager.go:247` | SF-010 |
+| H-c (handlers) and web H3 | SF-009 + SF-049 (kept apart: different repos, must ship as a pair) |
+| API-071 (audit) and L-i (handlers) | SF-031, SF-069 |
+| L-k (handlers) and the API-090 note on `requireOwner` | SF-068, SF-072, SF-074, SF-100 (conference half, un-rejected after review) |
+| F24 (internals) | SF-006 (UTC fallback), SF-098 (first error only) |
+| F14 (internals) | SF-040 (engine), SF-098 (cron) |
+| F9 (internals) | SF-098 |
