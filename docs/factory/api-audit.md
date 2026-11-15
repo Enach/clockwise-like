@@ -258,7 +258,7 @@ Domain key: `auth`, `cal` (calendar), `sched` (scheduling), `book` (booking),
 `origin/main` 0f11003, the open rows below that end in a silent failure and
 carries them as register rows: API-006 (pattern, list and write answers) →
 SF-029; API-009 (same code) → SF-007; API-019 residual → SF-093; API-022
-(related) → SF-040; API-047 → SF-075; API-071 → SF-031 and SF-069; API-075 →
+(related) → SF-040; API-047 → SF-075; API-071 → SF-031, SF-069 and SF-100; API-075 →
 SF-043; API-076 → SF-035 (worse than stated here: the web reads the field);
 API-077 → SF-034 (also on `GET /api/calendar/freebusy`); API-079 → SF-064 and
 SF-065; API-082 (related) → SF-006, SF-082 and SF-098; API-083 (adjacent) →
