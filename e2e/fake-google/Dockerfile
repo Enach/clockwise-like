@@ -1,7 +1,7 @@
 # The e2e stand-in for the Google Calendar API, and the recording sink.
 # Two binaries in one image; the compose file picks one with `command:`.
 # Mirrors backend/Dockerfile: build on golang:alpine, run FROM scratch.
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

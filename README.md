@@ -28,7 +28,7 @@ development database, generate a new key and follow `docs/runbook.md`,
 
 ## Stack
 
-- **Backend**: Go 1.25, chi router, PostgreSQL
+- **Backend**: Go 1.26, chi router, PostgreSQL
 - **Frontend**: React 18, TypeScript, Vite 5, Tailwind CSS, shadcn/ui
 - **MCP Server**: Go, port 3001 — exposes Paceday tools to Claude Desktop, Cursor, Zed
 - **Infrastructure**: Docker Compose, Nginx reverse proxy
