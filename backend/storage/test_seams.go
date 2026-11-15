@@ -284,3 +284,38 @@ func InstallBeforeLinkCreateCommit(tb TB, fn func(linkID uuid.UUID) error) (unin
 	tb.Helper()
 	return beforeLinkCreateCommit.install(tb, fn)
 }
+
+// PAC-120 seams (contract md §5): the single co-host invitation.
+// confirmedHolderLookup and linkReadByID fire for every caller of
+// ConfirmedHolder and GetSchedulingLinkByID; a test filters on the address or
+// link id it owns.
+var (
+	afterLinkInviteLock   seam[func(ctx context.Context, linkID uuid.UUID) error]
+	confirmedHolderLookup seam[func(email string) error]
+	linkReadByID          seam[func(id uuid.UUID) error]
+)
+
+// InstallAfterLinkInviteLock installs the seam that runs inside the single
+// invitation's transaction right after the link is locked FOR NO KEY UPDATE
+// and its owner read, before the existing-row read. It receives the request
+// context, so a test can hold one of two concurrent invitations. A non-nil
+// error rolls the invitation back and is returned.
+func InstallAfterLinkInviteLock(tb TB, fn func(ctx context.Context, linkID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return afterLinkInviteLock.install(tb, fn)
+}
+
+// InstallConfirmedHolderLookup installs the seam that runs at the start of
+// ConfirmedHolder with the address as given; a non-nil error is returned as
+// the lookup's error without querying.
+func InstallConfirmedHolderLookup(tb TB, fn func(email string) error) (uninstall func()) {
+	tb.Helper()
+	return confirmedHolderLookup.install(tb, fn)
+}
+
+// InstallLinkReadByID installs the seam that runs at the start of
+// GetSchedulingLinkByID; a non-nil error is returned without querying.
+func InstallLinkReadByID(tb TB, fn func(id uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return linkReadByID.install(tb, fn)
+}

@@ -911,7 +911,8 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	}
 	link, err := storage.GetSchedulingLinkByID(h.db, id)
 	if err != nil {
-		writeError(w, "internal error", http.StatusInternalServerError)
+		// PAC-120 (SF-101): logged and reported under its own step.
+		writeServerError(w, r, "invite link read", err, http.StatusInternalServerError)
 		return
 	}
 	if link == nil {
@@ -931,18 +932,28 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	}
 	// PAC-71 granting site: an unconfirmed holder is "user not found" too,
 	// so the answer does not reveal standing (contract §10, API-072).
+	// A storage error is the 500, never "user not found" (PAC-120, SF-068).
 	inviteeID, found, err := storage.ConfirmedHolder(h.db, body.Email)
-	if err != nil || !found {
+	if err != nil {
+		writeServerError(w, r, "invite lookup", err, http.StatusInternalServerError)
+		return
+	}
+	if !found {
 		writeError(w, "user not found", http.StatusNotFound)
 		return
 	}
 	// An existing host keeps their status (PAC-61): 200 with their row as is;
-	// a new invitee gets a pending row and 201.
+	// a new invitee gets a pending row and 201, unless the link already has
+	// 5 co-hosts (PAC-120: decided under the link lock inside the write).
 	host, created, err := storage.InviteLinkHostCtx(r.Context(), h.db, id, inviteeID)
 	if errors.Is(err, storage.ErrLinkGone) {
 		// PAC-101: deleted after the read above, before the host row was
 		// written; nothing was written, as for a link deleted before.
 		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, storage.ErrCoHostLimitReached) {
+		writeError(w, string(gen.SchedulingLinkHostLimitReached), http.StatusUnprocessableEntity)
 		return
 	}
 	if err != nil {

@@ -154,6 +154,9 @@ func GetSchedulingLinkBySlug(db DBTX, slug string) (*SchedulingLink, error) {
 // any owner or host check and before a request body is read (contract §3).
 // The owner reaches a deleted link only through the archive reads below.
 func GetSchedulingLinkByID(db DBTX, id uuid.UUID) (*SchedulingLink, error) {
+	if err := fireSeamErr(&linkReadByID, id); err != nil {
+		return nil, err
+	}
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
@@ -810,12 +813,59 @@ func isUniqueViolationOn(err error, constraint string) bool {
 	return errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == constraint
 }
 
-// inviteLinkHostLocked is InviteLinkHost behind the link lock: link gone is
-// decided by the lock step only, never by the insert's zero rows, which mean
-// "already a host" (PAC-61, contract §3.2).
-func inviteLinkHostLocked(q Querier, linkID, userID uuid.UUID) (*LinkHost, bool, error) {
-	if err := lockLiveLinkForShare(q, linkID); err != nil {
+// ErrCoHostLimitReached is the single invitation refused because the link
+// already has CoHostListLimit or more co-hosts (non-owner host rows, any
+// status), decided under the link lock inside the write (PAC-120 contract md
+// §2, §3 step 5). Nothing was written; the caller answers 422.
+var ErrCoHostLimitReached = errors.New("scheduling link has reached its co-host limit")
+
+// inviteLinkHostLocked is the single invitation behind the link lock (PAC-120
+// contract md §3). The link is locked FOR NO KEY UPDATE, the mode of the
+// PATCH and the delete, so invitations are ordered against each other and
+// against list saves (md §4.1), and the owner is read under that lock. Then:
+// an existing row is returned unchanged (PAC-61); the owner's own address is
+// today's InviteLinkHost, never counted; CoHostListLimit or more non-owner
+// rows is ErrCoHostLimitReached; otherwise the pending row is inserted. Link
+// gone is decided by the lock step only, never by the insert's zero rows.
+// Every writer that can add a host row to an existing link takes this lock
+// in a conflicting mode first, so the count is exact (md §3).
+func inviteLinkHostLocked(ctx context.Context, q Querier, linkID, userID uuid.UUID) (*LinkHost, bool, error) {
+	var owner uuid.UUID
+	err := q.QueryRowContext(context.Background(),
+		`SELECT owner_user_id FROM scheduling_links WHERE id = $1 AND deleted_at IS NULL FOR NO KEY UPDATE`,
+		linkID).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, ErrLinkGone
+	}
+	if err != nil {
 		return nil, false, err
+	}
+	if fn, ok := afterLinkInviteLock.get(); ok {
+		if err := fn(ctx, linkID); err != nil {
+			return nil, false, err
+		}
+	}
+	existing, err := scanLinkHost(q.QueryRowContext(context.Background(), `
+		SELECT id, link_id, user_id, status, invited_at, responded_at
+		FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
+	`, linkID, userID))
+	if err != nil {
+		return nil, false, err
+	}
+	if existing != nil {
+		return existing, false, nil
+	}
+	if userID == owner {
+		return InviteLinkHost(q, linkID, userID)
+	}
+	var coHosts int
+	if err := q.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM scheduling_link_hosts WHERE link_id = $1 AND user_id <> $2`,
+		linkID, owner).Scan(&coHosts); err != nil {
+		return nil, false, err
+	}
+	if coHosts >= CoHostListLimit {
+		return nil, false, ErrCoHostLimitReached
 	}
 	return InviteLinkHost(q, linkID, userID)
 }

@@ -58,16 +58,18 @@ Contract is `yes`, and `light` otherwise.
 
 ## 2. Summary
 
-100 register rows from about 90 candidates. Duplicates across reports were merged
+101 register rows from about 90 candidates. Duplicates across reports were merged
 (see §9); F3, F6, F14, F24 and L-k were split because their parts differ in
-severity or domain. In total, 89 rows are confirmed and 11 are likely. Four candidates
+severity or domain. In total, 90 rows are confirmed and 11 are likely. Four candidates
 or parts were rejected (§4), and seven finder claims were corrected in place.
 SF-100 was added after review (PR #288) and keeps its number; it sits in its
-sorted position in the register.
+sorted position in the register. SF-101 was added by the PAC-120 contract (from
+that spec's challenge, M-2) and sits after SF-068; it is counted in no pattern
+below (its error is answered with the right status but never logged).
 
 | Domain | critical | high | medium | low | total |
 |---|---:|---:|---:|---:|---:|
-| scheduling-links/booking | · | 1 | 4 | 3 | 8 |
+| scheduling-links/booking | · | 1 | 4 | 4 | 9 |
 | calendar | · | 1 | 7 | 3 | 11 |
 | auth | · | 1 | 1 | 3 | 5 |
 | teams/manager | 2 | 5 | 3 | 5 | 15 |
@@ -79,14 +81,14 @@ sorted position in the register.
 | web-only | 1 | 1 | 14 | 10 | 26 |
 | mcp | · | 2 | 5 | 2 | 9 |
 | observability | · | · | · | 4 | 4 |
-| **total** | **4** | **22** | **39** | **35** | **100** |
+| **total** | **4** | **22** | **39** | **36** | **101** |
 
 | | count |
 |---|---:|
-| confirmed | 89 |
+| confirmed | 90 |
 | likely | 11 |
 | contract change (`full` process) | 16 |
-| no contract change (`light` process) | 84 |
+| no contract change (`light` process) | 85 |
 
 By shape of failure:
 
@@ -174,7 +176,8 @@ web `web H*`, `web M*` and `web L*`; MCP `M1`..`M11` (no hyphen) and `X1`.
 | SF-065 | medium | mcp | confirmed | no | light | API-079 | **list_focus_blocks says "all" but returns one week** | `mcp/tools.go:150-155`; `api/handlers_focus.go:64-84` | The backend lists the 7 days from now. Adding a `week` argument would be a schema change; fixing the description is not. | M6 |
 | SF-066 | low | scheduling-links/booking | confirmed | no | light | — | **With SMTP unset, emails are skipped as if sent** | `engine/booking.go:822-824`; `api/handlers_teams.go:652-660` | Both senders `return nil` when `SMTP_HOST` or `SMTP_FROM` is empty, so no failure is logged or reported and there is no startup warning; the invite sender also defaults `BASE_URL` to `https://paceday.app`. Not pinned (only the failure path is, `TestPAC81_InviteEmailFailureLogged`). | F16 / L-e |
 | SF-067 | low | scheduling-links/booking | confirmed | no | light | — | **A failed booking-event save is ignored** | `engine/booking.go:718` | `_ = storage.SaveBookingEvent`. The host event exists but is not recorded; `booking_events` is read by the account-emptiness check (`storage/emptiness.go:42`). | F17 |
-| SF-068 | low | scheduling-links/booking | confirmed | no | light | — | **Inviting a co-host answers "user not found" on a storage error** | `api/handlers_scheduling_links.go:854-857` | `if err != nil \|\| !found` → 404. The not-found/unconfirmed answer is deliberate (API-072); the error branch should be 500. | L-k (part) |
+| SF-068 | low | scheduling-links/booking | confirmed | no | light | — | **Inviting a co-host answers "user not found" on a storage error** | `api/handlers_scheduling_links.go:934-937` (was `:854-857` at `0f11003`) | `if err != nil \|\| !found` → 404. The not-found/unconfirmed answer is deliberate (API-072); the error branch should be 500. The contract already says 500 (`contracts/openapi/paths/booking.yaml`, `inviteSchedulingLinkHost` 500). **Fixed (PAC-120)** (spec D-5, AC-14; contract `contracts/features/PAC-120.md` §1.2): a lookup error is the documented 500 `{"error":"internal error"}`, logged and reported to Sentry under the step `invite lookup` (`writeServerError`); "user not found" stays for no single domain-confirmed holder. Pinned by `TestPAC120_AC14_FailedLookupIs500` (`backend/api/pac120_test.go`). | L-k (part) |
+| SF-101 | low | scheduling-links/booking | confirmed | no | light | — | **A failed link read on the co-host invitation is neither logged nor reported** | `api/handlers_scheduling_links.go:912-916`; `writeError`, `api/handlers_settings.go:479-483` | `inviteHost` answers a `GetSchedulingLinkByID` error with `writeError(w, "internal error", 500)`, not `writeServerError`, so the detail reaches neither the log nor Sentry. The contract's 500 for this operation says the detail goes to the server log and Sentry (PAC-21). *(Added by the PAC-120 contract, from the PAC-120 spec challenge M-2.)* **Fixed (PAC-120)** (spec D-6, AC-15; contract `contracts/features/PAC-120.md` §1.2): same status and body, now through `writeServerError` under the step `invite link read`. Pinned by `TestPAC120_AC15_FailedLinkReadIsLoggedAndReported` (`backend/api/pac120_test.go`). | PAC-120 spec challenge M-2 |
 | SF-069 | low | calendar | confirmed | no | light | API-071 (adjacent) | **A Zoom/Teams meeting is orphaned when the calendar update fails** | `api/handlers_credentials.go:332-347` | The provider meeting is created, then `UpdateEvent` fails (500) and the meeting is never deleted at the provider. | L-i |
 | SF-070 | low | calendar | confirmed | no | light | — | **Audit details become invalid JSON when a title contains a quote** | `api/handlers_schedule.go:212`; `api/handlers_nlp.go:69`; `engine/smart_schedule.go:331` | Details are built by string concatenation; `audit_log.details` is TEXT and `/api/audit` serves it as a string, so consumers parsing it get malformed JSON. | L-c |
 | SF-100 | low | calendar | confirmed | yes | full | API-071 (adjacent) | **Any GetEvent failure on the conference routes answers 404 "event not found"** | `api/handlers_credentials.go:280-283`; `api/handlers_conferencing.go:305-308`; contract `contracts/openapi/openapi.yaml:4258-4262`, `:4306` | `POST` and `DELETE /api/events/{id}/conference` map every `GetEvent` error to 404, so a Google outage reads as "the event does not exist". The contract states it as fact ("Any GetEvent failure maps to 404 ... spec D-10: unchanged on purpose"), and no test pins it for these routes (the `handlers_events_test.go` tables pin the events routes, which answer 500 for a Google 500/403). Per §1, a contract-documented silent behaviour stays a row; the fix edits the contract (PAC-67 D-10). | L-k (conference half) |
@@ -342,7 +345,7 @@ follows: **focus** and **personal-calendars** go with *calendar*,
 |---|---|---|---|
 | **0. Critical** | SF-001, SF-002, SF-003, SF-004 | all four: check the three manager-delete writes in one transaction; compare `expires_at` in the invite read; 500 on a failed disconnect (500 is already documented); web logout says "not confirmed, retry" | — |
 | **O. Observability hook** | SF-096, SF-097, SF-098, SF-099, SF-073, SF-082 (reporting half: Sentry on send and insert failures), SF-042 (reporting half) | all | — |
-| **1. Scheduling links / booking** | SF-005, SF-027, SF-028, SF-029, SF-030, SF-066, SF-067, SF-068 | SF-027, SF-028, SF-029 (strict roster everywhere, the PAC-25 pattern), SF-030, SF-066 (sentinel and startup warning), SF-067, SF-068 | SF-005 (booker email 400) |
+| **1. Scheduling links / booking** | SF-005, SF-027, SF-028, SF-029, SF-030, SF-066, SF-067, SF-068, SF-101 | SF-027, SF-028, SF-029 (strict roster everywhere, the PAC-25 pattern), SF-030, SF-066 (sentinel and startup warning), SF-067, SF-068 and SF-101 (both fixed by PAC-120) | SF-005 (booker email 400) |
 | **2. Calendar** (+ focus, personal-calendars) | SF-006, SF-018, SF-019, SF-020, SF-021, SF-031, SF-032, SF-033, SF-034, SF-035, SF-036, SF-037, SF-042, SF-043, SF-044, SF-069, SF-070, SF-100 | SF-018 and SF-020 (delete the row only after the event delete succeeds), SF-019, SF-021, SF-035 (set `is_personal_block`), SF-032, SF-036, SF-037, SF-042, SF-044, SF-006, SF-069, SF-070 | SF-031 (API-071, 409), SF-033 (cache key in the contract text), SF-034 (API-077, 400), SF-043 (API-075, provider and URL validation), SF-100 (conference `GetEvent` → 404 is contract text, PAC-67 D-10) |
 | **3. Auth** (+ integrations) | SF-007, SF-022, SF-023, SF-038, SF-045, SF-071, SF-072, SF-081 | SF-007, SF-023, SF-045, SF-071, SF-072, SF-081 | SF-038 (`getAuthStatus` fallback is in the contract; `TestAuthStatus_NotConnected` changes), SF-022 (brief refresh needs a 404) |
 | **4. Teams / manager** | SF-008 – SF-012, SF-039, SF-040, SF-041, SF-074 – SF-078 | SF-008, SF-009, SF-010, SF-011, SF-039, SF-040, SF-041, SF-074, SF-076, SF-077 | SF-012 (API-090, 409 and unique index), SF-075 (API-047), SF-078 (zone 404) |

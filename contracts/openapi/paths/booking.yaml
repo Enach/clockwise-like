@@ -182,8 +182,9 @@ paths:
         nothing either way. This ordering against the delete never makes two
         bookings wait for each other; the PAC-82 ordering below can, only for
         the length of a save. A save that must wait for a delete, pause or
-        edit of the same link, or for another booking's save, still in
-        progress waits at most 10 seconds per wait; past that it is the 500
+        edit of the same link, for a co-host invitation on it (PAC-120), or
+        for another booking's save, still in progress waits at most 10
+        seconds per wait; past that it is the 500
         and nothing is written.
 
 
@@ -398,7 +399,8 @@ paths:
             this 500 (PAC-81 contract revision 2). Only the 503 proves that nothing
             was saved. Also this 500, with `{"error":"internal error"}` and nothing
             written: the save waited 10 seconds for a delete, pause or edit of the
-            same link still in progress (PAC-101), or for another booking's save
+            same link, or a co-host invitation on it, still in progress (PAC-101,
+            PAC-120), or for another booking's save
             on a common host or the same use-limited link (PAC-82); the client
             cannot tell this case from the others. A 500 answered to a request
             carrying an `Idempotency-Key` may be retried with the same key and
@@ -1135,7 +1137,7 @@ paths:
         (`active=false`) keeps its host rows, so accept/decline on it match and return
         200 (PAC-30 D-5). A deleted link answers 404 to every caller and no host row
         changes (PAC-40 AC-5), even though its host rows are kept in storage.
-        PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or edit of the same link still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.
+        PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or edit of the same link, or for a co-host invitation (PAC-120), still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -1190,7 +1192,8 @@ paths:
         200 (PAC-30 D-5). A deleted link answers 404 and no host row changes (PAC-40
         AC-5). PAC-101: as for accept, a delete committed while the request is handled
         is a 404 with nothing changed, a decline committed first is kept, and the wait
-        for a delete or edit in progress is at most 10 seconds (then the 500).
+        for a delete or edit, or a co-host invitation (PAC-120), in progress is at
+        most 10 seconds (then the 500).
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -1601,9 +1604,43 @@ paths:
         is written (AC-6, AC-6a).
 
 
-        PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or edit of the same link still in progress waits at most 10 seconds; past that it is the 500 and nothing changes. A refusal decided before the write (400,
-        403, the 404 "user not found") keeps its answer even if the link was
-        deleted meanwhile; nothing is written either way.
+        PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete, edit, booking save, host response or other invitation of the same link still in progress waits at most 10 seconds per wait; past that it is the 500 and nothing changes. The bound is per wait, not in total (PAC-120): a booking save or host response that arrives while the invitation is waiting can take the link first, so on a busy link the invitation can wait longer than 10 seconds in all, until the request budget ends it, but it never deadlocks. A refusal decided before the write (400,
+        403, the 404 "user not found", the 500 of a failed link read or a failed
+        address lookup) keeps its answer even if the link was deleted meanwhile;
+        nothing is written either way.
+
+
+        PAC-120 (spec docs/specs/PAC-120.md §3.2): a link holds at most 5
+        co-hosts. A co-host is any host row of the link other than its owner's,
+        whatever its status (`pending`, `accepted` or `declined`). The owner's
+        own row is never counted, whatever its status and whether or not it
+        exists. An invitation that would add a host row is refused with 422
+        `{"error":"this link has reached its limit of 5 co-hosts; remove a
+        co-host before inviting another"}` when the link already has 5 co-hosts
+        or more, and nothing is written. The limit is the same value as the
+        co-host list's (createSchedulingLink, updateSchedulingLink) and the
+        link editor's. It never refuses: re-inviting someone who is already a
+        host of the link, at any count and of any status (the 200 above, row
+        unchanged), including the second of two simultaneous invitations of one
+        new address; the owner inviting their own address (200 with their row
+        unchanged; for a link with no owner row, created before PAC-112, the
+        201 with a `pending` owner row, which is not a co-host, is today's
+        answer and may change in a follow-up); and accepting, declining, leaving
+        or removal, which other operations do. A link already above 5 keeps its
+        co-hosts and accepts new invitations again once it has 4 or fewer.
+
+
+        The limit is decided inside the write, after the session re-check and
+        after the link's lock, against the host rows read under that lock,
+        never from an earlier read. Invitations and co-host list saves on one
+        link are ordered by that lock, so together they never take it past 5:
+        two simultaneous invitations of different new addresses on a link with
+        4 co-hosts give one 201 and one 422. Every earlier answer comes first
+        and is unchanged: 400 "invalid id", the 500 of a failed link read, 404
+        "not found", 403, 400 "email is required", 404 "user not found", the
+        500 of a failed address lookup. A session whose generation moved before
+        the write's re-check gets requireAuth's 401 instead of the 422
+        (PAC-71); one that moves after it leaves the 422 standing.
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       requestBody:
@@ -1647,7 +1684,8 @@ paths:
             every caller, owner included, PAC-40 AC-6, AC-6a) or
             `{"error":"user not found"}` (the link is live or paused and owned by the
             caller, and no account holds that email domain-confirmed; PAC-71). Nothing
-            is written in either case.
+            is written in either case. A storage error while resolving the address is
+            the 500, never this 404 (PAC-120, SF-068).
           content:
             application/json:
               schema:
@@ -1661,12 +1699,27 @@ paths:
                   summary: No account holds the email domain-confirmed
                   value:
                     error: user not found
+        '422':
+          description: >-
+            The link already has 5 co-hosts or more, and the invitee is not yet a
+            host of it (PAC-120). Nothing was written. Given only for an address
+            that resolves to an invitable account, after every other refusal, and
+            never for a re-invitation or for the owner's own address. Body exactly
+            `{"error":"this link has reached its limit of 5 co-hosts; remove a
+            co-host before inviting another"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLinkHostLimitError'
         '500':
           description: >-
-            Lookup or invite failed, or the lock on the link was not obtained within
-            10 seconds (PAC-101); no host row was written. Body:
-            `{"error":"internal error"}`. The detail is written to the server log and
-            Sentry only (PAC-21).
+            One of: the link could not be read; the invitee's address could not be
+            resolved because of a storage error (PAC-120, SF-068: this answered 404
+            "user not found" before); the write failed; or the lock on the link was
+            not obtained within 10 seconds (PAC-101). No host row was written. Body:
+            `{"error":"internal error"}`. In every case the detail is written to the
+            server log and Sentry only (PAC-21; the failed link read was neither
+            logged nor reported before PAC-120, SF-101).
           content:
             application/json:
               schema:
@@ -1686,7 +1739,7 @@ paths:
         gets 404 and nothing changes (PAC-30, API-020). The duplicate spelling itself
         (API-069) is not resolved by PAC-30. A paused link (`active=false`) keeps its
         host rows, so accept/decline on it match and return 200 (PAC-30 D-5). A deleted
-        link answers 404 and no host row changes (PAC-40 AC-5). PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or edit of the same link still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.
+        link answers 404 and no host row changes (PAC-40 AC-5). PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or edit of the same link, or for a co-host invitation (PAC-120), still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -1740,7 +1793,8 @@ paths:
         return 200 (PAC-30 D-5). A deleted link answers 404 and no host row changes
         (PAC-40 AC-5). PAC-101: as for accept, a delete committed while the request is
         handled is a 404 with nothing changed, a decline committed first is kept, and
-        the wait for a delete or edit in progress is at most 10 seconds (then the 500).
+        the wait for a delete or edit, or a co-host invitation (PAC-120), in progress
+        is at most 10 seconds (then the 500).
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -1794,7 +1848,7 @@ paths:
         owner and pending invitee included, and no host row is removed (PAC-40 AC-5);
         caller is the owner -> 400 "owner cannot leave link"; the DELETE removes zero
         rows (the caller has no host row on the link) -> 404 and nothing changes
-        (PAC-30, API-020; before PAC-30 a non-host got 204). PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or edit of the same link still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.
+        (PAC-30, API-020; before PAC-30 a non-host got 204). PAC-101: A link deleted while the request is handled: the write and the check that the link is not deleted are one atomic step ordered against the delete. If the delete commits first, the answer is the same 404 `{"error":"not found"}` as for a link deleted before the request arrived and no host row changes; if the write commits first it takes full effect and the delete then keeps the resulting host rows (PAC-40 D-2). A paused link does not block it. A write that must wait for a delete or edit of the same link, or for a co-host invitation (PAC-120), still in progress waits at most 10 seconds; past that it is the 500 and nothing changes.
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -3506,6 +3560,22 @@ components:
           type: string
           format: email
           description: Must be non-empty after trimming and must match an existing account (lowercased before lookup).
+
+    SchedulingLinkHostLimitError:
+      type: object
+      description: >-
+        The 422 of `inviteSchedulingLinkHost` (PAC-120): the link already has 5
+        co-hosts or more (non-owner host rows of any status) and the invitation
+        would add one. The text is distinct from the co-host list's over-5 422
+        on create and PATCH, and reads as a limit on the link, not on the
+        request. Nothing was written.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: ['this link has reached its limit of 5 co-hosts; remove a co-host before inviting another']
+          x-enum-varnames: [SchedulingLinkHostLimitReached]
 
     SchedulingLinkHostRecord:
       type: object

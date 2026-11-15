@@ -13,7 +13,8 @@
 // RespondToHostInviteCtx in guarded.go, run through withLinkWriteTx instead: they ALWAYS open a transaction, with
 // or without a session guard. Under a guard the re-check is still its first
 // statement; then the link-lock bound (SET LOCAL lock_timeout) is set and the
-// link is locked (FOR SHARE, or the PATCH's UPDATE) before anything is written.
+// link is locked (FOR SHARE; FOR NO KEY UPDATE for the single invitation, PAC-120;
+// or the PATCH's UPDATE) before anything is written.
 
 package storage
 
@@ -159,13 +160,16 @@ func DeleteWorkspaceConnectionCtx(ctx context.Context, db DBTX, userID uuid.UUID
 	return err
 }
 
-// InviteLinkHostCtx is InviteLinkHost under the in-request re-check (PAC-71, contract §5),
-// behind the link's FOR SHARE lock (PAC-101 contract §3.2): ErrLinkGone, with no host
-// row written, when the link is deleted before the lock is taken.
+// InviteLinkHostCtx is the single invitation under the in-request re-check (PAC-71,
+// contract §5), behind the link's FOR NO KEY UPDATE lock (PAC-120 contract md §3,
+// §4.1; it was FOR SHARE under PAC-101): ErrLinkGone, with no host row written, when
+// the link is deleted before the lock is taken; ErrCoHostLimitReached, with nothing
+// written, when a new non-owner invitee would join a link that already has
+// CoHostListLimit co-hosts. ctx reaches the afterLinkInviteLock test seam.
 func InviteLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID) (r0 *LinkHost, r1 bool, err error) {
 	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, r1, e = inviteLinkHostLocked(q, linkID, userID)
+		r0, r1, e = inviteLinkHostLocked(ctx, q, linkID, userID)
 		return e
 	})
 	return r0, r1, err

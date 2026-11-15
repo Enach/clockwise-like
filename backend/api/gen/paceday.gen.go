@@ -507,6 +507,11 @@ const (
 	SchedulingLinkHostStatusPending  SchedulingLinkHostStatus = "pending"
 )
 
+// Defines values for SchedulingLinkHostLimitErrorError.
+const (
+	SchedulingLinkHostLimitReached SchedulingLinkHostLimitErrorError = "this link has reached its limit of 5 co-hosts; remove a co-host before inviting another"
+)
+
 // Defines values for SchedulingLinkHostRecordStatus.
 const (
 	SchedulingLinkHostRecordStatusAccepted SchedulingLinkHostRecordStatus = "accepted"
@@ -3416,6 +3421,14 @@ type SchedulingLinkHostInvite struct {
 	// OwnerName May be the empty string if the owner record has no name.
 	OwnerName string `json:"owner_name"`
 }
+
+// SchedulingLinkHostLimitError The 422 of `inviteSchedulingLinkHost` (PAC-120): the link already has 5 co-hosts or more (non-owner host rows of any status) and the invitation would add one. The text is distinct from the co-host list's over-5 422 on create and PATCH, and reads as a limit on the link, not on the request. Nothing was written.
+type SchedulingLinkHostLimitError struct {
+	Error SchedulingLinkHostLimitErrorError `json:"error"`
+}
+
+// SchedulingLinkHostLimitErrorError defines model for SchedulingLinkHostLimitError.Error.
+type SchedulingLinkHostLimitErrorError string
 
 // SchedulingLinkHostRecord Raw backend/storage/scheduling_links.go LinkHost row, returned by POST /api/scheduling-links/{id}/hosts. Not the same shape as the `hosts[]` entries inside SchedulingLink.
 type SchedulingLinkHostRecord struct {
@@ -18582,6 +18595,15 @@ type InviteSchedulingLinkHost404JSONResponse BookingError
 func (response InviteSchedulingLinkHost404JSONResponse) VisitInviteSchedulingLinkHostResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type InviteSchedulingLinkHost422JSONResponse SchedulingLinkHostLimitError
+
+func (response InviteSchedulingLinkHost422JSONResponse) VisitInviteSchedulingLinkHostResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
 
 	return json.NewEncoder(w).Encode(response)
 }

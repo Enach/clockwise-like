@@ -74,8 +74,8 @@ async function linkWith(api: Api, title: string, invite: SessionUser[] = []): Pr
   expect(created.status(), await created.text()).toBe(201);
   const { id } = (await created.json()) as { id: string };
   for (const u of invite) {
-    // The single-invitation operation: unbounded, so it also builds the
-    // 7-co-host link of AC-32 (spec §2.3).
+    // The single-invitation operation. Since PAC-120 it refuses a sixth
+    // co-host (422), so AC-32 seeds its 7 host rows directly instead.
     const res = await api.post(`/api/scheduling-links/${id}/hosts`, { email: u.email });
     expect(res.status(), await res.text()).toBe(201);
   }
@@ -441,7 +441,16 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
     for (let i = 0; i < 7; i++) hosts.push(await freshUser(db, `ac32-h${i}`, run));
     try {
       const title = `E2E PAC112 AC-32 ${run}`;
-      const id = await linkWith(apiAs(a), title, hosts);
+      const id = await linkWith(apiAs(a), title);
+      // PAC-120 (contract md §7.1): the single invitation stops at 5 co-hosts,
+      // so the 7 pending rows are seeded in one statement, as after 7
+      // invitations. They share invited_at, so they come back in no fixed
+      // order; no assertion below depends on order. Accept and decline still
+      // go through the API.
+      await db.query(
+        `INSERT INTO scheduling_link_hosts (link_id, user_id, status) SELECT $1, unnest($2::uuid[]), 'pending'`,
+        [id, hosts.map((h) => h.id)],
+      );
       await respond(apiAs(hosts[1]!), id, 'accept');
       await respond(apiAs(hosts[2]!), id, 'decline');
       await respond(apiAs(hosts[3]!), id, 'accept');

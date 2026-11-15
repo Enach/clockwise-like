@@ -161,7 +161,7 @@ from the contract and any edit is reported as drift.
 | acceptSchedulingLinkInviteByLink  | POST   | /api/scheduling-links/{id}/accept               | scheduling-links | handwritten | |
 | listSchedulingLinkBookings        | GET    | /api/scheduling-links/{id}/bookings             | scheduling-links | handwritten | |
 | declineSchedulingLinkInviteByLink | POST   | /api/scheduling-links/{id}/decline              | scheduling-links | handwritten | |
-| inviteSchedulingLinkHost          | POST   | /api/scheduling-links/{id}/hosts                | scheduling-links | handwritten | |
+| inviteSchedulingLinkHost          | POST   | /api/scheduling-links/{id}/hosts                | scheduling-links | handwritten | PAC-120: responses modified (422 co-host limit added, 500 cases restated), kept handwritten. Moving it is a contract change: the generated wrapper decodes the body before the handler runs, so a malformed body would be refused before the link read, the 404 and the 403, and with the wrapper's own 400 text instead of "email is required" (contract PAC-120 §1.1). |
 | leaveSchedulingLink               | POST   | /api/scheduling-links/{id}/leave                | scheduling-links | handwritten | |
 | getSettings                       | GET    | /api/settings                                   | settings         | handwritten | |
 | patchSettings                     | PATCH  | /api/settings                                   | settings         | handwritten | |
