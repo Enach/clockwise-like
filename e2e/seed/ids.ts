@@ -452,6 +452,34 @@ export const PAC88_LINKS = {
 } as const;
 
 /**
+ * PAC-118 (PAC-112 AC-3's public-slots clause, tests/pac112-cohosts.spec.ts):
+ * a link owner and a co-host, both connected through the stand-in. Owned by
+ * that one journey: it creates its own run-unique link, invites and accepts
+ * the co-host, seeds busy time on the co-host's stand-in calendar (its email)
+ * and removes the co-host in the editor. No link is seeded for them, so a
+ * retry starts from a link of its own; the owner's calendar stays empty, so
+ * it is readable and free (PAC-72 D-6) and only the co-host's event can
+ * remove a slot. The journey deletes the links it created and clears the
+ * co-host's calendar at the end; it never deletes these users.
+ */
+export const PAC112_HOSTS = {
+  owner: {
+    id: 'a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2',
+    email: 'e2e.pac112.owner@paceday.test',
+    name: 'E2E PAC-112 Link Owner',
+    token: 'e2e-pac112-owner-work',
+    label: 'pac112-owner-work',
+  },
+  coHost: {
+    id: 'a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3',
+    email: 'e2e.pac112.cohost@paceday.test',
+    name: 'E2E PAC-112 Co-host',
+    token: 'e2e-pac112-cohost-work',
+    label: 'pac112-cohost-work',
+  },
+} as const;
+
+/**
  * Every credential the stand-in accepts, installed by global setup. The
  * rejected user's token is deliberately absent.
  */
@@ -467,6 +495,7 @@ export const ACCEPTED_CREDENTIALS = [
     ...Object.values(BOOKING_HOSTS),
     ...Object.values(AVATAR_HOSTS),
     ...Object.values(PAC88_HOSTS),
+    ...Object.values(PAC112_HOSTS),
   ].map((u) => ({
     token: u.token,
     label: u.label,
@@ -493,6 +522,7 @@ export const SEEDED_USER_IDS: readonly string[] = [
   ...Object.values(AVATAR_HOSTS).map((u) => u.id),
   ...Object.values(BOOKING_HOSTS).map((u) => u.id),
   ...Object.values(PAC88_HOSTS).map((u) => u.id),
+  ...Object.values(PAC112_HOSTS).map((u) => u.id),
 ];
 
 export const SEEDED_LINK_IDS: readonly string[] = [
