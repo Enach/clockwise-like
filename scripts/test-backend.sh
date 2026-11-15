@@ -61,5 +61,5 @@ docker run --rm --network host \
   ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"} \
   -v "$ROOT_DIR:/repo" \
   -w /repo/backend \
-  golang:1.25-alpine \
+  golang:1.26-alpine \
   sh -c 'go test -p 1 $GO_TEST_FLAGS ./...'
