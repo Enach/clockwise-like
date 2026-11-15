@@ -158,6 +158,9 @@ func carriersOfTrimmed(q Querier, email string) ([]Carrier, error) {
 // letter case, when that account holds it domain-confirmed. An unconfirmed
 // carrier, a case collision (two carriers) or no carrier resolves to nobody.
 func ConfirmedHolder(q Querier, email string) (uuid.UUID, bool, error) {
+	if err := fireSeamErr(&confirmedHolderLookup, email); err != nil {
+		return uuid.Nil, false, err
+	}
 	carriers, err := CarriersOf(q, email)
 	if err != nil {
 		return uuid.Nil, false, err
