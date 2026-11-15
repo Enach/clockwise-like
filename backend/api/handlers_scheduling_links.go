@@ -461,8 +461,20 @@ func (h *schedulingLinkHandlers) zoneOf(ownerID uuid.UUID) (*time.Location, erro
 }
 
 // POST /api/scheduling-links
+//
+// Order of evaluation (PAC-119 contract md §1.1): requireAuth, then the key
+// 400 before any byte of the body is decoded, then the body and field checks,
+// the owner and zone reads, and for a keyed create the resolution R1 (replay
+// or refusal, decided under the PAC-71 re-checks). A keyed create's slug
+// conflict, found by the pre-check or by the insert's unique violation,
+// resolves the key again (R2, R3) before any slug answer.
 func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	key, ok := idempotencyKey(r)
+	if !ok {
+		writeError(w, errInvalidIdempotencyKey, http.StatusBadRequest)
+		return
+	}
 	var input schedulingLinkInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
@@ -490,6 +502,16 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		writeServerError(w, r, "create link zone", err, http.StatusInternalServerError)
 		return
 	}
+	var attempt *storage.LinkCreateAttempt
+	if key != "" {
+		// R1, on the validated link before slug generation (the digest's
+		// slug is the normalised one sent, contract md §2.3).
+		pre := link
+		attempt = &storage.LinkCreateAttempt{Key: key, Link: &pre, CoHostEmails: input.CoHostEmails}
+		if h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+			return
+		}
+	}
 	if link.Slug == "" {
 		if len(link.DurationOptions) == 0 {
 			writeError(w, "at least one duration is required", http.StatusUnprocessableEntity)
@@ -504,6 +526,11 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "slug check failed", http.StatusInternalServerError)
 		return
 	} else if exists {
+		// R2: a keyed create is never "slug already exists" while its own
+		// key is stored (spec §3.4).
+		if attempt != nil && h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+			return
+		}
 		writeError(w, "slug already exists", http.StatusConflict)
 		return
 	}
@@ -512,17 +539,70 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	// insert, never the upsert that demoted the owner, API-048) and every
 	// invitation in one transaction, with or without a session guard. Any
 	// failure is the 500 with no link and no host row; a list over the limit
-	// that adds someone is the 422, decided inside it.
-	created, changes, err := storage.CreateSchedulingLinkWithCoHostsCtx(r.Context(), h.db, &link, input.CoHostEmails)
+	// that adds someone is the 422, decided inside it. PAC-119 §4.2: a keyed
+	// create also claims its key there, before the host work.
+	var digest []byte
+	if attempt != nil {
+		digest = attempt.Digest
+	}
+	created, changes, err := storage.CreateSchedulingLinkWithCoHostsKeyedCtx(r.Context(), h.db, &link, input.CoHostEmails, key, digest)
 	if errors.Is(err, storage.ErrCoHostListTooLong) {
 		writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
 		return
+	}
+	if attempt != nil && errors.Is(err, storage.ErrLinkCreateConflict) {
+		// R3: a new guarded transaction. With nothing stored, a slug
+		// violation stays today's 500 (spec §5) and a key violation with no
+		// row found is the 500.
+		if h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+			return
+		}
 	}
 	if err != nil {
 		writeServerError(w, r, "create failed", err, http.StatusInternalServerError)
 		return
 	}
 	h.writeSavedLink(w, http.StatusCreated, created, loc, userID, changes)
+}
+
+// answerLinkCreateKey runs one resolution of a keyed create (R1, R2 or R3,
+// PAC-119 contract md §4.1) and answers it: the replay 201, or the deleted,
+// expired or key-reused 409. It reports whether it answered; false means
+// nothing is stored under the key and the create goes on. A stale session
+// writes nothing derived from the key row: requireAuth's response guard turns
+// the answer into its own 401.
+func (h *schedulingLinkHandlers) answerLinkCreateKey(w http.ResponseWriter, r *http.Request, userID uuid.UUID, a *storage.LinkCreateAttempt, loc *time.Location) bool {
+	res, err := storage.ResolveLinkCreateKeyCtx(r.Context(), h.db, userID, a)
+	switch {
+	case errors.Is(err, storage.ErrStaleSession):
+		writeError(w, "internal error", http.StatusInternalServerError)
+		return true
+	case err != nil:
+		writeServerError(w, r, "create link key", err, http.StatusInternalServerError)
+		return true
+	}
+	switch res.Outcome {
+	case storage.LinkCreateKeyReplay:
+		h.writeSavedLink(w, http.StatusCreated, res.Link, loc, userID, res.Changes)
+	case storage.LinkCreateKeyDeleted:
+		writeLinkCreateKeyConflict(w, gen.SchedulingLinkCreateKeyDeletedError{Error: gen.SchedulingLinkCreateKeyDeletedLink})
+	case storage.LinkCreateKeyExpired:
+		writeLinkCreateKeyConflict(w, gen.SchedulingLinkCreateKeyLinkError{Error: gen.SchedulingLinkCreateKeyExpired, LinkId: res.LinkID})
+	case storage.LinkCreateKeyReused:
+		writeLinkCreateKeyConflict(w, gen.SchedulingLinkCreateKeyLinkError{Error: gen.SchedulingLinkCreateKeyAlreadyUsed, LinkId: res.LinkID})
+	default:
+		return false
+	}
+	return true
+}
+
+// writeLinkCreateKeyConflict writes one of the PAC-119 key refusals, a 409
+// whose body is the generated schema (SchedulingLinkCreateConflict's key
+// variants): {"error":...} plus link_id for the two link refusals.
+func writeLinkCreateKeyConflict(w http.ResponseWriter, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // GET /api/scheduling-links

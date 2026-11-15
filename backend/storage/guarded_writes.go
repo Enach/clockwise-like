@@ -395,9 +395,21 @@ func UpdateSchedulingLinkReportingCoHostsCtx(ctx context.Context, db DBTX, id uu
 // the co-host list; changes is nil exactly when coHostEmails is nil. Any error, including
 // ErrCoHostListTooLong, leaves no link and no host row.
 func CreateSchedulingLinkWithCoHostsCtx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
+	return CreateSchedulingLinkWithCoHostsKeyedCtx(ctx, db, l, coHostEmails, "", nil)
+}
+
+// CreateSchedulingLinkWithCoHostsKeyedCtx is CreateSchedulingLinkWithCoHostsCtx
+// with the create's Idempotency-Key and request digest (PAC-119 contract md
+// §4.2); key "" is a keyless create, byte for byte the PAC-112 transaction.
+// A keyed create inserts its key row right after the link, before any host
+// work, and stores its co-host outcomes on it when it carried a list. A unique
+// violation on the slug or on (owner, key) is a *LinkCreateConflictError
+// (errors.Is ErrLinkCreateConflict), with everything rolled back: the keyed
+// caller then resolves its key again in a new ResolveLinkCreateKeyCtx (R3).
+func CreateSchedulingLinkWithCoHostsKeyedCtx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string, key string, digest []byte) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
 	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, changes, e = createSchedulingLinkWithCoHosts(q, l, coHostEmails)
+		r0, changes, e = createSchedulingLinkWithCoHosts(q, l, coHostEmails, key, digest)
 		return e
 	})
 	if err != nil {

@@ -385,11 +385,11 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
       await drawer.getByLabel('End', { exact: true }).fill('17:00');
       await addCoHost(drawer, c);
 
-      const requests: Array<{ method: string; path: string }> = [];
+      const requests: Array<{ method: string; path: string; key: string | null }> = [];
       page.on('request', (r) => {
         const path = new URL(r.url()).pathname;
         if (path.startsWith('/api/scheduling-links') && ['POST', 'PATCH'].includes(r.method())) {
-          requests.push({ method: r.method(), path });
+          requests.push({ method: r.method(), path, key: r.headers()['idempotency-key'] ?? null });
         }
       });
       const created = page.waitForResponse(
@@ -420,6 +420,10 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
       expect((await patched).status()).toBe(200);
 
       expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
+      // PAC-119 AC-26 and AC-18: the one create carries an attempt key; the
+      // edit that follows carries none.
+      expect(requests.find((r) => r.method === 'POST')!.key).toMatch(/^[A-Za-z0-9_-]{16,255}$/);
+      expect(requests.filter((r) => r.method === 'PATCH').map((r) => r.key)).toEqual([null]);
       const links = await db.query<{ id: string; title: string }>(
         'SELECT id, title FROM scheduling_links WHERE owner_user_id = $1',
         [a.id],

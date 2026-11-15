@@ -181,8 +181,17 @@ test.describe('scheduling links', () => {
       await drawer.getByLabel('Start', { exact: true }).fill('09:00');
       await drawer.getByLabel('End', { exact: true }).fill('17:00');
 
+      // PAC-119 AC-26: one create request per press, carrying an attempt key.
+      const creates: Array<string | null> = [];
+      authedPage.on('request', (r) => {
+        if (r.method() === 'POST' && new URL(r.url()).pathname.replace(/\/$/, '') === '/api/scheduling-links') {
+          creates.push(r.headers()['idempotency-key'] ?? null);
+        }
+      });
       await drawer.getByRole('button', { name: /create link/i }).click();
       await expect(drawer).toBeHidden();
+      expect(creates).toHaveLength(1);
+      expect(creates[0]).toMatch(/^[A-Za-z0-9_-]{16,255}$/);
 
       // The server has it, owned by this user.
       const res = await authedApi.get('/api/scheduling-links');

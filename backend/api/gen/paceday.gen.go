@@ -489,6 +489,17 @@ const (
 	CoHostOutcomeOwnAddress  SchedulingLinkCoHostOutcomeOutcome = "own_address"
 )
 
+// Defines values for SchedulingLinkCreateKeyDeletedErrorError.
+const (
+	SchedulingLinkCreateKeyDeletedLink SchedulingLinkCreateKeyDeletedErrorError = "idempotency key already used by a deleted link"
+)
+
+// Defines values for SchedulingLinkCreateKeyLinkErrorError.
+const (
+	SchedulingLinkCreateKeyAlreadyUsed SchedulingLinkCreateKeyLinkErrorError = "idempotency key already used"
+	SchedulingLinkCreateKeyExpired     SchedulingLinkCreateKeyLinkErrorError = "idempotency key expired"
+)
+
 // Defines values for SchedulingLinkHostStatus.
 const (
 	SchedulingLinkHostStatusAccepted SchedulingLinkHostStatus = "accepted"
@@ -539,6 +550,11 @@ const (
 	SchedulingLinkSavedUsageTypeRecurring SchedulingLinkSavedUsageType = "recurring"
 	SchedulingLinkSavedUsageTypeReusable  SchedulingLinkSavedUsageType = "reusable"
 	SchedulingLinkSavedUsageTypeSingleUse SchedulingLinkSavedUsageType = "single_use"
+)
+
+// Defines values for SchedulingLinkSlugTakenErrorError.
+const (
+	SchedulingLinkSlugTaken SchedulingLinkSlugTakenErrorError = "slug already exists"
 )
 
 // Defines values for SettingsCalendarProvider.
@@ -3343,6 +3359,28 @@ type SchedulingLinkCoHostOutcome struct {
 // SchedulingLinkCoHostOutcomeOutcome defines model for SchedulingLinkCoHostOutcome.Outcome.
 type SchedulingLinkCoHostOutcomeOutcome string
 
+// SchedulingLinkCreateConflict The 409 of `createSchedulingLink`. Exactly one variant applies, told apart by `error` alone, since the three `error` sets are disjoint (the PublicBookingConflict pattern). Every variant keeps the shared `{error}` envelope, so a client that reads only `error` still shows a message.
+type SchedulingLinkCreateConflict struct {
+	union json.RawMessage
+}
+
+// SchedulingLinkCreateKeyDeletedError A keyed `createSchedulingLink` refused because the link that its `Idempotency-Key` created has been deleted (PAC-40), at any age and for any request (PAC-119). The body is exactly `{"error":"idempotency key already used by a deleted link"}`. It names no link, since no read can find a deleted one. A client that wants a new link sends a new key. Nothing was written.
+type SchedulingLinkCreateKeyDeletedError struct {
+	Error SchedulingLinkCreateKeyDeletedErrorError `json:"error"`
+}
+
+// SchedulingLinkCreateKeyDeletedErrorError defines model for SchedulingLinkCreateKeyDeletedError.Error.
+type SchedulingLinkCreateKeyDeletedErrorError string
+
+// SchedulingLinkCreateKeyLinkError A keyed `createSchedulingLink` refused because its `Idempotency-Key` already created a live link of the caller's (PAC-119). The key named in `link_id` was used either for a different request less than 24 hours ago (`idempotency key already used`) or 24 hours ago or more, whatever the request (`idempotency key expired`). `link_id` is always the caller's own link, never another account's, and the body carries nothing else of it. A client recovers by editing that link (`getSchedulingLink`, `updateSchedulingLink`). Nothing was written.
+type SchedulingLinkCreateKeyLinkError struct {
+	Error  SchedulingLinkCreateKeyLinkErrorError `json:"error"`
+	LinkId openapi_types.UUID                    `json:"link_id"`
+}
+
+// SchedulingLinkCreateKeyLinkErrorError defines model for SchedulingLinkCreateKeyLinkError.Error.
+type SchedulingLinkCreateKeyLinkErrorError string
+
 // SchedulingLinkHost backend/api/handlers_scheduling_links.go schedulingHostDTO - the host shape embedded in SchedulingLink. Distinct from SchedulingLinkHostRecord, which is the raw DB row returned by POST /{id}/hosts.
 type SchedulingLinkHost struct {
 	// AvatarUrl Omitted when empty.
@@ -3489,6 +3527,14 @@ type SchedulingLinkSavedMyStatus string
 
 // SchedulingLinkSavedUsageType defines model for SchedulingLinkSaved.UsageType.
 type SchedulingLinkSavedUsageType string
+
+// SchedulingLinkSlugTakenError The slug 409 of `createSchedulingLink`, pinned so that the 409 variants are disjoint (PAC-119). The body is exactly `{"error":"slug already exists"}` and is written by api.writeError. A keyed create gets it only when no link is stored under its key once the key has been resolved again.
+type SchedulingLinkSlugTakenError struct {
+	Error SchedulingLinkSlugTakenErrorError `json:"error"`
+}
+
+// SchedulingLinkSlugTakenErrorError defines model for SchedulingLinkSlugTakenError.Error.
+type SchedulingLinkSlugTakenErrorError string
 
 // Settings The settings document for ONE user, returned by GET and by PATCH. Every property is always present. It has NO `llmApiKey` property at all: the key is write-only and is never returned (spec AC-11); `llmApiKeySet` reports whether one is on file. Property names come straight from the json tags on storage.Settings, camelCase throughout. `ID`, `MicrosoftTokens` and `ZoomTokens` are `json:"-"` and never appear.
 // PAC-24 revision 3 makes this a concrete schema rather than an `allOf` over a shared field set with `readOnly`/`writeOnly` markers: all three generators (oapi-codegen, openapi-typescript, typed-openapi) dropped those markers and generated a response type carrying `llmApiKey`, and typed-openapi also dropped the `required` list (contract challenge, revision 2, finding 1). The property map is shared with `SettingsUpdate` through a YAML anchor, so the two cannot drift; every `Settings` document is a valid `SettingsUpdate` body.
@@ -4668,6 +4714,9 @@ type OptionalTeamIdQuery = openapi_types.UUID
 // RequiredTeamIdQuery defines model for RequiredTeamIdQuery.
 type RequiredTeamIdQuery = openapi_types.UUID
 
+// SchedulingLinkCreateIdempotencyKey defines model for SchedulingLinkCreateIdempotencyKey.
+type SchedulingLinkCreateIdempotencyKey = string
+
 // SchedulingLinkIdPath defines model for SchedulingLinkIdPath.
 type SchedulingLinkIdPath = openapi_types.UUID
 
@@ -5150,6 +5199,12 @@ type ScheduleManagerOneOnOneParams struct {
 type ListRoomsParams struct {
 	// Q Case-insensitive substring filter, lowercased by the handler before matching. Absent or empty means no filtering. Not trimmed.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
+}
+
+// CreateSchedulingLinkParams defines parameters for CreateSchedulingLink.
+type CreateSchedulingLinkParams struct {
+	// IdempotencyKey Optional label of one logical link create (PAC-119), using the same carrier and format as PAC-82's `BookingIdempotencyKey`. It is sent as a bare token, not the IETF draft's quoted structured-field string, so a value with quotes is the 400. The client chooses it fresh for each logical create: the web editor makes a random UUID on the first Create link press of an editor session, and re-sends it only on further presses in that session. Format: 16 to 255 characters from `A-Z a-z 0-9 - _`, compared byte for byte (case-sensitive). An empty value is treated as absent; this is not part of the schema, so send no header instead. Any other value outside the format, or the header sent on two or more field lines, is 400 "invalid Idempotency-Key header". That check comes before the body is read, and nothing is written. Scope: the authenticated account. The same key from another account is unrelated, and the same key from another session of the same account is that account's key. Booking keys (PAC-82) and link-create keys are separate scopes. Window: 24 hours from the stored time of the keyed save (its transaction's `now()`), by the database clock. The resolution rules are in the operation description. The key is never returned in any response and is never removed from storage.
+	IdempotencyKey *SchedulingLinkCreateIdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
 // GetFormalTeamAnalyticsParams defines parameters for GetFormalTeamAnalytics.
@@ -6875,6 +6930,94 @@ func (t *PublicBookingConflict) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsSchedulingLinkSlugTakenError returns the union data inside the SchedulingLinkCreateConflict as a SchedulingLinkSlugTakenError
+func (t SchedulingLinkCreateConflict) AsSchedulingLinkSlugTakenError() (SchedulingLinkSlugTakenError, error) {
+	var body SchedulingLinkSlugTakenError
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSchedulingLinkSlugTakenError overwrites any union data inside the SchedulingLinkCreateConflict as the provided SchedulingLinkSlugTakenError
+func (t *SchedulingLinkCreateConflict) FromSchedulingLinkSlugTakenError(v SchedulingLinkSlugTakenError) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSchedulingLinkSlugTakenError performs a merge with any union data inside the SchedulingLinkCreateConflict, using the provided SchedulingLinkSlugTakenError
+func (t *SchedulingLinkCreateConflict) MergeSchedulingLinkSlugTakenError(v SchedulingLinkSlugTakenError) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSchedulingLinkCreateKeyLinkError returns the union data inside the SchedulingLinkCreateConflict as a SchedulingLinkCreateKeyLinkError
+func (t SchedulingLinkCreateConflict) AsSchedulingLinkCreateKeyLinkError() (SchedulingLinkCreateKeyLinkError, error) {
+	var body SchedulingLinkCreateKeyLinkError
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSchedulingLinkCreateKeyLinkError overwrites any union data inside the SchedulingLinkCreateConflict as the provided SchedulingLinkCreateKeyLinkError
+func (t *SchedulingLinkCreateConflict) FromSchedulingLinkCreateKeyLinkError(v SchedulingLinkCreateKeyLinkError) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSchedulingLinkCreateKeyLinkError performs a merge with any union data inside the SchedulingLinkCreateConflict, using the provided SchedulingLinkCreateKeyLinkError
+func (t *SchedulingLinkCreateConflict) MergeSchedulingLinkCreateKeyLinkError(v SchedulingLinkCreateKeyLinkError) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSchedulingLinkCreateKeyDeletedError returns the union data inside the SchedulingLinkCreateConflict as a SchedulingLinkCreateKeyDeletedError
+func (t SchedulingLinkCreateConflict) AsSchedulingLinkCreateKeyDeletedError() (SchedulingLinkCreateKeyDeletedError, error) {
+	var body SchedulingLinkCreateKeyDeletedError
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSchedulingLinkCreateKeyDeletedError overwrites any union data inside the SchedulingLinkCreateConflict as the provided SchedulingLinkCreateKeyDeletedError
+func (t *SchedulingLinkCreateConflict) FromSchedulingLinkCreateKeyDeletedError(v SchedulingLinkCreateKeyDeletedError) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSchedulingLinkCreateKeyDeletedError performs a merge with any union data inside the SchedulingLinkCreateConflict, using the provided SchedulingLinkCreateKeyDeletedError
+func (t *SchedulingLinkCreateConflict) MergeSchedulingLinkCreateKeyDeletedError(v SchedulingLinkCreateKeyDeletedError) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t SchedulingLinkCreateConflict) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *SchedulingLinkCreateConflict) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsSsoWriteMembershipRequired returns the union data inside the SsoWriteForbiddenResponse as a SsoWriteMembershipRequired
 func (t SsoWriteForbiddenResponse) AsSsoWriteMembershipRequired() (SsoWriteMembershipRequired, error) {
 	var body SsoWriteMembershipRequired
@@ -7281,7 +7424,7 @@ type ServerInterface interface {
 	ListSchedulingLinks(w http.ResponseWriter, r *http.Request)
 	// Create a scheduling link owned by the caller.
 	// (POST /api/scheduling-links)
-	CreateSchedulingLink(w http.ResponseWriter, r *http.Request)
+	CreateSchedulingLink(w http.ResponseWriter, r *http.Request, params CreateSchedulingLinkParams)
 	// The caller's archive of the links they deleted (owner only, read-only).
 	// (GET /api/scheduling-links/archive)
 	ListArchivedSchedulingLinks(w http.ResponseWriter, r *http.Request)
@@ -7971,7 +8114,7 @@ func (_ Unimplemented) ListSchedulingLinks(w http.ResponseWriter, r *http.Reques
 
 // Create a scheduling link owned by the caller.
 // (POST /api/scheduling-links)
-func (_ Unimplemented) CreateSchedulingLink(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) CreateSchedulingLink(w http.ResponseWriter, r *http.Request, params CreateSchedulingLinkParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -11194,6 +11337,8 @@ func (siw *ServerInterfaceWrapper) ListSchedulingLinks(w http.ResponseWriter, r 
 // CreateSchedulingLink operation middleware
 func (siw *ServerInterfaceWrapper) CreateSchedulingLink(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
@@ -11202,8 +11347,32 @@ func (siw *ServerInterfaceWrapper) CreateSchedulingLink(w http.ResponseWriter, r
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateSchedulingLinkParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey SchedulingLinkCreateIdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateSchedulingLink(w, r)
+		siw.Handler.CreateSchedulingLink(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -17650,7 +17819,8 @@ func (response ListSchedulingLinks500JSONResponse) VisitListSchedulingLinksRespo
 }
 
 type CreateSchedulingLinkRequestObject struct {
-	Body *CreateSchedulingLinkJSONRequestBody
+	Params CreateSchedulingLinkParams
+	Body   *CreateSchedulingLinkJSONRequestBody
 }
 
 type CreateSchedulingLinkResponseObject interface {
@@ -17685,7 +17855,7 @@ func (response CreateSchedulingLink401TextResponse) VisitCreateSchedulingLinkRes
 	return err
 }
 
-type CreateSchedulingLink409JSONResponse BookingError
+type CreateSchedulingLink409JSONResponse SchedulingLinkCreateConflict
 
 func (response CreateSchedulingLink409JSONResponse) VisitCreateSchedulingLinkResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -22616,8 +22786,10 @@ func (sh *strictHandler) ListSchedulingLinks(w http.ResponseWriter, r *http.Requ
 }
 
 // CreateSchedulingLink operation middleware
-func (sh *strictHandler) CreateSchedulingLink(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) CreateSchedulingLink(w http.ResponseWriter, r *http.Request, params CreateSchedulingLinkParams) {
 	var request CreateSchedulingLinkRequestObject
+
+	request.Params = params
 
 	var body CreateSchedulingLinkJSONRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
