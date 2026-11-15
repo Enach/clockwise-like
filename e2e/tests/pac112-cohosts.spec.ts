@@ -286,7 +286,9 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
       expect((await fake.events(e.email)).map((ev) => ev.summary)).toContain('E2E PAC-112 co-host meeting');
       expect(await publicStarts()).toEqual(allStarts);
     } finally {
-      // The pair is seeded: remove only what this journey made.
+      // The pair is seeded, so the users stay. Every link of the owner goes,
+      // deliberately: only this journey creates links for that user, and it
+      // also removes one an earlier killed attempt left behind.
       await db.query('DELETE FROM scheduling_links WHERE owner_user_id = $1', [a.id]);
       await fake.clearCalendar(e.email);
     }
