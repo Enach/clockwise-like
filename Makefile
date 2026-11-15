@@ -134,6 +134,7 @@ lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		echo "golangci-lint not installed, install with: $(GOLANGCI_LINT_INSTALL)" >&2; \
 		echo "  (.golangci.yml is a v1-schema config, so install a v1.x binary)" >&2; \
+		echo "  (build it with Go >= 1.26: a binary built with an older Go refuses this module)" >&2; \
 		exit 1; }
 	@# A v2 binary rejects the committed v1-schema config with "unsupported
 	@# version of the configuration", which reads like the config is corrupt.
