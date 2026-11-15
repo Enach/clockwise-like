@@ -787,10 +787,13 @@ func TestPAC120_AC11_MixedLoadAtTheLimit(t *testing.T) {
 	if at, _ := e.linkRow(link.ID); !at.Valid {
 		t.Fatal("the final delete did not delete the link")
 	}
-	// A 404 answer came after the delete. The only other writer of these
-	// rows in the round is the list PATCH, and when it answered 200 it ran
-	// before the delete, so before the 404: it re-adds a co-host that had
-	// left as a fresh pending row and leaves the others exactly as they are.
+	// A 404 changed nothing: either the request came after the delete, or
+	// (leave only) the user had no row to remove. The only other writer of
+	// these rows in the round is the list PATCH. When it answered 200 it ran
+	// before the delete, and it re-adds a co-host that had left as a fresh
+	// pending row and leaves the others exactly as they are. A leave that
+	// found no row and answered 404 cannot have come after such a re-add, so
+	// in both cases the row is the recorded one, or that re-added row.
 	answered404 := 0
 	for _, r := range responders {
 		if r.code != http.StatusNotFound {
