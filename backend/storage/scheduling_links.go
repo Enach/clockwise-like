@@ -293,6 +293,12 @@ func AddLinkHost(db Querier, linkID, userID uuid.UUID, status string) (*LinkHost
 // already a host of the link, their row is returned unchanged and created is
 // false: an invite never changes an existing host's status, so re-inviting an
 // accepted co-host cannot drop their calendar from the link's slots (PAC-61).
+//
+// It takes no lock itself. The PAC-120 co-host count (at most
+// CoHostListLimit, checked in inviteLinkHostLocked) is exact only while every
+// inserter into scheduling_link_hosts takes the link lock first; a caller
+// that inserts here, or anywhere else, without that lock can push a link past
+// the limit.
 func InviteLinkHost(db Querier, linkID, userID uuid.UUID) (host *LinkHost, created bool, err error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
