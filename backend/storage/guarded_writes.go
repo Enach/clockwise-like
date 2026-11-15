@@ -7,8 +7,10 @@
 // Exception, the scheduling-link writes (PAC-101 contract §3.2, §4.3):
 // DeleteSchedulingLinkCtx, InviteLinkHostCtx, RemoveLinkHostCtx,
 // RemoveLinkHostsExceptCtx, UpdateSchedulingLinkCtx (and
-// UpdateSchedulingLinkAndCoHostsCtx), and RespondToHostInviteCtx in guarded.go,
-// run through withLinkWriteTx instead: they ALWAYS open a transaction, with
+// UpdateSchedulingLinkAndCoHostsCtx, UpdateSchedulingLinkReportingCoHostsCtx),
+// CreateSchedulingLinkWithCoHostsCtx (PAC-112: the create, its owner row and
+// its invitations in one transaction; the new link row needs no lock), and
+// RespondToHostInviteCtx in guarded.go, run through withLinkWriteTx instead: they ALWAYS open a transaction, with
 // or without a session guard. Under a guard the re-check is still its first
 // statement; then the link-lock bound (SET LOCAL lock_timeout) is set and the
 // link is locked (FOR SHARE, or the PATCH's UPDATE) before anything is written.
@@ -29,16 +31,6 @@ func AcceptTeamInviteCtx(ctx context.Context, db DBTX, inviteID uuid.UUID) (err 
 		return AcceptTeamInvite(q, inviteID)
 	})
 	return err
-}
-
-// AddLinkHostCtx is AddLinkHost under the in-request re-check (PAC-71, contract §5).
-func AddLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID, status string) (r0 *LinkHost, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		var e error
-		r0, e = AddLinkHost(q, linkID, userID, status)
-		return e
-	})
-	return r0, err
 }
 
 // AddTeamMemberCtx is AddTeamMember under the in-request re-check (PAC-71, contract §5).
@@ -74,16 +66,6 @@ func CreateNoMeetingZoneCtx(ctx context.Context, db DBTX, teamID uuid.UUID, dayO
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = CreateNoMeetingZone(q, teamID, dayOfWeek, startTime, endTime, label)
-		return e
-	})
-	return r0, err
-}
-
-// CreateSchedulingLinkCtx is CreateSchedulingLink under the in-request re-check (PAC-71, contract §5).
-func CreateSchedulingLinkCtx(ctx context.Context, db DBTX, l *SchedulingLink) (r0 *SchedulingLink, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		var e error
-		r0, e = CreateSchedulingLink(q, l)
 		return e
 	})
 	return r0, err

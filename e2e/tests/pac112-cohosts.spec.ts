@@ -213,16 +213,10 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
     }
   });
 
-  // eslint-disable-next-line playwright/no-skipped-test -- PAC-112 (stage-4 note in contracts/features/PAC-112.yaml)
+  // eslint-disable-next-line playwright/no-skipped-test -- follow-up: PAC-118
   test.fixme("AC-3: a removed co-host's busy time no longer removes the link's public slots", async () => {
-    // Blocked: the public slots of a link need every accepted host's calendar
-    // to be readable (PAC-72 D-6), so this journey needs an owner and a
-    // co-host connected through the calendar stand-in and reserved for it
-    // (seed/ids.ts BOOKING_HOSTS, README rule 6). The stand-in's accepted
-    // credentials are set in global setup from the seed only, and e2e/seed is
-    // outside PAC-112's allowed paths. Unblocks when the seed adds a
-    // PAC-112 owner/co-host pair; the journey is then: seed a busy event on
-    // the co-host's calendar, see the slot missing, remove the co-host in the
+    // follow-up: PAC-118. The journey: seed a busy event on the co-host's
+    // stand-in calendar, see the slot missing, remove the co-host in the
     // editor, see the slot offered.
   });
 
@@ -332,18 +326,23 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
       expect(createdRes.status()).toBe(201);
       const { id } = (await createdRes.json()) as { id: string };
 
-      // Stays open (C not added), now editing the created link.
-      const results = drawer.getByRole('status', { name: 'Save results' });
+      // Stays open (C not added), now editing the created link: the same
+      // drawer is retitled "Edit link" (contract md §5.4), so it is located
+      // again by its new name, and the old name matches nothing.
+      const editor = page.getByRole('dialog', { name: /edit link/i });
+      await expect(editor).toBeVisible();
+      await expect(page.getByRole('dialog', { name: /new scheduling link/i })).toHaveCount(0);
+      const results = editor.getByRole('status', { name: 'Save results' });
       await expect(results).toContainText(`${c} couldn't be added as a co-host.`);
-      await expect(drawer.getByRole('button', { name: 'Save changes' })).toBeVisible();
-      await expect(drawer.getByLabel('Co-host email')).toBeEnabled();
+      await expect(editor.getByRole('button', { name: 'Save changes' })).toBeVisible();
+      await expect(editor.getByLabel('Co-host email')).toBeEnabled();
 
       const renamed = `${title} renamed`;
-      await drawer.getByLabel('Title', { exact: true }).fill(renamed);
+      await editor.getByLabel('Title', { exact: true }).fill(renamed);
       const patched = page.waitForResponse(
         (r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname === `/api/scheduling-links/${id}`,
       );
-      await drawer.getByRole('button', { name: 'Save changes' }).click();
+      await editor.getByRole('button', { name: 'Save changes' }).click();
       expect((await patched).status()).toBe(200);
 
       expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);

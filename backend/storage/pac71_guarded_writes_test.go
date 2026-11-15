@@ -24,8 +24,8 @@ func TestPAC71_EveryGuardedWriterRefusesAStaleSession(t *testing.T) {
 	errs := map[string]error{}
 	add := func(name string, err error) { errs[name] = err }
 	add("AcceptTeamInvite", AcceptTeamInviteCtx(ctx, db, id))
-	_, err := AddLinkHostCtx(ctx, db, id, u, "pending")
-	add("AddLinkHost", err)
+	_, _, err := CreateSchedulingLinkWithCoHostsCtx(ctx, db, &SchedulingLink{OwnerUserID: u}, nil) // PAC-112
+	add("CreateSchedulingLinkWithCoHosts", err)
 	add("AddTeamMember", AddTeamMemberCtx(ctx, db, id, u, "member"))
 	_, _, _, err = ConfirmManagerTeamMembersCtx(ctx, db, u, id, []string{"x@y.test"})
 	add("ConfirmManagerTeamMembers", err)
@@ -33,8 +33,6 @@ func TestPAC71_EveryGuardedWriterRefusesAStaleSession(t *testing.T) {
 	add("CreateHabit", err)
 	_, err = CreateNoMeetingZoneCtx(ctx, db, id, 1, "09:00", "10:00", "z")
 	add("CreateNoMeetingZone", err)
-	_, err = CreateSchedulingLinkCtx(ctx, db, &SchedulingLink{OwnerUserID: u})
-	add("CreateSchedulingLink", err)
 	_, err = CreateTeamInviteCtx(ctx, db, id, "x@y.test", u)
 	add("CreateTeamInvite", err)
 	add("DeactivateHabit", DeactivateHabitCtx(ctx, db, id))
