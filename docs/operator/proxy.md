@@ -46,7 +46,7 @@ browser ──HTTPS──▶ your proxy ──HTTP──▶ nginx (compose, :80)
   frontend DSN ships in the public bundle), which the release workflow
   passes to `docker/frontend.dockerfile`. Unset or empty means web monitoring
   is off. To turn it on, set the variable, cut a release, and set
-  `NGINX_CSP_SENTRY_ORIGIN` on the deployment to that DSN's `scheme://host`
+  `NGINX_CSP_SENTRY_ORIGIN` on the deployment to that DSN's `scheme://host[:port]` (no path, no trailing slash)
   origin (DSN `https://public@o1.ingest.example.test/2` gives
   `https://o1.ingest.example.test`); otherwise the CSP blocks the events.
 

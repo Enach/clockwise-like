@@ -36,8 +36,10 @@ func TestFrontendDockerfileDeclaresSentryDSNBuildArg(t *testing.T) {
 			envLine = i
 		case strings.HasPrefix(line, "RUN ") && strings.Contains(line, "npm run build"):
 			buildLine = i
-			if strings.Contains(line, "VITE_SENTRY_DSN=") {
-				envLine = i // passed inline
+			// Passed inline only counts when it forwards the build arg; a literal
+			// value (or an empty one) would blank or hard-code the DSN.
+			if regexp.MustCompile(`(^|\s)VITE_SENTRY_DSN=("?)\$\{?VITE_SENTRY_DSN\}?("?)(\s|$)`).MatchString(line) {
+				envLine = i
 			}
 		}
 	}
