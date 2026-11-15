@@ -266,6 +266,21 @@ compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-
   is sent before they confirm. No configuration, key or stored AI choice is
   lost. Once PAC-71's migration is applied above 036, 036 can no longer be
   reverted in place.
+- **Going back past PAC-119** (retry-safe link create, migration
+  `040_scheduling_link_create_keys`): this section applies unchanged — fix
+  forward, or restore the pre-deploy backup and start the previous image,
+  accepting the loss of the links created since. An image-only rollback does
+  not work: the previous image cannot start on a database at 040. There is no
+  operator command for 040's down step; it is for development, tests and
+  staging (stop the backend, `migrate ... down 1` only while 040 is the newest
+  applied migration, start the previous image). The down step drops only the
+  `scheduling_link_create_keys` table: every link-create key, request digest
+  and stored co-host outcome is lost, and every link and host row survives.
+  Release note for any rollback past PAC-119: a web build that still sends an
+  `Idempotency-Key` on link create then behaves as before PAC-119 — the
+  header is ignored, so pressing Create link again after a lost answer can
+  create a second link and invite its co-hosts a second time. Revert the web
+  first.
 
 ### Rollback on the same host
 

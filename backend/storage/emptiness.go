@@ -72,16 +72,20 @@ var accountDataChecks = []accountDataCheck{
 // counts a row there as non-empty (fail closed, spec §3 rule (b)), and
 // TestPAC71_EveryUserForeignKeyIsClassified fails until it is classified.
 var classifiedUserRefs = map[string]bool{
-	"oauth_tokens.user_id":                            true,
-	"settings.user_id":                                true,
-	"workspace_connections.user_id":                   true,
-	"personal_calendars.user_id":                      true,
-	"credential_losses.user_id":                       true,
-	"teams.created_by":                                true,
-	"team_members.user_id":                            true,
-	"team_invites.invited_by":                         true,
-	"scheduling_links.owner_user_id":                  true,
-	"scheduling_link_hosts.user_id":                   true,
+	"oauth_tokens.user_id":           true,
+	"settings.user_id":               true,
+	"workspace_connections.user_id":  true,
+	"personal_calendars.user_id":     true,
+	"credential_losses.user_id":      true,
+	"teams.created_by":               true,
+	"team_members.user_id":           true,
+	"team_invites.invited_by":        true,
+	"scheduling_links.owner_user_id": true,
+	"scheduling_link_hosts.user_id":  true,
+	// PAC-119 (migration 040): a link-create key row always names a link of
+	// its owner (link_id references scheduling_links), so the
+	// scheduling_link_owned check above already finds an account with one.
+	"scheduling_link_create_keys.owner_user_id":       true,
 	"booking_events.user_id":                          true,
 	"user_profiles.user_id":                           true,
 	"manager_team_members.manager_user_id":            true,

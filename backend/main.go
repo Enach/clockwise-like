@@ -85,6 +85,35 @@ func scheduleBookerErasure(c cronRegistrar, job bookerErasureJob) (startup func(
 	return unit, nil
 }
 
+// scheduleLinkCreateKeyCleanup registers job @every 1h on c and returns the
+// start-up run (PAC-119 contract md §3.3, spec §3.6, AC-12). Both are the same
+// cronJob unit, as for the booker erasure: the drain awaits a run in progress
+// and no run starts once shutdown has begun. The caller starts the start-up
+// run on its own goroutine after Start(), so readiness never waits for it.
+func scheduleLinkCreateKeyCleanup(c cronRegistrar, job func(ctx context.Context)) (startup func(), err error) {
+	unit := cronJob("link-create-key-cleanup", job)
+	if _, err := c.AddFunc("@every 1h", unit); err != nil {
+		return nil, err
+	}
+	return unit, nil
+}
+
+// linkCreateKeyCleanup is one run of the link-create key cleanup: it clears
+// the digest and stored co-host outcomes of every key 24 h old or more and
+// logs the count only, never a key, link or address. A failure is logged and
+// reported; it wrote nothing, and the next run retries.
+func linkCreateKeyCleanup(db *sql.DB, logf func(string, ...any), report func(error)) func(ctx context.Context) {
+	return func(ctx context.Context) {
+		n, err := storage.ClearExpiredLinkCreateKeyData(ctx, db)
+		if err != nil {
+			logf("link-create-key-cleanup: run failed: %v", err)
+			report(err)
+			return
+		}
+		logf("link-create-key-cleanup: cleared %d", n)
+	}
+}
+
 // openDatabase is the backend's start step 3 (PAC-84 contract 5.3, amended
 // by PAC-116 contract 4.1): the migrate-when-stopped procedure with caller
 // paceday-backend, then the pool, opened without migrating. A refusal is
@@ -347,6 +376,18 @@ func run() int {
 	erasureCron.Start()
 	go erasureStartup()
 
+	// PAC-119: the link-create keys' digests and stored co-host outcomes,
+	// cleared within an hour after their 24-hour window. Once at start-up
+	// (on its own goroutine), then every hour; both runs are cronJob units.
+	keyCleanupCron := cron.New()
+	keyCleanupStartup, err := scheduleLinkCreateKeyCleanup(keyCleanupCron,
+		linkCreateKeyCleanup(db, log.Printf, func(err error) { sentry.CaptureException(err) }))
+	if err != nil {
+		log.Fatalf("link-create-key-cleanup cron registration error: %v", err)
+	}
+	keyCleanupCron.Start()
+	go keyCleanupStartup()
+
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET environment variable is required")
@@ -375,7 +416,7 @@ func run() int {
 
 	stopScheduling := func() {
 		focusCron.Stop()
-		for _, c := range []*cron.Cron{personalCron, autoDeclineCron, recapCron, mgrCron, erasureCron} {
+		for _, c := range []*cron.Cron{personalCron, autoDeclineCron, recapCron, mgrCron, erasureCron, keyCleanupCron} {
 			c.Stop() // no new run; a running one is a tracked unit
 		}
 		stopEncryption()

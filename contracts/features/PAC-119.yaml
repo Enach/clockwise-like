@@ -229,5 +229,6 @@
     "m-3: storage-owned JSON encoding of storage.CoHostChanges, replayed through toCoHostChangesDTO (md 3.1, 4.2, 1.4).",
     "m-4: slug from L's baseline, marked dirty, after a link refusal (md 7.4).",
     "m-5: R seams receive the request context (md 6)."
-  ]
+  ],
+  "stage4": "backend implemented on factory/pac-119 against revision 1.1; bundle sha256 unchanged (8faa904a...) after merging origin/main 919dcbc; departures listed in md 'Stage 4 notes' (emptiness.go FK classification outside allowedPaths; keyed create as a new Ctx function beside the PAC-112 one)."
 }

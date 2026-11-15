@@ -1,10 +1,14 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -1145,25 +1149,31 @@ var ErrCoHostListTooLong = errors.New("co-host list longer than 5 names someone 
 
 // CoHostOutcome is the outcome of one request entry; Email is the entry
 // trimmed of ECMA-262 \s, letter case kept.
+//
+// The JSON tags of CoHostOutcome, RemovedCoHost and CoHostChanges are the
+// storage-owned encoding a keyed create stores for its replay (PAC-119
+// contract md §3.1, challenge m-3). Their names equal the wire names of
+// co_host_changes, but the wire is always written by the api package's DTO,
+// never by marshalling these structs into a response.
 type CoHostOutcome struct {
-	Email   string
-	Outcome string
+	Email   string `json:"email"`
+	Outcome string `json:"outcome"`
 }
 
 // RemovedCoHost is a non-owner host a save removed, with the status it had.
 type RemovedCoHost struct {
-	UserID uuid.UUID
-	Email  string
-	Status string
+	UserID uuid.UUID `json:"user_id"`
+	Email  string    `json:"email"`
+	Status string    `json:"status"`
 }
 
 // CoHostChanges is what one save did to a link's co-hosts (contract md §2.1).
 type CoHostChanges struct {
-	Addresses     []CoHostOutcome
-	Removed       []RemovedCoHost
-	InvitedCount  int
-	RemovedCount  int
-	NotAddedCount int
+	Addresses     []CoHostOutcome `json:"addresses"`
+	Removed       []RemovedCoHost `json:"removed"`
+	InvitedCount  int             `json:"invited_count"`
+	RemovedCount  int             `json:"removed_count"`
+	NotAddedCount int             `json:"not_added_count"`
 }
 
 // linkHostEntry is one row of a link's host set as read inside a write.
@@ -1410,14 +1420,36 @@ func coHostInvite(q Querier, linkID, userID uuid.UUID) error {
 }
 
 // createSchedulingLinkWithCoHosts is a create as one unit (PAC-112 contract
-// md §3.1): the link, the owner's accepted host row by a plain insert (never
-// the upsert that could demote the owner, API-048), and, when coHostEmails is
-// not nil, the co-host list with its outcomes. Any error makes the caller
-// roll everything back.
-func createSchedulingLinkWithCoHosts(q Querier, l *SchedulingLink, coHostEmails []string) (*SchedulingLink, *CoHostChanges, error) {
+// md §3.1, PAC-119 contract md §4.2): the link, then, for a keyed create, the
+// key row (claimed before any host or invitation work, so a concurrent
+// duplicate stops there), the owner's accepted host row by a plain insert
+// (never the upsert that could demote the owner, API-048), and, when
+// coHostEmails is not nil, the co-host list with its outcomes, whose
+// storage-owned encoding a keyed create then stores on its key row. A unique
+// violation on the link's slug or on the (owner, key) pair is a
+// *LinkCreateConflictError. Any error makes the caller roll everything back,
+// so a failed or refused create never stores a key.
+func createSchedulingLinkWithCoHosts(q Querier, l *SchedulingLink, coHostEmails []string, key string, digest []byte) (*SchedulingLink, *CoHostChanges, error) {
 	created, err := CreateSchedulingLink(q, l)
+	if isUniqueViolationOn(err, LinkSlugConstraint) {
+		return nil, nil, &LinkCreateConflictError{Constraint: LinkSlugConstraint, Err: err}
+	}
 	if err != nil {
 		return nil, nil, err
+	}
+	if key != "" {
+		if len(digest) != sha256.Size {
+			return nil, nil, fmt.Errorf("link create key: digest of %d bytes", len(digest))
+		}
+		_, err := q.ExecContext(context.Background(), `
+			INSERT INTO scheduling_link_create_keys (owner_user_id, idempotency_key, link_id, request_sha256)
+			VALUES ($1, $2, $3, $4)`, created.OwnerUserID, key, created.ID, digest)
+		if isUniqueViolationOn(err, LinkCreateKeyConstraint) {
+			return nil, nil, &LinkCreateConflictError{Constraint: LinkCreateKeyConstraint, Err: err}
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("link create key: %w", err)
+		}
 	}
 	if err := fireSeamErr(&createOwnerHost, created.ID); err != nil {
 		return nil, nil, fmt.Errorf("owner host: %w", err)
@@ -1427,12 +1459,347 @@ func createSchedulingLinkWithCoHosts(q Querier, l *SchedulingLink, coHostEmails 
 		created.ID, created.OwnerUserID); err != nil {
 		return nil, nil, fmt.Errorf("owner host: %w", err)
 	}
-	if coHostEmails == nil {
-		return created, nil, nil
+	var changes *CoHostChanges
+	if coHostEmails != nil {
+		if changes, err = setCoHostList(q, created.ID, created.OwnerUserID, coHostEmails); err != nil {
+			return nil, nil, err
+		}
+		if key != "" {
+			encoded, err := json.Marshal(changes)
+			if err != nil {
+				return nil, nil, fmt.Errorf("link create key outcomes: %w", err)
+			}
+			if _, err := q.ExecContext(context.Background(), `
+				UPDATE scheduling_link_create_keys SET co_host_changes = $3
+				WHERE owner_user_id = $1 AND idempotency_key = $2`,
+				created.OwnerUserID, key, string(encoded)); err != nil {
+				return nil, nil, fmt.Errorf("link create key outcomes: %w", err)
+			}
+		}
 	}
-	changes, err := setCoHostList(q, created.ID, created.OwnerUserID, coHostEmails)
-	if err != nil {
-		return nil, nil, err
+	if err := fireSeamErr(&beforeLinkCreateCommit, created.ID); err != nil {
+		return nil, nil, fmt.Errorf("before link create commit: %w", err)
 	}
 	return created, changes, nil
+}
+
+// --- PAC-119: keyed link create (contracts/features/PAC-119.md) -------------
+
+// The two unique constraints a create can violate (contract md §4.2, §3.1).
+const (
+	// LinkSlugConstraint is scheduling_links' unique slug (migration 009).
+	LinkSlugConstraint = "scheduling_links_slug_key"
+	// LinkCreateKeyConstraint is the key table's primary key (owner, key).
+	LinkCreateKeyConstraint = "scheduling_link_create_keys_owner_key"
+)
+
+// LinkCreateKeyWindow is how long a stored key replays (spec §3.6): from 24 h
+// on, by the database clock, a key gets the expired refusal for ever.
+const LinkCreateKeyWindow = 24 * time.Hour
+
+// ErrLinkCreateConflict is the sentinel every *LinkCreateConflictError
+// matches with errors.Is: the create's link insert or key insert met a
+// unique violation and the create was rolled back.
+var ErrLinkCreateConflict = errors.New("link create unique violation")
+
+// LinkCreateConflictError is a create rolled back on a unique violation of
+// Constraint (LinkSlugConstraint or LinkCreateKeyConstraint). A keyed caller
+// then resolves its key again in a new guarded transaction (R3); a keyless
+// slug violation stays the 500 (spec §5).
+type LinkCreateConflictError struct {
+	Constraint string
+	Err        error
+}
+
+func (e *LinkCreateConflictError) Error() string {
+	return "link create unique violation on " + e.Constraint
+}
+
+// Is makes every LinkCreateConflictError match ErrLinkCreateConflict.
+func (e *LinkCreateConflictError) Is(target error) bool { return target == ErrLinkCreateConflict }
+
+func (e *LinkCreateConflictError) Unwrap() error { return e.Err }
+
+// linkCreateCanonicalV1 is the canonical form v1 of a link create (contract
+// md §2.3), marshalled by encoding/json in this field order. Every value is
+// the one the save would store, plus the normalised co-host list.
+type linkCreateCanonicalV1 struct {
+	V                  int      `json:"v"`
+	Title              string   `json:"title"`
+	Slug               string   `json:"slug"`
+	DurationOptions    []int    `json:"duration_options"`
+	DaysOfWeek         []int    `json:"days_of_week"`
+	WindowStart        string   `json:"window_start_time"`
+	WindowEnd          string   `json:"window_end_time"`
+	BufferBefore       int      `json:"buffer_before"`
+	BufferAfter        int      `json:"buffer_after"`
+	MinNoticeMinutes   int      `json:"min_notice_minutes"`
+	UsageType          string   `json:"usage_type"`
+	MaxUses            *int     `json:"max_uses"`
+	BookingHorizonDays int      `json:"booking_horizon_days"`
+	RefusalMessage     string   `json:"refusal_message"`
+	CoHostEmails       []string `json:"co_host_emails"`
+}
+
+// linkCreateCanonical returns the canonical bytes v1 of l, a link as the
+// create's validation left it (title trimmed, slug normalised and not yet
+// generated, aliases and defaults resolved, windows HH:MM, usage lowered,
+// max_uses cleared unless recurring), with lowered the co-host entries
+// already trimmed and lowered by lowerAll; nil means the request carried no
+// list. The list is deduplicated and sorted ascending by bytes here; [] stays
+// [] and differs from no list.
+func linkCreateCanonical(l *SchedulingLink, lowered []string) []byte {
+	c := linkCreateCanonicalV1{
+		V: 1, Title: l.Title, Slug: l.Slug, DurationOptions: l.DurationOptions, DaysOfWeek: l.DaysOfWeek,
+		WindowStart: l.WindowStart, WindowEnd: l.WindowEnd, BufferBefore: l.BufferBefore,
+		BufferAfter: l.BufferAfter, MinNoticeMinutes: l.MinNoticeMinutes, UsageType: l.UsageType,
+		MaxUses: l.MaxUses, BookingHorizonDays: l.BookingHorizonDays, RefusalMessage: l.RefusalMessage,
+	}
+	if c.UsageType == "" {
+		c.UsageType = "reusable"
+	}
+	if c.BookingHorizonDays == 0 {
+		c.BookingHorizonDays = DefaultBookingHorizonDays
+	}
+	if c.RefusalMessage == "" {
+		c.RefusalMessage = RefusalGeneric
+	}
+	if lowered != nil {
+		set := make(map[string]struct{}, len(lowered))
+		c.CoHostEmails = make([]string, 0, len(lowered))
+		for _, v := range lowered {
+			if _, dup := set[v]; dup {
+				continue
+			}
+			set[v] = struct{}{}
+			c.CoHostEmails = append(c.CoHostEmails, v)
+		}
+		sort.Strings(c.CoHostEmails)
+	}
+	b, err := json.Marshal(c)
+	if err != nil {
+		// Every field is a string, an int, a slice of them or a nil-able
+		// pointer to an int: Marshal cannot fail.
+		panic(fmt.Sprintf("linkCreateCanonical: %v", err))
+	}
+	return b
+}
+
+// linkCreateDigest is SHA-256 of linkCreateCanonical, on q (the resolution
+// transaction, for lowerAll).
+func linkCreateDigest(q Querier, l *SchedulingLink, coHostEmails []string) ([]byte, error) {
+	var lowered []string
+	if coHostEmails != nil {
+		trimmed := make([]string, len(coHostEmails))
+		for i, e := range coHostEmails {
+			trimmed[i] = TrimECMASpace(e)
+		}
+		var err error
+		if lowered, err = lowerAll(q, trimmed); err != nil {
+			return nil, fmt.Errorf("link create digest: %w", err)
+		}
+	}
+	sum := sha256.Sum256(linkCreateCanonical(l, lowered))
+	return sum[:], nil
+}
+
+// LinkCreateAttempt is one keyed create request as the resolution needs it.
+// Digest is nil until the first resolution (R1) computes it from Link and
+// CoHostEmails; R2, R3 and the create transaction then reuse it.
+type LinkCreateAttempt struct {
+	Key string
+	// Link is the validated link before slug generation.
+	Link *SchedulingLink
+	// CoHostEmails is the request's list as sent; nil is no list.
+	CoHostEmails []string
+	Digest       []byte
+}
+
+// LinkCreateKeyOutcome is what a resolution decided (contract md §1.2).
+type LinkCreateKeyOutcome int
+
+const (
+	// LinkCreateKeyNotStored: nothing is stored under the key.
+	LinkCreateKeyNotStored LinkCreateKeyOutcome = iota
+	// LinkCreateKeyReplay: row 3, the same request under 24 h.
+	LinkCreateKeyReplay
+	// LinkCreateKeyDeleted: row 1, the key's link is deleted.
+	LinkCreateKeyDeleted
+	// LinkCreateKeyExpired: row 2, the original save is 24 h old or more.
+	LinkCreateKeyExpired
+	// LinkCreateKeyReused: row 4, another request (or a NULL digest).
+	LinkCreateKeyReused
+)
+
+// LinkCreateKeyResolution is a resolution's answer. Link and Changes are set
+// for a replay (Changes nil when the original carried no list); LinkID is set
+// for the replay and for the expired and key-reused refusals.
+type LinkCreateKeyResolution struct {
+	Outcome LinkCreateKeyOutcome
+	Link    *SchedulingLink
+	Changes *CoHostChanges
+	LinkID  uuid.UUID
+}
+
+// storedLinkCreateKey is the key read's row (contract md §4.1 step 4).
+type storedLinkCreateKey struct {
+	digest  []byte
+	changes []byte
+	deleted bool
+	expired bool
+	link    SchedulingLink
+}
+
+// readLinkCreateKey is the key read: the key row of (owner, key) joined to
+// its link, in one MVCC statement that takes no row lock. nil when no row.
+func readLinkCreateKey(ctx context.Context, q Querier, ownerID uuid.UUID, key string) (*storedLinkCreateKey, error) {
+	var s storedLinkCreateKey
+	var durOpts, daysOfWeek pq.Int64Array
+	var changes sql.NullString
+	err := q.QueryRowContext(ctx, `
+		SELECT k.request_sha256, k.co_host_changes, l.deleted_at IS NOT NULL,
+		       now() - k.created_at >= make_interval(secs => $3),
+		       l.id, l.owner_user_id, l.slug, l.title, l.duration_options, l.days_of_week,
+		       l.window_start_time, l.window_end_time, l.buffer_before, l.buffer_after,
+		       l.min_notice_minutes, l.usage_type, l.max_uses,
+		       (SELECT COUNT(*) FROM bookings b WHERE b.link_id = l.id),
+		       l.active, l.created_at, l.booking_horizon_days, l.refusal_message
+		FROM scheduling_link_create_keys k
+		JOIN scheduling_links l ON l.id = k.link_id
+		WHERE k.owner_user_id = $1 AND k.idempotency_key = $2`,
+		ownerID, key, LinkCreateKeyWindow.Seconds()).Scan(
+		&s.digest, &changes, &s.deleted, &s.expired,
+		&s.link.ID, &s.link.OwnerUserID, &s.link.Slug, &s.link.Title, &durOpts, &daysOfWeek,
+		&s.link.WindowStart, &s.link.WindowEnd, &s.link.BufferBefore, &s.link.BufferAfter,
+		&s.link.MinNoticeMinutes, &s.link.UsageType, &s.link.MaxUses, &s.link.UsesCount,
+		&s.link.Active, &s.link.CreatedAt, &s.link.BookingHorizonDays, &s.link.RefusalMessage)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("link create key read: %w", err)
+	}
+	if changes.Valid {
+		s.changes = []byte(changes.String)
+	}
+	s.link.DurationOptions = int64SliceToInt(durOpts)
+	s.link.DaysOfWeek = int64SliceToInt(daysOfWeek)
+	return &s, nil
+}
+
+// decideLinkCreateKey applies contract md §1.2's rules, first match wins:
+// deleted, expired, same digest (replay), anything else (key reused, a NULL
+// digest included).
+func decideLinkCreateKey(s *storedLinkCreateKey, digest []byte) (*LinkCreateKeyResolution, error) {
+	switch {
+	case s == nil:
+		return &LinkCreateKeyResolution{Outcome: LinkCreateKeyNotStored}, nil
+	case s.deleted:
+		return &LinkCreateKeyResolution{Outcome: LinkCreateKeyDeleted}, nil
+	case s.expired:
+		return &LinkCreateKeyResolution{Outcome: LinkCreateKeyExpired, LinkID: s.link.ID}, nil
+	case s.digest != nil && bytes.Equal(s.digest, digest):
+		res := &LinkCreateKeyResolution{Outcome: LinkCreateKeyReplay, Link: &s.link, LinkID: s.link.ID}
+		if s.changes != nil {
+			var c CoHostChanges
+			if err := json.Unmarshal(s.changes, &c); err != nil {
+				return nil, fmt.Errorf("link create key outcomes: %w", err)
+			}
+			res.Changes = &c
+		}
+		return res, nil
+	}
+	return &LinkCreateKeyResolution{Outcome: LinkCreateKeyReused, LinkID: s.link.ID}, nil
+}
+
+// ResolveLinkCreateKeyCtx is the resolution transaction R (contract md §4.1;
+// R1, R2 and R3 are this function): one READ COMMITTED transaction that,
+// under the request's session guard, fires the PAC-71 mid-request seam,
+// re-checks the generation, computes the attempt's digest when it has none
+// yet (R1), reads the key row joined to its link, fires
+// afterLinkCreateKeyRead, re-checks the generation again and commits; only
+// then is the answer decided from the row, by contract md §1.2. A stale
+// session is ErrStaleSession with nothing of the row. When nothing is stored,
+// afterLinkCreateKeyResolved fires after the commit, before the return.
+// Without a session guard (no request session) the re-checks are skipped.
+func ResolveLinkCreateKeyCtx(ctx context.Context, db DBTX, ownerID uuid.UUID, a *LinkCreateAttempt) (*LinkCreateKeyResolution, error) {
+	g := SessionGuardFrom(ctx)
+	if g != nil {
+		fireGuardedCallHook(ctx)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		if g != nil {
+			g.MarkUnavailable()
+			return nil, fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
+		}
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if g != nil {
+		if err := recheck(ctx, tx, g.UserID, g.Gen, g); err != nil {
+			return nil, err
+		}
+	}
+	if a.Digest == nil {
+		if a.Digest, err = linkCreateDigest(tx, a.Link, a.CoHostEmails); err != nil {
+			return nil, err
+		}
+	}
+	stored, err := readLinkCreateKey(ctx, tx, ownerID, a.Key)
+	if err != nil {
+		return nil, err
+	}
+	if fn, ok := afterLinkCreateKeyRead.get(); ok {
+		fn(ctx, a.Key)
+	}
+	if g != nil {
+		if err := recheck(ctx, tx, g.UserID, g.Gen, g); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	res, err := decideLinkCreateKey(stored, a.Digest)
+	if err != nil {
+		return nil, err
+	}
+	if res.Outcome == LinkCreateKeyNotStored {
+		if fn, ok := afterLinkCreateKeyResolved.get(); ok {
+			fn(ctx, a.Key)
+		}
+	}
+	return res, nil
+}
+
+// ClearExpiredLinkCreateKeyData is the cleanup of contract md §3.3: in its
+// own transaction, under the link-lock bound, it clears the request digest
+// and the stored co-host outcomes of every key whose original save is 24 h
+// old or more, and returns how many rows it cleared. Owner, key, link and
+// time stay for ever. Concurrent runs are idempotent.
+func ClearExpiredLinkCreateKeyData(ctx context.Context, db DBTX) (int64, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := setLinkLockTimeout(tx); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE scheduling_link_create_keys SET request_sha256 = NULL, co_host_changes = NULL
+		WHERE request_sha256 IS NOT NULL AND created_at <= now() - make_interval(secs => $1)`,
+		LinkCreateKeyWindow.Seconds())
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }

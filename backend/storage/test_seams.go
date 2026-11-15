@@ -249,3 +249,38 @@ func fireSeamErr[A any](s *seam[func(A) error], a A) error {
 	}
 	return nil
 }
+
+// PAC-119 seams (contract md §6): the keyed link create. The two resolution
+// seams receive the request context, so a test can tell two same-key
+// requests apart by a value it put on one request's context (challenge m-5).
+var (
+	afterLinkCreateKeyRead     seam[func(ctx context.Context, key string)]
+	afterLinkCreateKeyResolved seam[func(ctx context.Context, key string)]
+	beforeLinkCreateCommit     seam[func(linkID uuid.UUID) error]
+)
+
+// InstallAfterLinkCreateKeyRead installs the seam that runs inside the
+// resolution transaction after the key read and before the second session
+// re-check (spec AC-10's second position).
+func InstallAfterLinkCreateKeyRead(tb TB, fn func(ctx context.Context, key string)) (uninstall func()) {
+	tb.Helper()
+	return afterLinkCreateKeyRead.install(tb, fn)
+}
+
+// InstallAfterLinkCreateKeyResolved installs the seam that runs after a
+// resolution that found nothing stored has committed, before it returns: for
+// the first resolution of a request, after key resolution and before the slug
+// check (spec AC-30).
+func InstallAfterLinkCreateKeyResolved(tb TB, fn func(ctx context.Context, key string)) (uninstall func()) {
+	tb.Helper()
+	return afterLinkCreateKeyResolved.install(tb, fn)
+}
+
+// InstallBeforeLinkCreateCommit installs the seam that runs inside a link
+// create's transaction after its last write and before COMMIT (spec AC-7,
+// AC-29): the link, its slug and, for a keyed create, its key are held
+// uncommitted while fn runs. A non-nil error rolls the whole create back.
+func InstallBeforeLinkCreateCommit(tb TB, fn func(linkID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return beforeLinkCreateCommit.install(tb, fn)
+}
