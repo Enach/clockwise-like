@@ -148,7 +148,7 @@ from the contract and any edit is reported as drift.
 | createScheduledMeeting            | POST   | /api/schedule/create                            | schedule         | handwritten | |
 | suggestMeetingSlots               | POST   | /api/schedule/suggest                           | schedule         | handwritten | |
 | listSchedulingLinks               | GET    | /api/scheduling-links                           | scheduling-links | handwritten | |
-| createSchedulingLink              | POST   | /api/scheduling-links                           | scheduling-links | handwritten | |
+| createSchedulingLink              | POST   | /api/scheduling-links                           | scheduling-links | handwritten | PAC-112: request and response modified, kept handwritten. Moving it is a contract change: the generated decoder cannot express the per-entry ECMA-262 trim, the blank-entry 422 or the not_added outcome for a non-address entry (contract PAC-112 §3.4). |
 | listArchivedSchedulingLinks       | GET    | /api/scheduling-links/archive                   | scheduling-links | handwritten | |
 | getArchivedSchedulingLink         | GET    | /api/scheduling-links/archive/{id}              | scheduling-links | handwritten | |
 | listSchedulingLinkHostInvites     | GET    | /api/scheduling-links/host-invites              | scheduling-links | handwritten | |
@@ -157,7 +157,7 @@ from the contract and any edit is reported as drift.
 | listSchedulingLinkInvitesAlias    | GET    | /api/scheduling-links/invites                   | scheduling-links | handwritten | |
 | deleteSchedulingLink              | DELETE | /api/scheduling-links/{id}                      | scheduling-links | handwritten | |
 | getSchedulingLink                 | GET    | /api/scheduling-links/{id}                      | scheduling-links | handwritten | |
-| updateSchedulingLink              | PATCH  | /api/scheduling-links/{id}                      | scheduling-links | handwritten | |
+| updateSchedulingLink              | PATCH  | /api/scheduling-links/{id}                      | scheduling-links | handwritten | PAC-112: request and response modified, kept handwritten. Moving it is a contract change: the generated decoder cannot express the per-entry ECMA-262 trim, the blank-entry 422 or the not_added outcome for a non-address entry (contract PAC-112 §3.4). |
 | acceptSchedulingLinkInviteByLink  | POST   | /api/scheduling-links/{id}/accept               | scheduling-links | handwritten | |
 | listSchedulingLinkBookings        | GET    | /api/scheduling-links/{id}/bookings             | scheduling-links | handwritten | |
 | declineSchedulingLinkInviteByLink | POST   | /api/scheduling-links/{id}/decline              | scheduling-links | handwritten | |

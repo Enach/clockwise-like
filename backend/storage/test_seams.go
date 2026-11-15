@@ -206,3 +206,46 @@ func fireMigrateHook(s *seam[func(caller string)], caller string) {
 		fn(caller)
 	}
 }
+
+// PAC-112 seams (contract md §11): the scheduling-link co-host list on create
+// and PATCH. Each fires inside the write's transaction; a non-nil error fails
+// that step, and the caller rolls the whole create or PATCH back.
+var (
+	coHostLookup    seam[func(email string) error]
+	coHostWrite     seam[func(linkID, userID uuid.UUID) error]
+	createOwnerHost seam[func(linkID uuid.UUID) error]
+)
+
+// InstallCoHostLookup installs the lookup seam: fn runs once per lookup of
+// the co-host list (one read of an address's carriers, contract md §3.3),
+// before the read, with the address being looked up (trimmed of ECMA-262
+// \s). Recording the addresses shows which were read and in which order; a
+// non-nil error fails that lookup (AC-10, AC-21).
+func InstallCoHostLookup(tb TB, fn func(email string) error) (uninstall func()) {
+	tb.Helper()
+	return coHostLookup.install(tb, fn)
+}
+
+// InstallCoHostWrite installs the seam that runs before each co-host
+// invitation insert of the co-host list, with the link and the invitee; a
+// non-nil error fails that write (AC-20).
+func InstallCoHostWrite(tb TB, fn func(linkID, userID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return coHostWrite.install(tb, fn)
+}
+
+// InstallCreateOwnerHost installs the seam that runs inside a link create
+// before the owner's host-row insert; a non-nil error fails that write
+// (AC-22).
+func InstallCreateOwnerHost(tb TB, fn func(linkID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return createOwnerHost.install(tb, fn)
+}
+
+// fireSeamErr runs an error-returning seam taking one argument, if installed.
+func fireSeamErr[A any](s *seam[func(A) error], a A) error {
+	if fn, ok := s.get(); ok {
+		return fn(a)
+	}
+	return nil
+}

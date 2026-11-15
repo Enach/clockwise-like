@@ -775,15 +775,38 @@ paths:
       tags: [scheduling-links]
       summary: Create a scheduling link owned by the caller.
       description: >-
-        The caller is inserted as an `accepted` host. Each entry of `co_host_emails`
-        is resolved by lowercased email; unknown emails are silently skipped (no error,
-        no host row). An empty/omitted `slug` is auto-generated from the owner's name.
+        The caller is inserted as an `accepted` host. An empty/omitted `slug` is
+        auto-generated from the owner's name.
 
         PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): an entry of `co_host_emails` resolves to an account only when
         exactly one account holds that address DOMAIN-CONFIRMED (compared
         case-insensitively); an address carried only unconfirmed, by several accounts
-        (letter-case collision), or by none is skipped exactly as an unknown email is
-        today (no error, no host row).
+        (letter-case collision), or by none cannot be invited.
+
+
+        PAC-112 (spec §3.4-§3.8, D-2, D-4, D-8; contract
+        contracts/features/PAC-112.md §2-§4): the create is all or nothing. The
+        link, the owner's `accepted` host row and every co-host invitation are
+        written in one transaction, opened with or without a session guard
+        (with one, the PAC-71 re-check stays its first statement), whose lock
+        waits are bounded at 10 seconds each as on PATCH (PAC-101): the answer is either 201 with all of them or
+        an error with none of them (no link, no host row). A failed owner-host
+        write, a failed co-host lookup and a failed co-host write are each the
+        500 with nothing created (before PAC-112 the first left the link created
+        and the other two were silently skipped). Each listed entry gets an
+        outcome, reported in the 201's `co_host_changes` (present exactly when
+        `co_host_emails` is carried, `[]` included): `invited`, `own_address`
+        (the address's one domain-confirmed holder is the caller; the owner's
+        host row stays `accepted`, never demoted to `pending`: API-048's
+        create-path remnant, fixed) or `not_added` (no single domain-confirmed
+        holder; the same outcome whether nobody, an unconfirmed carrier or
+        several accounts hold it, so it reveals nothing about any account).
+        `already_host` cannot occur on create. Two entries that reach the same
+        account write one host row and count once. A list with more than 5
+        entries is refused 422 unless every entry reaches the owner (on create
+        the owner is the only current host; contract md §3). A blank entry is
+        refused 422. Nothing protects a retry after a lost 201: saving again
+        creates a second link (spec §5, accepted risk).
       requestBody:
         required: true
         content:
@@ -792,11 +815,16 @@ paths:
               $ref: '#/components/schemas/CreateSchedulingLinkRequest'
       responses:
         '201':
-          description: Link created.
+          description: >-
+            Link created, with its owner host row and every invitation. The roster in
+            `hosts` is read after the write without the strict read's guarantee (it
+            can come back degraded, spec §2.4): clients must not use it as the
+            co-host baseline; `getSchedulingLink` is the strict read.
+            `co_host_changes` is computed inside the write and is never degraded.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SchedulingLink'
+                $ref: '#/components/schemas/SchedulingLinkSaved'
         '400':
           description: 'Body is not valid JSON. Body: {"error":"invalid request body"}'
           content:
@@ -819,7 +847,12 @@ paths:
             failed" or "internal error" (insert or owner-host insert failed, or the
             owner's settings, needed for `time_zone`, could not be read; PAC-72
             revision 3.1, never the UTC fallback). The detail is written to the
-            server log and Sentry only (PAC-21).
+            server log and Sentry only (PAC-21). PAC-112: also "internal error" when
+            a co-host lookup or invitation could not be stored, or when a lock on an
+            invitee's account was not obtained within 10 seconds (the PATCH bound,
+            PAC-101). Every 500 from this
+            operation leaves nothing behind: no link, no host row (spec D-4; before
+            PAC-112 a failed owner-host insert left the link created).
           content:
             application/json:
               schema:
@@ -1147,6 +1180,16 @@ paths:
         never `200` with `hosts: []` or with a host's email missing (PAC-25 C-2). An
         accepted co-host therefore still sees pending and declined invitees' emails, as
         through the list (PAC-25 D-2).
+
+
+        PAC-112 (spec D-3, §6): this is the ONLY read from which a client may take
+        a link's co-host list as the baseline for a co-host edit (the list sent in
+        `co_host_emails` is the complete list, so a baseline missing someone removes
+        them). The answers of `listSchedulingLinks`, `createSchedulingLink` and
+        `updateSchedulingLink` build the roster without this guarantee and must
+        not be used as a baseline. The strictness above (500, never a degraded
+        roster) is therefore load-bearing and must not be relaxed; it is pinned by
+        TestPAC25GetLinkRosterFailureIs500.
       responses:
         '200':
           description: >-
@@ -1210,8 +1253,22 @@ paths:
         as `Pat@Acme.com` is kept by a list containing `pat@acme.com` (before PAC-71 the
         lowercased lookup missed it and removed the host). NEW ENTRIES (granting): a
         listed address that matches no existing host is invited as `pending` only when
-        exactly one account holds it DOMAIN-CONFIRMED; otherwise it is skipped, as an
-        unknown address is today.
+        exactly one account holds it DOMAIN-CONFIRMED; otherwise it cannot be invited.
+        The owner's host row never changes because of the list.
+
+
+        PAC-112 (spec §3.4-§3.6, D-2, D-8; contract md §2-§3): when `co_host_emails`
+        is carried the 200's `co_host_changes` reports, from inside the write, one
+        outcome per listed entry (`invited`, `already_host`, `own_address`,
+        `not_added`), every host this PATCH removed, and the counts. Absent or
+        null `co_host_emails`: no `co_host_changes`, co-hosts untouched. A blank
+        entry is a 422 before anything is written. A list with more than 5
+        entries is a 422 with nothing changed (fields included) when any entry
+        does not reach a current host of the link; "current host" (owner
+        included, any status) is decided against the host rows read inside this
+        PATCH's transaction after the link's lock is taken, so a co-host removed
+        by a concurrent edit no longer counts. A list that only keeps or removes
+        is accepted at any length.
 
         PAC-40: for `duration_options` / `durations` and `days_of_week` / `days` the
         canonical spelling wins whenever it is carried (present and not null; `[]`
@@ -1236,7 +1293,9 @@ paths:
         then deleted with the PATCH's fields and co-host list. No host row of the
         link changes after its delete commits. A refusal decided before the write
         (400, 403, 409, 422) keeps its answer even if the link was deleted
-        meanwhile. A PATCH that must wait for a booking save, host write, delete
+        meanwhile; the one 422 decided inside the write (PAC-112's list longer than
+        5, above) comes after the link's lock, so a link deleted first answers the
+        404 instead. A PATCH that must wait for a booking save, host write, delete
         or other edit of the same link waits at most 10 seconds for each lock it
         needs; past that it is the 500 and nothing changes.
       requestBody:
@@ -1247,11 +1306,14 @@ paths:
               $ref: '#/components/schemas/UpdateSchedulingLinkRequest'
       responses:
         '200':
-          description: Updated link.
+          description: >-
+            Updated link. As on create, `hosts` is not the strict roster and must not
+            be used as a co-host baseline (`getSchedulingLink` is); `co_host_changes`
+            is present exactly when `co_host_emails` was carried (non-null).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SchedulingLink'
+                $ref: '#/components/schemas/SchedulingLinkSaved'
         '400':
           description: '"invalid id" or "invalid request body"'
           content:
@@ -1292,7 +1354,8 @@ paths:
             the server log and Sentry only (PAC-21). PAC-101: also "internal error"
             when a co-host lookup, removal or invitation could not be stored, or when
             a lock on the link (or on an invitee's account) was not obtained within
-            10 seconds. Every 500 from this operation leaves the link exactly as it
+            10 seconds. PAC-112: also when the host rows or a removed host's address,
+            needed for `co_host_changes`, could not be read. Every 500 from this operation leaves the link exactly as it
             was: neither its fields nor any host row changed.
           content:
             application/json:
@@ -2211,7 +2274,15 @@ components:
         single_use"; "max_uses must be set to a positive integer for recurring links";
         "slug cannot be empty" (PATCH only); "booking_horizon_days must be
         between 1 and 365"; "refusal_message must be generic or specific"
-        (both PAC-72 revision 2).
+        (both PAC-72 revision 2). PAC-112 (spec D-9; each also writes nothing):
+        "days contains an unrecognised day name" (API-053: the `days` alias is
+        used, i.e. `days_of_week` is absent or null, and at least one entry is
+        not a recognised name; reported before every other field 422: on create
+        before "title is required", on PATCH before "slug cannot be empty", and
+        so instead of "at least one day is required"); "co_host_emails must not contain a blank address"; "a co-host
+        list longer than 5 can only keep or remove co-hosts, and this one names
+        someone who is not a current host of the link" (the over-5 rule; worded
+        so it never reads as "too many" to an owner who only removed someone).
       content:
         application/json:
           schema:
@@ -2654,13 +2725,13 @@ components:
         names deliberately differ from the storage json tags (`durations` vs
         `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`,
         `window_start` vs `window_start_time`).
-      required:
+      required: &schedulingLinkRequired
         [id, owner_id, title, slug, durations, days, window_start, window_end,
          buffer_before, buffer_after, min_notice_minutes, usage_type, uses_count,
          active, hosts, created_at, is_owner, booking_horizon_days,
          refusal_message, time_zone]
       additionalProperties: false
-      properties:
+      properties: &schedulingLinkProperties
         id:
           type: string
           format: uuid
@@ -2770,6 +2841,118 @@ components:
             The caller's own host status. Omitted (json `my_status,omitempty`) when the
             caller is not among the link's hosts.
 
+    SchedulingLinkSaved:
+      type: object
+      description: >-
+        PAC-112. The answer to `createSchedulingLink` (201) and
+        `updateSchedulingLink` (200): every property of `SchedulingLink` (shared
+        through a YAML anchor, so the two cannot drift) plus the optional
+        `co_host_changes`. The roster in `hosts` is built like the list's, not
+        like `getSchedulingLink`'s, and is never a co-host baseline (spec D-3).
+        `required` is shared through a second anchor, so neither the property map
+        nor the required list can drift.
+      required: *schedulingLinkRequired
+      additionalProperties: false
+      properties:
+        <<: *schedulingLinkProperties
+        co_host_changes:
+          $ref: '#/components/schemas/SchedulingLinkCoHostChanges'
+
+    SchedulingLinkCoHostChanges:
+      type: object
+      description: >-
+        PAC-112 (spec §3.4, §3.5, §3.9, D-2; contract md §2). What this save did to
+        the co-hosts, computed inside the write's transaction. Present in a
+        `SchedulingLinkSaved` exactly when the request carried `co_host_emails`
+        (non-null; `[]` included) and the save succeeded; absent otherwise. A
+        client that sent a list and receives no `co_host_changes` is talking to a
+        server without PAC-112 (rollback, spec §7): it must not claim any
+        address was invited, and says it cannot tell which co-hosts were added
+        (contract md §5.3). Counts are of people, not entries: two entries that
+        reach one account count once.
+      required: [addresses, removed, invited_count, removed_count, not_added_count]
+      additionalProperties: false
+      properties:
+        addresses:
+          type: array
+          description: >-
+            One item per entry of the request's `co_host_emails`, in the same order
+            and of the same length, duplicates included, so item i describes entry i.
+          items:
+            $ref: '#/components/schemas/SchedulingLinkCoHostOutcome'
+        removed:
+          type: array
+          description: >-
+            Every non-owner host this save removed (not on the list by the keep
+            rule), with the status they had. Empty when nobody was removed and
+            always empty on create. Never the owner. Order not specified.
+          items:
+            $ref: '#/components/schemas/SchedulingLinkRemovedHost'
+        invited_count:
+          type: integer
+          minimum: 0
+          description: Distinct accounts whose outcome is `invited`.
+        removed_count:
+          type: integer
+          minimum: 0
+          description: Equals the length of `removed`.
+        not_added_count:
+          type: integer
+          minimum: 0
+          description: >-
+            Distinct entries whose outcome is `not_added`. Two entries are the same
+            entry when they are identical after trimming ECMA-262 `\s` from both
+            ends and lowercasing with the database's `lower()`, the comparison the
+            lookup itself applies (contract md §3.3).
+
+    SchedulingLinkCoHostOutcome:
+      type: object
+      description: >-
+        PAC-112. The outcome of one listed entry, decided in this order (contract
+        md §2.2): `own_address` when the entry's one domain-confirmed holder is the
+        link's owner; `already_host` when that holder, or else any account carrying
+        the entry at any standing (the keep rule), was a non-owner host of the link
+        before this save, whatever their status, which they keep (PAC-61, PAC-71
+        AC-43); `invited` when the one domain-confirmed holder was not a host and a
+        `pending` row was created by this save (every entry reaching that account
+        reports `invited`); otherwise `not_added`. `not_added` carries no reason:
+        nobody, an unconfirmed carrier and several accounts are not distinguished
+        (spec D-6). The owner's address held only unconfirmed or shared is
+        `not_added`, and the owner's row is unchanged (spec §3.7).
+      required: [email, outcome]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          description: >-
+            The entry as sent, with leading and trailing ECMA-262 `\s` characters
+            removed (the set of the request items' `pattern`, the PAC-67 test);
+            letter case kept.
+        outcome:
+          type: string
+          enum: [invited, already_host, own_address, not_added]
+          x-enum-varnames: [CoHostOutcomeInvited, CoHostOutcomeAlreadyHost, CoHostOutcomeOwnAddress, CoHostOutcomeNotAdded]
+
+    SchedulingLinkRemovedHost:
+      type: object
+      description: PAC-112. A host removed by this save. Bookings already made on the link are untouched.
+      required: [user_id, email, status]
+      additionalProperties: false
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          description: >-
+            The account's stored address, read inside the write; a failed read is
+            the 500 with nothing changed, never an empty string.
+        status:
+          type: string
+          enum: [pending, accepted, declined]
+          x-enum-varnames: [RemovedHostStatusPending, RemovedHostStatusAccepted, RemovedHostStatusDeclined]
+          description: The status the host had when removed.
+
     SchedulingLinkListResponse:
       type: object
       description: >-
@@ -2843,8 +3026,13 @@ components:
           nullable: true
           description: >-
             Alias for days_of_week, used only when days_of_week is absent or null. Accepts
-            "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently
-            dropped, which can turn a non-empty list into a 422 "at least one day".
+            "sun".."sat", "sunday".."saturday" and "0".."6", case-insensitive, surrounding
+            whitespace ignored. PAC-112 (API-053, spec §3.12): when the alias is used, an
+            entry that is none of these makes the whole request a 422 "days contains an
+            unrecognised day name" and nothing is created, a mixed list such as
+            ["mon","Montag"] included (before PAC-112 such entries were silently dropped).
+            When days_of_week is carried the alias is ignored entirely, unrecognised
+            names included (PAC-40 D-5).
           items:
             type: string
         window_start_time:
@@ -2917,13 +3105,30 @@ components:
           description: Required and must be positive when usage_type is `recurring`. Ignored (forced to null) otherwise.
         co_host_emails:
           type: array
+          nullable: true
           description: >-
-            Emails are lowercased and trimmed, then resolved to existing accounts and
-            added as `pending` hosts. Addresses with no account are skipped silently -
-            the response gives no indication that an invite was dropped.
+            Absent or null: no co-hosts besides the owner and no `co_host_changes`.
+            Entries are trimmed and compared ignoring case. Each one is resolved
+            (PAC-71 granting rule) and its outcome is reported in the 201's
+            `co_host_changes`; an address that cannot be invited is reported as
+            `not_added`, never silently dropped, and does not fail the create (spec
+            D-5). On create the only current host is the owner, so a list of more
+            than 5 entries is accepted only when every entry reaches the owner.
+            PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not
+            contain a blank address" (before PAC-112 it was skipped). Blank means: no
+            character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly
+            the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So
+            "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422).
+            Trimming, everywhere in this operation, removes leading and trailing
+            characters of that same set. `maxItems` is deliberately not set: a list of
+            more than 5 entries is refused 422 only when an entry does not reach a
+            current host of the link (see the operation), which JSON Schema cannot
+            express. No `format` is declared because the server checks none: a string
+            that is not an address is simply `not_added` (contract md §3.4).
           items:
             type: string
-            format: email
+            minLength: 1
+            pattern: '\S'
 
     UpdateSchedulingLinkRequest:
       type: object
@@ -2975,7 +3180,10 @@ components:
           description: >-
             Alias for days_of_week, applied only when days_of_week is absent or null.
             Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won
-            on PATCH).
+            on PATCH), unrecognised names included. Same names as on create. PAC-112
+            (API-053): when applied, an unrecognised entry makes the PATCH a 422 "days
+            contains an unrecognised day name" with the link unchanged, a mixed list
+            included (before PAC-112 it was dropped and the rest saved).
           items:
             type: string
         window_start_time:
@@ -3048,13 +3256,29 @@ components:
             404 whatever this value is (PAC-40 AC-3, AC-11).
         co_host_emails:
           type: array
+          nullable: true
           description: >-
-            When present, the complete co-host list: unlisted non-owner hosts are removed,
-            new ones are added as `pending`, existing ones keep their status (PAC-61).
-            Unknown emails are skipped silently.
+            When present (non-null), the complete co-host list: unlisted non-owner hosts
+            are removed, new ones are added as `pending`, existing ones keep their status
+            (PAC-61). Absent or null leaves the co-hosts untouched. Entries are trimmed
+            and compared ignoring case. Every entry's outcome and every removal are
+            reported in the 200's `co_host_changes`; an address that cannot be invited is
+            `not_added`, never silently dropped, and does not fail the PATCH (spec D-5).
+            PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not
+            contain a blank address" (before PAC-112 it was skipped). Blank means: no
+            character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly
+            the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So
+            "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422).
+            Trimming, everywhere in this operation, removes leading and trailing
+            characters of that same set. `maxItems` is deliberately not set: a list of
+            more than 5 entries is refused 422 only when an entry does not reach a
+            current host of the link (see the operation), which JSON Schema cannot
+            express. No `format` is declared because the server checks none: a string
+            that is not an address is simply `not_added` (contract md §3.4).
           items:
             type: string
-            format: email
+            minLength: 1
+            pattern: '\S'
 
     SchedulingLinkHostInvite:
       type: object

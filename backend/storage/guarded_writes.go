@@ -7,8 +7,10 @@
 // Exception, the scheduling-link writes (PAC-101 contract §3.2, §4.3):
 // DeleteSchedulingLinkCtx, InviteLinkHostCtx, RemoveLinkHostCtx,
 // RemoveLinkHostsExceptCtx, UpdateSchedulingLinkCtx (and
-// UpdateSchedulingLinkAndCoHostsCtx), and RespondToHostInviteCtx in guarded.go,
-// run through withLinkWriteTx instead: they ALWAYS open a transaction, with
+// UpdateSchedulingLinkAndCoHostsCtx, UpdateSchedulingLinkReportingCoHostsCtx),
+// CreateSchedulingLinkWithCoHostsCtx (PAC-112: the create, its owner row and
+// its invitations in one transaction; the new link row needs no lock), and
+// RespondToHostInviteCtx in guarded.go, run through withLinkWriteTx instead: they ALWAYS open a transaction, with
 // or without a session guard. Under a guard the re-check is still its first
 // statement; then the link-lock bound (SET LOCAL lock_timeout) is set and the
 // link is locked (FOR SHARE, or the PATCH's UPDATE) before anything is written.
@@ -29,16 +31,6 @@ func AcceptTeamInviteCtx(ctx context.Context, db DBTX, inviteID uuid.UUID) (err 
 		return AcceptTeamInvite(q, inviteID)
 	})
 	return err
-}
-
-// AddLinkHostCtx is AddLinkHost under the in-request re-check (PAC-71, contract §5).
-func AddLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID, status string) (r0 *LinkHost, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		var e error
-		r0, e = AddLinkHost(q, linkID, userID, status)
-		return e
-	})
-	return r0, err
 }
 
 // AddTeamMemberCtx is AddTeamMember under the in-request re-check (PAC-71, contract §5).
@@ -74,16 +66,6 @@ func CreateNoMeetingZoneCtx(ctx context.Context, db DBTX, teamID uuid.UUID, dayO
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = CreateNoMeetingZone(q, teamID, dayOfWeek, startTime, endTime, label)
-		return e
-	})
-	return r0, err
-}
-
-// CreateSchedulingLinkCtx is CreateSchedulingLink under the in-request re-check (PAC-71, contract §5).
-func CreateSchedulingLinkCtx(ctx context.Context, db DBTX, l *SchedulingLink) (r0 *SchedulingLink, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		var e error
-		r0, e = CreateSchedulingLink(q, l)
 		return e
 	})
 	return r0, err
@@ -382,15 +364,46 @@ func UpdateSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID, l *Sche
 // transaction. A nil result with a nil error means the link was deleted before the UPDATE: nothing
 // changed. Any error rolls back the fields and the co-hosts together.
 func UpdateSchedulingLinkAndCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, err error) {
+	r0, _, err = UpdateSchedulingLinkReportingCoHostsCtx(ctx, db, id, l, ownerID, coHostEmails)
+	return r0, err
+}
+
+// UpdateSchedulingLinkReportingCoHostsCtx is UpdateSchedulingLinkAndCoHostsCtx that also returns
+// what the save did to the co-hosts (PAC-112 contract md §2, §3.2): changes is nil exactly when
+// coHostEmails is nil. ErrCoHostListTooLong is a list over the limit that names someone who is
+// not a current host, decided after the UPDATE: nothing changed.
+func UpdateSchedulingLinkReportingCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
 	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, e = updateSchedulingLinkAndCoHosts(q, id, l, ownerID, coHostEmails)
+		r0, changes, e = updateSchedulingLinkAndCoHosts(q, id, l, ownerID, coHostEmails)
 		return e
 	})
 	if errors.Is(err, ErrLinkGone) {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return r0, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return r0, changes, nil
+}
+
+// CreateSchedulingLinkWithCoHostsCtx is a link create as one transaction (PAC-112 contract md
+// §3.1), opened with or without a session guard through withLinkWriteTx: under a guard the
+// PAC-71 re-check is its first statement, then every lock wait is bounded (PAC-101's
+// LinkLockTimeout; each invitation takes FOR KEY SHARE on the invitee's users row). It writes
+// the link, the owner's accepted host row (plain insert) and, when coHostEmails is not nil,
+// the co-host list; changes is nil exactly when coHostEmails is nil. Any error, including
+// ErrCoHostListTooLong, leaves no link and no host row.
+func CreateSchedulingLinkWithCoHostsCtx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
+		var e error
+		r0, changes, e = createSchedulingLinkWithCoHosts(q, l, coHostEmails)
+		return e
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return r0, changes, nil
 }
 
 // UpdateZoomCredentialCtx is UpdateZoomCredential under the in-request re-check (PAC-71, contract §5).

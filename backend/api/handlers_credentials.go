@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/auth"
@@ -194,20 +193,11 @@ func providerOnlyDetails(provider string) string {
 
 // --- createConferenceLink (POST /api/conference/create) -----------------------
 
-// ecmaSpace reports whether r is in ECMA-262's \s set (WhiteSpace and
-// LineTerminator), the set the contract's `pattern: '\S'` uses. Neither Go's
-// unicode.IsSpace (it adds U+0085 and lacks U+FEFF) nor regexp's ASCII-only \s
-// is that set.
-func ecmaSpace(r rune) bool {
-	switch r {
-	case '\t', '\n', '\v', '\f', '\r', ' ', '\u00a0', '\u1680', '\u2028', '\u2029', '\u202f', '\u205f', '\u3000', '\ufeff':
-		return true
-	}
-	return unicode.Is(unicode.Zs, r)
-}
-
+// The title's blank test is ECMA-262's \s set, the set the contract's
+// `pattern: '\S'` uses (PAC-67, API-052); storage.BlankECMA is that test,
+// shared with the scheduling-link co-host list since PAC-112.
 func validConferenceRequest(b *gen.CreateConferenceRequest) bool {
-	if b == nil || strings.IndexFunc(b.Title, func(r rune) bool { return !ecmaSpace(r) }) < 0 {
+	if b == nil || storage.BlankECMA(b.Title) {
 		return false
 	}
 	return !b.Start.IsZero() && !b.End.IsZero() && b.End.After(b.Start)

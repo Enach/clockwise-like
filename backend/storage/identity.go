@@ -125,11 +125,19 @@ type Carrier struct {
 // CarriersOf returns every account whose address equals email ignoring
 // letter case (spec D-17), in a stable order.
 func CarriersOf(q Querier, email string) ([]Carrier, error) {
+	return carriersOfTrimmed(q, strings.TrimSpace(email))
+}
+
+// carriersOfTrimmed is CarriersOf's one read for an address its caller has
+// already trimmed. The scheduling-link co-host list (PAC-112 contract §3.3,
+// §3.4) trims with the ECMA-262 \s set, not strings.TrimSpace, and must look
+// up exactly that string.
+func carriersOfTrimmed(q Querier, email string) ([]Carrier, error) {
 	rows, err := q.Query(`
 		SELECT u.id, u.email, u.address_standing, u.provider_id, (i.user_id IS NOT NULL)
 		FROM users u LEFT JOIN user_identities i ON i.user_id = u.id
 		WHERE lower(u.email) = lower($1)
-		ORDER BY u.created_at, u.id`, strings.TrimSpace(email))
+		ORDER BY u.created_at, u.id`, email)
 	if err != nil {
 		return nil, err
 	}
