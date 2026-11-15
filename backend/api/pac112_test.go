@@ -837,3 +837,35 @@ func TestPAC112_OldClientsUnaffected(t *testing.T) {
 	}
 	pac112SameHosts(t, "list-free PATCH", e.hostRows(l.ID), map[uuid.UUID]string{owner: "accepted", b: "accepted"})
 }
+
+// AC-3, the public-slots clause (PAC-118): an accepted co-host's busy time
+// removes the link's slot while they are a host, and no longer does once the
+// owner's PATCH leaves them out of the list. The busy time comes from the
+// co-host's calendar on the recording stand-in (PAC-72 bench), read by the
+// real booking engine; the removal goes through the real PATCH handler.
+func TestPAC112_AC3_RemovedCoHostsBusyTimeNoLongerRemovesSlots(t *testing.T) {
+	b := newPAC72Bench(t, pac72At(pac72Mon, "06:00"))
+	slh := newSchedulingLinkHandlers(b.db, nil)
+	b.r.Patch("/api/scheduling-links/{id}", slh.updateLink)
+
+	owner, _ := b.host(pac112Addr("ac3-slots-owner"))
+	coHost, coBearer := b.host(pac112Addr("ac3-slots-e"))
+	link := b.link("pac112-ac3-"+uuid.NewString()[:8], owner, nil, owner, coHost)
+	b.cal.addEvent(coBearer, pac72At(pac72Tue, "10:00"), pac72At(pac72Tue, "10:30"))
+	busy := pac72At(pac72Tue, "10:00")
+
+	if got := b.slots(link.Slug, "2030-01-08", 30); got.code != http.StatusOK || got.offers(busy) || !got.offers(pac72At(pac72Tue, "09:00")) {
+		t.Fatalf("with the co-host: listing = %d %v, want 09:00 offered and 10:00 not", got.code, got.starts())
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/scheduling-links/"+link.ID.String(),
+		strings.NewReader(`{"co_host_emails":[]}`))
+	w := httptest.NewRecorder()
+	b.r.ServeHTTP(w, withUser(req, owner))
+	s := pac112Saved(t, w, http.StatusOK)
+	pac112Counts(t, s, 0, 1, 0)
+
+	if got := b.slots(link.Slug, "2030-01-08", 30); got.code != http.StatusOK || !got.offers(busy) {
+		t.Errorf("after the removal: listing = %d %v, want 10:00 offered", got.code, got.starts())
+	}
+}

@@ -24,6 +24,7 @@ import {
   LINKS,
   PAC88_HOSTS,
   PAC88_LINKS,
+  PAC112_HOSTS,
   PERSONAL_CALENDAR,
   SEEDED_ACCEPTED_HOST_ROWS,
   SEEDED_LINK_IDS,
@@ -172,6 +173,14 @@ async function verify(): Promise<void> {
         WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
       [Object.values(CONNECTED).map((u) => u.id)],
       Object.keys(CONNECTED).length,
+    ],
+    // PAC-118: both users of PAC-112 AC-3's slots journey are connected.
+    [
+      'the PAC-112 owner and co-host have one unexpired token each',
+      `SELECT 1 FROM oauth_tokens
+        WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
+      [Object.values(PAC112_HOSTS).map((u) => u.id)],
+      Object.keys(PAC112_HOSTS).length,
     ],
     // PAC-35 AC-11: the disconnect journey's own user starts connected.
     [

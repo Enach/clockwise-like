@@ -463,4 +463,40 @@ INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUE
   ('cacacaca-caca-4aca-8aca-cacacacacaca', 'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'accepted', NOW()),
   ('cddddddd-dddd-4ddd-8ddd-dddddddddddd', 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7', 'accepted', NOW());
 
+-- ── PAC-118: PAC-112 AC-3's public-slots clause ─────────────────────────────
+-- A link owner and a co-host, both connected through the stand-in (seed/ids.ts
+-- PAC112_HOSTS, in ACCEPTED_CREDENTIALS): the co-host's busy time must be
+-- read, and an unreadable calendar is busy for either of them (PAC-72 D-6).
+-- No link is seeded: the journey (tests/pac112-cohosts.spec.ts) creates a
+-- run-unique one, so a retry never inherits a removed co-host.
+INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
+  ('a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2', 'e2e.pac112.owner@paceday.test',  'E2E PAC-112 Link Owner', '', 'google', 'e2e-pac112-owner'),
+  ('a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3', 'e2e.pac112.cohost@paceday.test', 'E2E PAC-112 Co-host',    '', 'google', 'e2e-pac112-cohost');
+
+-- PAC-71, as for the PAC-88 hosts above: domain-confirmed (the co-host is
+-- invited by address), subjects of their own ("7112" + n).
+UPDATE users SET address_standing = 'domain_confirmed'
+ WHERE id IN ('a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2', 'a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3');
+INSERT INTO user_identities (user_id, provider, tenant, subject, evidence, bound_by)
+SELECT id, 'google', '', '7112' || lpad((row_number() OVER (ORDER BY id))::text, 4, '0'), 'authoritative', 'created'
+FROM users
+WHERE id IN ('a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2', 'a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3');
+
+INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
+  ('a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2', 'e2e-pac112-owner-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3', 'e2e-pac112-cohost-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+
+-- The owner's zone is the link's zone (PAC-72 D-9): UTC, so the journey's UTC
+-- instants keep their meaning.
+INSERT INTO settings (user_id, timezone, work_start, work_end, focus_daily_target_minutes, calendar_provider)
+VALUES
+  ('a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3', 'UTC', '09:00', '18:00', 240, 'google')
+ON CONFLICT (user_id) DO UPDATE SET
+  timezone = EXCLUDED.timezone,
+  work_start = EXCLUDED.work_start,
+  work_end = EXCLUDED.work_end,
+  focus_daily_target_minutes = EXCLUDED.focus_daily_target_minutes,
+  calendar_provider = EXCLUDED.calendar_provider;
+
 COMMIT;

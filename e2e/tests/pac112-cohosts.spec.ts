@@ -5,12 +5,16 @@
  * production frontend bundle (the paired smart-calendar-flow branch); nothing
  * is mocked or routed.
  *
- * Journeys (spec ACs marked [e2e]): AC-1, AC-2, AC-3 (host and booking half),
- * AC-4, AC-11, AC-24, AC-32.
+ * Journeys (spec ACs marked [e2e]): AC-1, AC-2, AC-3 (host and booking half,
+ * and the public-slots half: PAC-118), AC-4, AC-11, AC-24, AC-32.
  *
  * Each test owns its users (run-unique emails, domain-confirmed like the seeded
  * ones, so they can be invited: PAC-71) and its links, and removes them at the
- * end, so the tests run in any order and in parallel. Setup goes through the
+ * end, so the tests run in any order and in parallel. The exception is AC-3's
+ * public-slots half, whose owner and co-host must be connected through the
+ * calendar stand-in: it uses the seeded pair seed/ids.ts PAC112_HOSTS, which
+ * no other journey touches, and removes only its own link and stand-in
+ * events. Setup goes through the
  * API (create, invite, accept); the change under test goes through the
  * editor; the outcome is asserted in the editor, through the API after a
  * reload, and in the database rows.
@@ -24,6 +28,9 @@
 import type { Page } from '@playwright/test';
 import { test, expect, type ApiClient, type Db } from '../fixtures';
 import type { SessionUser } from '../auth';
+import { fake } from '../fake';
+import { atUtc, instant, isoDate, nextBookableWeekday } from '../lib/dates';
+import { PAC112_HOSTS } from '../seed/ids';
 
 type Api = ApiClient;
 
@@ -213,11 +220,78 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
     }
   });
 
-  // eslint-disable-next-line playwright/no-skipped-test -- follow-up: PAC-118
-  test.fixme("AC-3: a removed co-host's busy time no longer removes the link's public slots", async () => {
-    // follow-up: PAC-118. The journey: seed a busy event on the co-host's
-    // stand-in calendar, see the slot missing, remove the co-host in the
-    // editor, see the slot offered.
+  // PAC-118: the public-slots clause. Needs an owner and a co-host whose
+  // calendars the stand-in answers (an unreadable one is busy, PAC-72 D-6),
+  // so it uses the seeded connected pair (seed/ids.ts PAC112_HOSTS), which
+  // this journey alone owns. The link is run-unique; the co-host's calendar
+  // is cleared before and after.
+  test("AC-3: a removed co-host's busy time no longer removes the link's public slots", async ({
+    api,
+    db,
+    apiAs,
+    pageAs,
+  }) => {
+    const a = PAC112_HOSTS.owner;
+    const e = PAC112_HOSTS.coHost;
+    const run = runId();
+    const title = `E2E PAC112 AC-3 slots ${run}`;
+    const day = nextBookableWeekday();
+    await fake.clearCalendar(e.email);
+    try {
+      // Monday to Friday 09:00-17:00 in the owner's zone (UTC), 30 minutes.
+      const id = await linkWith(apiAs(a), title, [e]);
+      await respond(apiAs(e), id, 'accept');
+      expect(await hostRows(db, id)).toEqual({ [a.id]: 'accepted', [e.id]: 'accepted' });
+      const link = await db.queryOne<{ slug: string }>('SELECT slug FROM scheduling_links WHERE id = $1', [id]);
+
+      // The co-host has a meeting 10:00-10:30 UTC that day.
+      await fake.seedEvents(e.email, [
+        {
+          summary: 'E2E PAC-112 co-host meeting',
+          start: { dateTime: atUtc(day, '10:00') },
+          end: { dateTime: atUtc(day, '10:30') },
+        },
+      ]);
+
+      const publicStarts = async (): Promise<string[]> => {
+        const res = await api.get(`/api/book/${link!.slug}/slots`, { date: isoDate(day), duration: 30 });
+        expect(res.status(), await res.text()).toBe(200);
+        const { slots } = (await res.json()) as { slots: Array<{ start: string }> };
+        return slots.map((sl) => instant(sl.start));
+      };
+      // Every 30-minute start from 09:00 to 16:30 on the 15-minute stride
+      // (engine/booking.go CollectiveSlots).
+      const allStarts: string[] = [];
+      for (let m = 9 * 60; m <= 16 * 60 + 30; m += 15) {
+        allStarts.push(atUtc(day, `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`));
+      }
+      const overlapping = ['09:45', '10:00', '10:15'].map((t) => atUtc(day, t));
+
+      // While E is an accepted co-host, E's meeting removes the starts that
+      // overlap it, and only those (the owner is free and readable).
+      expect(await publicStarts()).toEqual(allStarts.filter((t) => !overlapping.includes(t)));
+
+      const page = await pageAs(a);
+      const drawer = await openEditor(page, title);
+      await drawer.getByRole('button', { name: `Remove ${e.email}`, exact: true }).click();
+      await drawer.getByRole('button', { name: 'Save changes' }).click();
+      await expect(drawer).toBeHidden();
+
+      await page.reload();
+      const again = await openEditor(page, title);
+      await expect(again.getByRole('button', { name: `Remove ${e.email}`, exact: true })).toHaveCount(0);
+      expect(await hostRows(db, id)).toEqual({ [a.id]: 'accepted' });
+
+      // E's meeting is still on E's calendar, and no longer removes a slot.
+      expect((await fake.events(e.email)).map((ev) => ev.summary)).toContain('E2E PAC-112 co-host meeting');
+      expect(await publicStarts()).toEqual(allStarts);
+    } finally {
+      // The pair is seeded, so the users stay. Every link of the owner goes,
+      // deliberately: only this journey creates links for that user, and it
+      // also removes one an earlier killed attempt left behind.
+      await db.query('DELETE FROM scheduling_links WHERE owner_user_id = $1', [a.id]);
+      await fake.clearCalendar(e.email);
+    }
   });
 
   test('AC-4: adding G invites G and keeps the accepted and declined statuses', async ({ db, apiAs, pageAs }) => {
