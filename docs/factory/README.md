@@ -194,6 +194,34 @@ that fails. A mismatch is a warning while the newer of the last change to
 unrelated merges do not reset it. Past that, or when a date cannot be read or is
 in the future, it fails the release run, which is what notifies the owner.
 
+### Paired branches
+
+**The two halves of a paired change carry the exact same branch name** in both
+repos (`factory/pac-127` in `clockwise-like` and `factory/pac-127` in
+`smart-calendar-flow`). CI pairs on that name and nothing else. The rule, in
+`scripts/ci/pair-branch.sh` (identical in both repos, tested by
+`scripts/ci/pair-branch.test.sh` in CI right before it runs):
+
+1. no `pac-N` in this branch's name → the other repo's `main`;
+2. the other repo has a branch with exactly this name (compared
+   case-insensitively) → that branch, preferring one with an open PR;
+3. otherwise → the other repo's `main`.
+
+A different branch that merely shares the `pac-N` is never used. A ticket split
+into batches (`factory/pac-122-b0`, `factory/pac-122-b1`, `factory/pac-122-obs`)
+names each batch the same in both repos; once one half has merged and its branch
+is deleted, the other half pairs with `main`, which then holds that half. Before
+PAC-127 the fallback picked a sibling batch, so web `factory/pac-122-b0` was
+checked against api `factory/pac-122-obs` and `openapi-check` failed. The step
+logs its candidates and its decision (`web ref: …` / `api ref: …` and why).
+
+In the api repo the pairing is its own job (`pair web branch`), which
+succeeds, so GitHub's **"Re-run failed jobs"** keeps its old output and re-runs
+the failed jobs against the old pairing. After the web half is pushed, created,
+merged or deleted, use **"Re-run all jobs"** (or push) so the pairing is computed
+again. In the web repo the pairing is a step of the single `verify` job, so any
+re-run computes it again.
+
 **Rules for agents:**
 
 1. You may not open a PR without pasting `make verify` output into the body.
