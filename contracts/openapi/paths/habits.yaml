@@ -712,8 +712,9 @@ paths:
       tags: [integrations]
       summary: Delete the stored Slack connection
       description: |
-        Deletes the `workspace_connections` row for (user, "slack"). The storage error is
-        explicitly discarded, so a failed delete is still reported as 204. Deleting a
+        Deletes the `workspace_connections` row for (user, "slack"). PAC-122 (SF-003): a
+        failed delete is the 500 {"error":"internal error"} and the connection stays
+        stored. Deleting a
         connection that does not exist is also 204 — this endpoint is idempotent and
         never reports 404.
       responses:
@@ -839,7 +840,9 @@ paths:
       operationId: disconnectNotion
       tags: [integrations]
       summary: Delete the stored Notion connection
-      description: Idempotent. The storage error is discarded, so this is always 204.
+      description: >-
+        Idempotent. PAC-122 (SF-003): a failed delete is the 500 {"error":"internal error"}
+        and the connection stays stored.
       responses:
         '500':
           $ref: '#/components/responses/SessionGenerationUnavailable'

@@ -238,7 +238,7 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 // signed-in holder of the token may preview the invite, API-089)
 func (h *teamHandlers) getInvite(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
-	_ = storage.ExpireOldInvites(h.db)
+	h.expireOldInvites(r)
 	invite, err := storage.GetTeamInviteByToken(h.db, token)
 	if err == sql.ErrNoRows {
 		writeError(w, "invite not found", http.StatusNotFound)
@@ -299,7 +299,7 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := chi.URLParam(r, "token")
-	_ = storage.ExpireOldInvites(h.db)
+	h.expireOldInvites(r)
 	invite, err := storage.GetTeamInviteByToken(h.db, token)
 	if err == sql.ErrNoRows {
 		writeError(w, "invite not found", http.StatusNotFound)
@@ -690,6 +690,18 @@ func reportEmailFailure(what, idKind, id string, err error) {
 	msg := outbound.RedactAddresses(err.Error())
 	log.Printf("ERROR: %s email failed for %s %s: %s", what, idKind, id, msg)
 	sentry.CaptureException(fmt.Errorf("%s email failed for %s %s: %s", what, idKind, id, msg))
+}
+
+// expireOldInvites runs the expiry sweep before an invite is read. A failed
+// sweep is logged and reported, never answered: preview and accept decide
+// expiry from expires_at in the read itself (PAC-122 SF-002), so the request
+// goes on.
+func (h *teamHandlers) expireOldInvites(r *http.Request) {
+	if err := storage.ExpireOldInvites(h.db); err != nil {
+		err = fmt.Errorf("invite sweep: %w", err)
+		log.Printf("ERROR %s %s: %v", r.Method, r.URL.Path, err)
+		reportServerError(r, err)
+	}
 }
 
 // holdsConfirmed reports whether userID holds email domain-confirmed (PAC-71
