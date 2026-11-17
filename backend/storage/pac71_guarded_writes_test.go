@@ -58,6 +58,7 @@ func TestPAC71_EveryGuardedWriterRefusesAStaleSession(t *testing.T) {
 	add("RemoveLinkHostsExcept", RemoveLinkHostsExceptCtx(ctx, db, id, u, nil))
 	_, err = RemoveMicrosoftCredentialCtx(ctx, db, u)
 	add("RemoveMicrosoftCredential", err)
+	add("RemoveManagerTeamMemberFromTeam", RemoveManagerTeamMemberFromTeamCtx(ctx, db, u, id, "x@y.test", []uuid.UUID{u})) // PAC-122
 	add("RemoveTeamMember", RemoveTeamMemberCtx(ctx, db, id, u))
 	add("RemoveTeamMemberKeepingOwner", RemoveTeamMemberKeepingOwnerCtx(ctx, db, id, u))
 	_, err = RemoveZoomCredentialCtx(ctx, db, u)

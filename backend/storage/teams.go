@@ -187,6 +187,11 @@ func RemoveTeamMemberKeepingOwner(db Querier, teamID, userID uuid.UUID) (err err
 }
 
 func GetTeamMember(db DBTX, teamID, userID uuid.UUID) (*TeamMember, error) {
+	if fn, ok := teamMemberRead.get(); ok {
+		if err := fn(teamID, userID); err != nil {
+			return nil, err
+		}
+	}
 	row := db.QueryRow(`
 		SELECT tm.team_id, tm.user_id, tm.role, tm.joined_at,
 		       COALESCE(u.name,''), COALESCE(u.email,'')
@@ -237,9 +242,15 @@ func CreateTeamInvite(db Querier, teamID uuid.UUID, inviteeEmail string, invited
 	return scanInvite(row)
 }
 
+// GetTeamInviteByToken reads the invite with its effective status: a pending
+// invite whose expires_at is not after the database's now() reads as
+// "expired" whether or not ExpireOldInvites ran (PAC-122 SF-002), so a failed
+// sweep can never let a past-expiry invite be previewed or accepted.
 func GetTeamInviteByToken(db DBTX, token string) (*TeamInvite, error) {
 	row := db.QueryRow(`
-		SELECT id, team_id, invitee_email, invited_by, token, status, created_at, expires_at
+		SELECT id, team_id, invitee_email, invited_by, token,
+		       CASE WHEN status = 'pending' AND expires_at <= now() THEN 'expired' ELSE status END,
+		       created_at, expires_at
 		FROM team_invites WHERE token = $1`, token)
 	return scanInvite(row)
 }
@@ -250,6 +261,11 @@ func AcceptTeamInvite(db Querier, inviteID uuid.UUID) error {
 }
 
 func ExpireOldInvites(db DBTX) error {
+	if fn, ok := inviteSweep.get(); ok {
+		if err := fn(); err != nil {
+			return err
+		}
+	}
 	_, err := db.Exec(`UPDATE team_invites SET status = 'expired' WHERE status = 'pending' AND expires_at < NOW()`)
 	return err
 }

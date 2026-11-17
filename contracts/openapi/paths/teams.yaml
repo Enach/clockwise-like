@@ -287,8 +287,10 @@ paths:
         With `team_id` (owner required): removes the formal team_members row if the email
         maps to a Paceday user, deletes the manager assignment for this team only, deletes
         pending team_invites for this email on this team, and LEAVES the global
-        manager_team_members identity row and its 1:1 history intact. Every storage error
-        on this path is swallowed, so a failed delete still returns 204.
+        manager_team_members identity row and its 1:1 history intact. PAC-122 (SF-001):
+        every storage error on this path is the 500 {"error":"internal error"}; with
+        `team_id` the membership, assignment and pending-invite deletes run in one
+        transaction, so a failed delete removes nothing.
 
         PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): with `team_id`, the formal team membership is removed for EVERY
         account that carries the address in any letter case and at any standing (a
@@ -305,7 +307,7 @@ paths:
         '500':
           $ref: '#/components/responses/SessionGenerationUnavailable'
         "204":
-          description: Deleted (or silently no-op). Empty body.
+          description: Deleted (or nothing to delete). Empty body.
         "400":
           description: JSON error — "team_id must be a valid UUID".
           content:
