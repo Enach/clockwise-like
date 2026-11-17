@@ -83,40 +83,43 @@ func (f *pac122Flow) ConfirmBooking(ctx context.Context, link *storage.Schedulin
 }
 
 func TestPAC122_SF028_ConfirmationRosterFailureIs500(t *testing.T) {
-	t.Run("fresh save", func(t *testing.T) {
-		e := newPAC82Env(t)
-		flow := &pac122Flow{pac82Flow: e.flow}
-		bh := newBookingHandlersWithEngine(e.db, flow)
-		e.r.Post("/api/book/{slug}/pac122", bh.createBooking)
-		owner := e.host("sf028-owner")
-		link := e.link(owner, "reusable", nil, []int{30}, false)
-		reported, logs := captureServerErrors(t)
-		flow.after = func() { hideTable(t, "scheduling_link_hosts") }
-		body := `{"name":"Booker","email":"sf028-booker@example.com","start":"` + pac82At(10, 0).Format(time.RFC3339) + `","duration":30}`
-		req := httptest.NewRequest(http.MethodPost, "/api/book/"+link.Slug+"/pac122", strings.NewReader(body))
-		req.RemoteAddr = "10.122.28.1:4000"
-		w := httptest.NewRecorder()
-		e.r.ServeHTTP(w, req)
-		assertPAC122Internal500(t, "fresh booking, hosts down after the save", w, reported, logs)
-		// The booking stands: the 500 does not prove nothing was saved.
-		var n int
-		if err := e.db.QueryRow(`SELECT COUNT(*) FROM bookings WHERE link_id = $1`, link.ID).Scan(&n); err != nil || n != 1 {
-			t.Fatalf("bookings on the link = %d (%v), want 1", n, err)
-		}
-	})
-	t.Run("replay", func(t *testing.T) {
-		e := newPAC82Env(t)
-		owner := e.host("sf028r-owner")
-		link := e.link(owner, "reusable", nil, []int{30}, false)
-		q := pac82Req{email: "sf028r-booker@example.com", start: pac82At(11, 0), key: "pac122-sf028-replay-" + e.sfx}
-		if w := e.post(link.Slug, q); w.Code != http.StatusCreated {
-			t.Fatalf("original: %d %s", w.Code, w.Body.String())
-		}
-		e.settle()
-		reported, logs := captureServerErrors(t)
-		hideTable(t, "scheduling_link_hosts")
-		assertPAC122Internal500(t, "replay, hosts down", e.post(link.Slug, q), reported, logs)
-	})
+	// The host rows, or a host's user record, unreadable when the 201 is built.
+	for _, table := range []string{"scheduling_link_hosts", "users"} {
+		t.Run("fresh save, "+table+" unreadable", func(t *testing.T) {
+			e := newPAC82Env(t)
+			flow := &pac122Flow{pac82Flow: e.flow}
+			bh := newBookingHandlersWithEngine(e.db, flow)
+			e.r.Post("/api/book/{slug}/pac122", bh.createBooking)
+			owner := e.host("sf028-owner")
+			link := e.link(owner, "reusable", nil, []int{30}, false)
+			reported, logs := captureServerErrors(t)
+			flow.after = func() { hideTable(t, table) }
+			body := `{"name":"Booker","email":"sf028-booker@example.com","start":"` + pac82At(10, 0).Format(time.RFC3339) + `","duration":30}`
+			req := httptest.NewRequest(http.MethodPost, "/api/book/"+link.Slug+"/pac122", strings.NewReader(body))
+			req.RemoteAddr = "10.122.28.1:4000"
+			w := httptest.NewRecorder()
+			e.r.ServeHTTP(w, req)
+			assertPAC122Internal500(t, "fresh booking, "+table+" down after the save", w, reported, logs)
+			// The booking stands: the 500 does not prove nothing was saved.
+			var n int
+			if err := e.db.QueryRow(`SELECT COUNT(*) FROM bookings WHERE link_id = $1`, link.ID).Scan(&n); err != nil || n != 1 {
+				t.Fatalf("bookings on the link = %d (%v), want 1", n, err)
+			}
+		})
+		t.Run("replay, "+table+" unreadable", func(t *testing.T) {
+			e := newPAC82Env(t)
+			owner := e.host("sf028r-owner")
+			link := e.link(owner, "reusable", nil, []int{30}, false)
+			q := pac82Req{email: "sf028r-booker@example.com", start: pac82At(11, 0), key: "pac122-sf028-replay-" + e.sfx}
+			if w := e.post(link.Slug, q); w.Code != http.StatusCreated {
+				t.Fatalf("original: %d %s", w.Code, w.Body.String())
+			}
+			e.settle()
+			reported, logs := captureServerErrors(t)
+			hideTable(t, table)
+			assertPAC122Internal500(t, "replay, "+table+" down", e.post(link.Slug, q), reported, logs)
+		})
+	}
 }
 
 // --- SF-029: GET /api/scheduling-links -----------------------------------------

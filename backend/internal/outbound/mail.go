@@ -10,7 +10,7 @@ import (
 // senders returned nil, so a skipped email looked like a sent one. A caller
 // logs it as a skip (with the record id, never the address), not as a
 // delivery failure; the startup warning (MailNotices) says email is off.
-var ErrMailNotConfigured = errors.New("email not sent: SMTP is not configured (SMTP_HOST or SMTP_FROM is empty)")
+var ErrMailNotConfigured = errors.New("SMTP is not configured (SMTP_HOST or SMTP_FROM is empty)")
 
 // MailConfigured reports whether outbound email is on: SMTP_HOST and
 // SMTP_FROM are both set. It is the senders' own test, read by its literal
