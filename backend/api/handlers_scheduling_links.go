@@ -512,7 +512,8 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	if link.Slug == "" {
+	generated := link.Slug == ""
+	if generated {
 		if len(link.DurationOptions) == 0 {
 			writeError(w, "at least one duration is required", http.StatusUnprocessableEntity)
 			return
@@ -545,16 +546,33 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	if attempt != nil {
 		digest = attempt.Digest
 	}
-	created, changes, err := storage.CreateSchedulingLinkWithCoHostsKeyedCtx(r.Context(), h.db, &link, input.CoHostEmails, key, digest)
-	if errors.Is(err, storage.ErrCoHostListTooLong) {
-		writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
-		return
-	}
-	if attempt != nil && errors.Is(err, storage.ErrLinkCreateConflict) {
-		// R3: a new guarded transaction. With nothing stored, a slug
-		// violation stays today's 500 (spec §5) and a key violation with no
-		// row found is the 500.
-		if h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+	var (
+		created *storage.SchedulingLink
+		changes *storage.CoHostChanges
+	)
+	for try := 1; ; try++ {
+		created, changes, err = storage.CreateSchedulingLinkWithCoHostsKeyedCtx(r.Context(), h.db, &link, input.CoHostEmails, key, digest)
+		if errors.Is(err, storage.ErrCoHostListTooLong) {
+			writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
+			return
+		}
+		if attempt != nil && errors.Is(err, storage.ErrLinkCreateConflict) {
+			// R3: a new guarded transaction. With nothing stored, an
+			// explicit slug's violation stays the 500 (PAC-119 spec §5)
+			// and a key violation with no row found is the 500.
+			if h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+				return
+			}
+		}
+		// PAC-126: a generated slug taken by a concurrent create (its
+		// insert waited on the other's index entry, so the winner has
+		// committed) is generated again, as everything was rolled back.
+		if !generated || !isSlugConflict(err) || try >= maxGeneratedSlugTries {
+			break
+		}
+		link.Slug, err = h.bookEng.GenerateSlug(owner.Name, link.DurationOptions[0])
+		if err != nil {
+			writeError(w, "slug generation failed", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -563,6 +581,18 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	h.writeSavedLink(w, http.StatusCreated, created, loc, userID, changes)
+}
+
+// maxGeneratedSlugTries bounds a create's inserts under generated slugs
+// (PAC-126). Each retry follows a committed winner, so a third loss in one
+// request means sustained contention, answered as before: the 500.
+const maxGeneratedSlugTries = 3
+
+// isSlugConflict reports whether a create was rolled back on the link's
+// unique slug (not on its Idempotency-Key).
+func isSlugConflict(err error) bool {
+	var c *storage.LinkCreateConflictError
+	return errors.As(err, &c) && c.Constraint == storage.LinkSlugConstraint
 }
 
 // answerLinkCreateKey runs one resolution of a keyed create (R1, R2 or R3,

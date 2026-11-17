@@ -935,13 +935,15 @@ paths:
             stored, or when a keyed create waited more than 10 seconds for a
             concurrent create with the same key. No key is stored in either
             case, so a later retry with the key is resolved by the operation's
-            rules. "internal error" also stays the answer to a keyless create
-            whose generated slug was taken by a concurrent create. That is a
-            pre-existing defect, out of scope (spec §5). It applies to a keyed
-            create too, when the key is not stored after it is resolved again,
-            that is when the concurrent create was another account's or used
-            another key. A keyed create racing a create with its own key is
-            answered by the key's rules instead.
+            rules. PAC-126: a generated slug taken by a concurrent create is
+            not a 500. The create is rolled back and retried under a newly
+            generated slug, at most 3 inserts in all; a keyed create first
+            resolves its key again, so a create racing one with its own key is
+            answered by the key's rules. "internal error" stays the answer when
+            the third insert also loses its generated slug, and when an explicit
+            slug that passed the pre-check is taken by a concurrent create
+            before the insert (with a key, once the key is resolved again and
+            nothing is stored under it).
           content:
             application/json:
               schema:
