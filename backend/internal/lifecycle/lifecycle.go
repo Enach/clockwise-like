@@ -11,6 +11,7 @@ package lifecycle
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -115,18 +116,72 @@ func (g *Group) Track(u Unit) (done func()) {
 }
 
 // Go runs fn on its own goroutine as a tracked unit. A panic in fn is
-// recovered and logged, so background work never takes the process down.
+// recovered, logged and reported (Report), so background work never takes
+// the process down.
 func (g *Group) Go(u Unit, fn func(ctx context.Context)) {
 	done := g.Track(u)
 	go func() {
 		defer done()
-		defer func() {
-			if p := recover(); p != nil {
-				logf("lifecycle: %s panicked: %v", u, p)
-			}
-		}()
+		defer Recover(u)
 		fn(g.ctx)
 	}()
+}
+
+// GoErr is Go for a unit that returns an error: a non-nil error is logged
+// and reported with the unit's kind and id (PAC-122 SF-096), so detached
+// work never discards its failure.
+func (g *Group) GoErr(u Unit, fn func(ctx context.Context) error) {
+	g.Go(u, func(ctx context.Context) { Fail(u, fn(ctx)) })
+}
+
+// GoErr runs fn as a tracked unit of the default group (Group.GoErr).
+func GoErr(u Unit, fn func(ctx context.Context) error) { Default().GoErr(u, fn) }
+
+// Recover, deferred directly by a unit's goroutine, recovers a panic, logs
+// it and reports it as an error of u. A cron job that runs outside Group.Go
+// defers it so a panic never takes the process down (PAC-122 SF-097).
+func Recover(u Unit) {
+	if p := recover(); p != nil {
+		logf("lifecycle: %s panicked: %v", u, p)
+		Report(u, fmt.Errorf("%s panicked: %v", u, p))
+	}
+}
+
+// Fail logs a unit's failure and reports it; a nil err does nothing.
+func Fail(u Unit, err error) {
+	if err == nil {
+		return
+	}
+	logf("lifecycle: %s failed: %v", u, err)
+	Report(u, err)
+}
+
+// reporter receives every background failure (PAC-122 §6): Sentry in the
+// backend, tagged with the unit's kind and id; nothing when unset.
+var reporter atomic.Pointer[func(Unit, error)]
+
+// SetReporter installs the error reporter of background work and returns a
+// function that restores the previous one (main, tests); nil removes it.
+func SetReporter(f func(Unit, error)) (restore func()) {
+	var prev *func(Unit, error)
+	if f == nil {
+		prev = reporter.Swap(nil)
+	} else {
+		prev = reporter.Swap(&f)
+	}
+	return func() { reporter.Store(prev) }
+}
+
+// Report hands err, a failure of u that is not returned to anyone, to the
+// installed reporter. It does not log: the caller logs in its own words. A
+// nil err does nothing.
+func Report(u Unit, err error) {
+	if err == nil {
+		return
+	}
+	if r := reporter.Load(); r != nil {
+		(*r)(u, err)
+	}
 }
 
 // Wait blocks until no unit runs or ctx is done; it reports whether the
@@ -328,4 +383,10 @@ func GoFrom(parent context.Context, u Unit, fn func(ctx context.Context)) {
 		defer stop()
 		fn(ctx)
 	})
+}
+
+// GoFromErr is GoFrom for a unit that returns an error: a non-nil error is
+// logged and reported like GoErr's (PAC-122 SF-096).
+func GoFromErr(parent context.Context, u Unit, fn func(ctx context.Context) error) {
+	GoFrom(parent, u, func(ctx context.Context) { Fail(u, fn(ctx)) })
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -161,6 +162,11 @@ func (r *encryptionRuntime) convert(ctx context.Context) {
 	}
 	if err != nil {
 		log.Printf("encryption: conversion stopped after %d values: %v", n, err)
+		// PAC-122 SF-099: a failure is reported; a stop by shutdown is not.
+		if ctx.Err() == nil {
+			lifecycle.Report(lifecycle.Unit{Kind: "encryption", ID: "conversion"},
+				fmt.Errorf("encryption: conversion stopped after %d values: %w", n, err))
+		}
 		return
 	}
 	log.Printf("encryption: conversion done: %d values encrypted in %s", n, time.Since(start).Truncate(time.Millisecond))

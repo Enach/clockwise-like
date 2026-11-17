@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/google/uuid"
 )
@@ -481,6 +482,16 @@ func (r *Refresher) logf(format string, args ...any) {
 	}
 }
 
+// refresherUnit tags the refresher's reported failures.
+var refresherUnit = lifecycle.Unit{Kind: "encryption", ID: "keyring-refresher"}
+
+// fail logs a failed refresher step and reports it through the lifecycle
+// hook (PAC-122 SF-099): the tick carries on as before.
+func (r *Refresher) fail(format string, args ...any) {
+	r.logf(format, args...)
+	lifecycle.Report(refresherUnit, fmt.Errorf(format, args...))
+}
+
 func (r *Refresher) stop(reason string) {
 	r.shutdownOnce.Do(func() {
 		secretbox.SetSealGate(func() error { return secretbox.ErrSealPaused })
@@ -519,7 +530,7 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 	}
 	deks, err := LoadDataKeys(ctx, r.DB)
 	if err != nil {
-		r.logf("encryption: refresher: read data keys: %v", err)
+		r.fail("encryption: refresher: read data keys: %v", err)
 		return r.beat(ctx, cur.ActiveDEK(), sent)
 	}
 	found := false
@@ -536,7 +547,7 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 	if err != nil {
 		// A data key this process cannot unwrap: keep the current keyring
 		// and do not advance active_dek (contract 5.3, K-6).
-		r.logf("%s", "encryption: "+keyErrorText(err)+" "+secretbox.RunbookRef)
+		r.fail("%s", "encryption: "+keyErrorText(err)+" "+secretbox.RunbookRef)
 	} else if next.ActiveDEK() != cur.ActiveDEK() || len(next.IDs()) != len(cur.IDs()) {
 		secretbox.Install(next)
 		cur = next
@@ -544,13 +555,13 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 	if counts := cur.TakeSealCounts(); len(counts) > 0 {
 		if err := FlushSealCounts(ctx, r.DB, counts); err != nil {
 			cur.RestoreSealCounts(counts)
-			r.logf("encryption: refresher: flush sealed_count: %v", err)
+			r.fail("encryption: refresher: flush sealed_count: %v", err)
 		}
 	}
 	if _, kek, sealed, err := ActiveDataKey(ctx, r.DB); err == nil && sealed >= SealBound && kek == r.Cfg.Active.ID {
 		old := cur.ActiveDEK()
 		if id, err := RotateStep1(ctx, r.DB, r.Cfg, old, true); err != nil {
-			r.logf("encryption: automatic data key rotation: %v", err)
+			r.fail("encryption: automatic data key rotation: %v", err)
 		} else if id != 0 {
 			r.logf("encryption: data key %d reached %d seals; data key %d is now active", old, sealed, id)
 			if deks, err := LoadDataKeys(ctx, r.DB); err == nil {
@@ -574,7 +585,7 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 func (r *Refresher) beat(ctx context.Context, active int32, sent time.Time) bool {
 	ok, err := writeHeartbeatIfKey(ctx, r.DB, r.Inst, active)
 	if err != nil {
-		r.logf("encryption: heartbeat: %v", err)
+		r.fail("encryption: heartbeat: %v", err)
 		return true
 	}
 	if !ok {
