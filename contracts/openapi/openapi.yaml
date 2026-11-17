@@ -3264,7 +3264,8 @@ paths:
         '500':
           description: 'Storage failure. Body: {"error":"internal error"}. Includes a failed read of the
             link owner''s settings, needed for `time_zone` (PAC-72 revision 3.1): never answered with
-            the UTC fallback.'
+            the UTC fallback. Includes a failed read of the link''s accepted hosts or of a host''s user
+            record (PAC-122 SF-027): never a 200 with `hosts` emptied, a host left out or `coverage` undercounted.'
           content:
             application/json:
               schema:
@@ -3520,13 +3521,17 @@ paths:
             read is not a 500 (it is busy: the 409, D-6). The detail is written to the server log and
             Sentry only (PAC-21). A 500 from this operation does NOT prove that no booking was saved:
             when the insert was sent and its result is lost (for example the database connection drops),
-            the outcome is unknown and the answer is this 500 (PAC-81 contract revision 2). Only the 503
-            proves that nothing was saved. Also this 500, with `{"error":"internal error"}` and nothing
-            written: the save waited 10 seconds for a delete, pause or edit of the same link, or a co-host
-            invitation on it, still in progress (PAC-101, PAC-120), or for another booking''s save on
-            a common host or the same use-limited link (PAC-82); the client cannot tell this case from
-            the others. A 500 answered to a request carrying an `Idempotency-Key` may be retried with
-            the same key and the same details: if the first request was saved, the retry is its replay.'
+            the outcome is unknown and the answer is this 500 (PAC-81 contract revision 2). Also this
+            500, with `{"error":"internal error"}`: the booking was saved (or is a replay) but the link''s
+            accepted hosts, or a host''s user record, could not be read to build the 201 (PAC-122 SF-028);
+            the 201 never lists fewer hosts than the link has. The booking stands and its calendar events
+            and email are completed as for a 201. Only the 503 proves that nothing was saved. Also this
+            500, with `{"error":"internal error"}` and nothing written: the save waited 10 seconds for
+            a delete, pause or edit of the same link, or a co-host invitation on it, still in progress
+            (PAC-101, PAC-120), or for another booking''s save on a common host or the same use-limited
+            link (PAC-82); the client cannot tell this case from the others. A 500 answered to a request
+            carrying an `Idempotency-Key` may be retried with the same key and the same details: if the
+            first request was saved, the retry is its replay.'
           content:
             application/json:
               schema:
@@ -3535,9 +3540,10 @@ paths:
           description: 'The request budget ran out BEFORE the booking insert was sent (PAC-81, spec AC-A2,
             AC-A19; contract revision 2). From the moment the insert is sent this request is never answered
             with this 503: the server waits for the insert''s own result (bounded by the insert''s own
-            duration, not by the budget) and answers 201 if the row was saved, or the 500 if the insert
-            failed. So this 503 proves that no booking was saved for this request (no calendar event,
-            no email), and a client may retry it. Shared body `{"error":"request timed out"}`.'
+            duration, not by the budget) and answers 201 if the row was saved (or the 500 when the hosts
+            for the answer cannot then be read, PAC-122 SF-028), or the 500 if the insert failed. So this
+            503 proves that no booking was saved for this request (no calendar event, no email), and a
+            client may retry it. Shared body `{"error":"request timed out"}`.'
           content:
             application/json:
               schema:
@@ -7701,7 +7707,9 @@ paths:
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: 'Body: {"error":"internal error"}. Includes a failed read of an owner''s settings,
-            needed for each link''s `time_zone` (PAC-72 revision 3.1), never the UTC fallback.'
+            needed for each link''s `time_zone` (PAC-72 revision 3.1), never the UTC fallback. Includes
+            a failed roster read of any listed link (its host rows or a host''s user record; PAC-122 SF-029,
+            the PAC-25 C-2 rule): never a 200 with a link''s `hosts` emptied or a host''s email dropped.'
           content:
             application/json:
               schema:
@@ -7792,9 +7800,11 @@ paths:
       tags:
       - scheduling-links
       summary: Pending co-host invitations addressed to the caller.
-      description: Invites whose link or owner can no longer be loaded are silently dropped from the list,
-        and so are invites to a deleted link (PAC-40 AC-5). Invites to a paused link (`active=false`)
-        are still listed (PAC-30 D-5). Returns `[]` (never null) when there are none.
+      description: Invites to a deleted link are omitted (PAC-40 AC-5), and so are invites whose link
+        or owner no longer exists. A storage error while reading an invite's link or its owner is the
+        500, never a shorter list (PAC-122 SF-030; before it such an invite was silently dropped). Invites
+        to a paused link (`active=false`) are still listed (PAC-30 D-5). Returns `[]` (never null) when
+        there are none.
       responses:
         '200':
           description: Pending invites.
@@ -7931,7 +7941,8 @@ paths:
       summary: Alias of GET /api/scheduling-links/host-invites (identical handler).
       description: routes.go:157-158 registers `slh.listHostInvites` at BOTH `/host-invites` and `/invites`.
         Byte-for-byte identical behaviour and response; neither is deprecated in code. The frontend only
-        ever calls `/host-invites`. Invites to a deleted link are omitted, as there (PAC-40).
+        ever calls `/host-invites`. Invites to a deleted link are omitted, and a failed read of an invite's
+        link or owner is the 500, as there (PAC-40, PAC-122 SF-030).
       responses:
         '200':
           description: Pending invites (same payload as listSchedulingLinkHostInvites).
@@ -7984,9 +7995,10 @@ paths:
         PAC-112 (spec D-3, §6): this is the ONLY read from which a client may take a link''s co-host list
         as the baseline for a co-host edit (the list sent in `co_host_emails` is the complete list, so
         a baseline missing someone removes them). The answers of `listSchedulingLinks`, `createSchedulingLink`
-        and `updateSchedulingLink` build the roster without this guarantee and must not be used as a baseline.
-        The strictness above (500, never a degraded roster) is therefore load-bearing and must not be
-        relaxed; it is pinned by TestPAC25GetLinkRosterFailureIs500.'
+        and `updateSchedulingLink` must not be used as a baseline: create and PATCH build the roster without
+        this guarantee, and the list, although it reads the roster strictly since PAC-122 (SF-029: a failed
+        roster read is its 500), is not the baseline read either. The strictness above (500, never a degraded
+        roster) is therefore load-bearing and must not be relaxed; it is pinned by TestPAC25GetLinkRosterFailureIs500.'
       responses:
         '200':
           description: 'The link, with hosts. Returned only to the owner (`is_owner: true`) or an accepted
@@ -9225,8 +9237,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '201':
           description: 'The created invite INCLUDING its raw `token`, so the owner can share the link
-            out of band. expires_at is now + 7 days. Email delivery is fire-and-forget and silently skipped
-            when SMTP_HOST/SMTP_FROM are unset.
+            out of band. expires_at is now + 7 days. Email delivery is fire-and-forget and skipped when
+            SMTP_HOST/SMTP_FROM are unset; the skip is logged with the invite id, and the server warns
+            at startup that email is off (PAC-122 SF-066). The answer is the same either way.
 
             '
           content:
@@ -13788,13 +13801,14 @@ components:
     PublicLinkCoverage:
       type: object
       description: 'How many accepted hosts had a STORED Google calendar token when the page was rendered.
-        `total` counts accepted hosts whose user record resolved; `checked` counts those among them for
-        whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested
-        to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded
-        (PAC-67), still counts as checked, while the host''s calendar cannot be read, so that host is
-        busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed
-        without that host''s calendar); a host with no Google token row at all (for example one on Outlook)
-        is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor
+        `total` counts every accepted host (a host whose user record cannot be read is the operation''s
+        500, never left out; PAC-122 SF-027); `checked` counts those among them for whom a Google token
+        row loads, whether or not that token still works. Nothing is renewed or tested to compute it.
+        A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67),
+        still counts as checked, while the host''s calendar cannot be read, so that host is busy and no
+        slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without
+        that host''s calendar); a host with no Google token row at all (for example one on Outlook) is
+        not counted as checked. This is deliberate: counting only usable tokens would tell every visitor
         with the link that a host''s connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this
         description said "a usable OAuth token", which was not what the server counted (factory section
         7.2). Always present, even as {0,0}.'
@@ -14674,9 +14688,11 @@ components:
       type: object
       description: 'PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200):
         every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus
-        the optional `co_host_changes`. The roster in `hosts` is built like the list''s, not like `getSchedulingLink`''s,
-        and is never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither
-        the property map nor the required list can drift.'
+        the optional `co_host_changes`. The roster in `hosts` is built without the strict read''s guarantee
+        (a failed roster read can empty it or blank a host''s email; PAC-122 SF-029 leaves this open),
+        unlike `getSchedulingLink`''s and, since PAC-122, the list''s, and is never a co-host baseline
+        (spec D-3). `required` is shared through a second anchor, so neither the property map nor the
+        required list can drift.'
       required: *id001
       additionalProperties: false
       properties:

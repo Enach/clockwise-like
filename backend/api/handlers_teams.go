@@ -649,8 +649,8 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) error {
 	smtpFrom := os.Getenv("SMTP_FROM")
 	baseURL := os.Getenv("BASE_URL")
 
-	if smtpHost == "" || smtpFrom == "" {
-		return nil
+	if !outbound.MailConfigured(os.Getenv) {
+		return outbound.ErrMailNotConfigured // PAC-122 SF-066: skipped, never "sent"
 	}
 	if smtpPort == "" {
 		smtpPort = "587"
@@ -678,7 +678,15 @@ var sendMail = outbound.SendMail
 
 // reportEmailFailure logs a failed email at error level with its record id
 // (never the address) and reports it to error monitoring when configured.
+//
+// An email skipped because SMTP is not configured (PAC-122 SF-066) is logged
+// as a skip with the record id and not reported: email being off is the
+// configuration the startup warning names, not a delivery failure.
 func reportEmailFailure(what, idKind, id string, err error) {
+	if errors.Is(err, outbound.ErrMailNotConfigured) {
+		log.Printf("WARN: %s email for %s %s not sent: %v", what, idKind, id, err)
+		return
+	}
 	msg := outbound.RedactAddresses(err.Error())
 	log.Printf("ERROR: %s email failed for %s %s: %s", what, idKind, id, msg)
 	sentry.CaptureException(fmt.Errorf("%s email failed for %s %s: %s", what, idKind, id, msg))

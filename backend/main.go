@@ -18,6 +18,7 @@ import (
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/scheduler"
 	"github.com/Enach/paceday/backend/storage"
@@ -227,6 +228,11 @@ func run() int {
 	api.SetSecureCookies(secureCookies)
 	// PAC-81 AC-A15: an http:// public URL with Secure cookies breaks sign-in.
 	for _, n := range config.InsecurePublicURLs(os.Getenv, secureCookies) {
+		log.Printf("WARNING: %s", n)
+	}
+	// PAC-122 SF-066: email off (SMTP_HOST or SMTP_FROM empty), or invite
+	// links defaulting to paceday.app, is said once at startup.
+	for _, n := range outbound.MailNotices(os.Getenv) {
 		log.Printf("WARNING: %s", n)
 	}
 
