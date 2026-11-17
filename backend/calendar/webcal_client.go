@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -63,7 +64,7 @@ func (c *WebcalClient) fetch(ctx context.Context) ([]GenericEvent, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("webcal: request: %w", withoutURL(err))
 	}
 	// PAC-81 AC-A17: the fetch is bounded in time and size. Over either
 	// limit the feed is not parsed at all (no blocker from a partial feed),
@@ -144,8 +145,21 @@ func parseICS(r io.Reader) ([]GenericEvent, error) {
 // nameTimeLimit says so when err is the fetch's own time limit.
 func nameTimeLimit(err error, limit time.Duration) error {
 	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
+	timeout := errors.As(err, &ne) && ne.Timeout()
+	err = withoutURL(err)
+	if timeout {
 		return fmt.Errorf("feed exceeded the %s time limit: %w", limit, err)
+	}
+	return err
+}
+
+// withoutURL drops the request URL from a client error: a webcal URL is a
+// secret (and may carry an address), and fetch errors are logged and
+// reported (PAC-122). The cause is kept.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err
 	}
 	return err
 }

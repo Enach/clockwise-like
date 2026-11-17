@@ -109,14 +109,10 @@ func (r *encryptionRuntime) startBackground() (stop func()) {
 				return
 			case <-t.C:
 			}
-			g := lifecycle.Default()
-			if g.ShuttingDown() {
+			if lifecycle.Default().ShuttingDown() {
 				return
 			}
-			done := g.Track(lifecycle.Unit{Kind: "encryption", ID: "keyring-refresher"})
-			ok := r.refresher.Tick(ctx)
-			done()
-			if !ok {
+			if !r.tickOnce(ctx, r.refresher.Tick) {
 				return
 			}
 		}
@@ -126,6 +122,18 @@ func (r *encryptionRuntime) startBackground() (stop func()) {
 	})
 	var once sync.Once
 	return func() { once.Do(cancel) }
+}
+
+// tickOnce runs one refresher tick as a tracked unit. A panic is recovered
+// and reported through the lifecycle hook (PAC-122), and the refresher keeps
+// running: it reports false only when the tick says the process must stop.
+func (r *encryptionRuntime) tickOnce(ctx context.Context, tick func(context.Context) bool) (ok bool) {
+	u := lifecycle.Unit{Kind: "encryption", ID: "keyring-refresher"}
+	done := lifecycle.Default().Track(u)
+	defer done()
+	ok = true
+	defer lifecycle.Recover(u)
+	return tick(ctx)
 }
 
 // convert is the backend's automatic conversion (contract 8.3): once per

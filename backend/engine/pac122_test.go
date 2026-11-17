@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -123,8 +125,8 @@ func TestPAC122_RecapInsertFailureReported(t *testing.T) {
 	if len(got) != 1 || got[0].Unit.ID != user.String() {
 		t.Fatalf("reports %+v", rec.All())
 	}
-	if strings.Contains(got[0].Err.Error(), "pac122-recap@") {
-		t.Fatal("report carries the email address")
+	if !strings.Contains(got[0].Err.Error(), "recap_sends") {
+		t.Fatalf("report %q does not carry the storage failure", got[0].Err)
 	}
 }
 
@@ -171,6 +173,43 @@ func TestPAC122_PersonalCalendarSyncFailureReported(t *testing.T) {
 	for _, msg := range byID {
 		if strings.Contains(msg, "Dentist") || strings.Contains(msg, "Gym") {
 			t.Fatalf("report carries a calendar name: %s", msg)
+		}
+	}
+}
+
+// PAC-122 review blocker 2: a webcal URL is a secret and may carry an
+// address; an unreachable feed's failure reaches neither the report nor the
+// log with any part of its path or query.
+func TestPAC122_WebcalFailureCarriesNoURL(t *testing.T) {
+	rec := lifecycletest.Record(t)
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	db := openTestDB(t)
+	user := pac72EngineUser(t, db, "pac122-webcal@example.com")
+	// A closed listener: the fetch fails to connect.
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+	secretURL := deadURL + "/calendar/ical/jane.doe%40example.com/private-s3cr3tt0ken/basic.ics"
+	id, err := storage.InsertPersonalCalendar(db, &storage.PersonalCalendar{UserID: user, Provider: "webcal", Name: "Private", URL: secretURL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&PersonalBlocker{DB: db}).SyncAllForUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.Matching("personal-calendar-sync", "fetch")
+	if len(got) != 1 || got[0].Unit.ID != strconv.FormatInt(id, 10) {
+		t.Fatalf("the fetch failure was not reported: %+v", rec.All())
+	}
+	for _, leak := range []string{"%40", "jane.doe", "s3cr3tt0ken", "basic.ics"} {
+		if strings.Contains(got[0].Err.Error(), leak) {
+			t.Errorf("report carries %q: %v", leak, got[0].Err)
+		}
+		if strings.Contains(logs.String(), leak) {
+			t.Errorf("log carries %q: %s", leak, logs.String())
 		}
 	}
 }

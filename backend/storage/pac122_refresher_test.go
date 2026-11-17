@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 // PAC-122 SF-099: the keyring refresher's failed steps are reported through
 // the lifecycle hook, not only logged; the tick carries on as before.
 func TestPAC122_RefresherFailuresReported(t *testing.T) {
-	db, _, _ := openEncDB(t)
+	db, dsn, _ := openEncDB(t)
 	cfg := encKeys(t, "pac122")
 	inst := Instance{ID: uuid.New()}
 	load, err := LoadKeyring(context.Background(), db, cfg, inst)
@@ -27,11 +28,15 @@ func TestPAC122_RefresherFailuresReported(t *testing.T) {
 
 	rec := lifecycletest.Record(t)
 	var logged []string
-	r := &Refresher{DB: db, Cfg: cfg, Inst: inst, Lease: NewLease(time.Now()),
+	// A closed pool: the data-key read and the heartbeat both fail.
+	closed, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = closed.Close()
+	r := &Refresher{DB: closed, Cfg: cfg, Inst: inst, Lease: NewLease(time.Now()),
 		Logf: func(f string, a ...any) { logged = append(logged, f) }}
-	// A cancelled context: the data-key read and the heartbeat both fail.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := context.Background()
 	if !r.Tick(ctx) {
 		t.Fatal("a failed tick stopped the refresher (behaviour changed)")
 	}
@@ -48,5 +53,33 @@ func TestPAC122_RefresherFailuresReported(t *testing.T) {
 		if strings.Contains(r.Err.Error(), "pdenc:") {
 			t.Fatalf("report carries ciphertext: %v", r.Err)
 		}
+	}
+}
+
+// PAC-122 review: a refresher step cut short by shutdown (its context
+// cancelled) is logged, not reported as a failure.
+func TestPAC122_RefresherShutdownNotReported(t *testing.T) {
+	db, _, _ := openEncDB(t)
+	cfg := encKeys(t, "pac122-stop")
+	inst := Instance{ID: uuid.New()}
+	load, err := LoadKeyring(context.Background(), db, cfg, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := secretbox.Current()
+	secretbox.Install(load.Keyring)
+	defer secretbox.Install(prev)
+	rec := lifecycletest.Record(t)
+	var logged int
+	r := &Refresher{DB: db, Cfg: cfg, Inst: inst, Lease: NewLease(time.Now()),
+		Logf: func(string, ...any) { logged++ }}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Tick(ctx)
+	if logged == 0 {
+		t.Fatal("the cancelled steps were not logged; the test is not observing them")
+	}
+	if all := rec.All(); len(all) != 0 {
+		t.Fatalf("shutdown reported as failures: %+v", all)
 	}
 }

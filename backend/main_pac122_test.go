@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/lifecycle/lifecycletest"
@@ -15,6 +22,7 @@ import (
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
 )
 
 // PAC-122 phase 2, batch O: background failures reach error monitoring.
@@ -167,5 +175,115 @@ func TestPAC122_ConversionFailureReported(t *testing.T) {
 	enc.convert(context.Background())
 	if got := rec.Matching("encryption", "conversion stopped"); len(got) != 1 || got[0].Unit.ID != "conversion" {
 		t.Fatalf("reports %+v", rec.All())
+	}
+}
+
+// PAC-122 review: a panicking keyring-refresher tick is recovered, reported
+// and released; the refresher keeps running.
+func TestPAC122_RefresherTickPanicRecovered(t *testing.T) {
+	rec := lifecycletest.Record(t)
+	captureLog(t)
+	g := lifecycle.NewGroup()
+	defer lifecycle.SetDefault(g)()
+	r := &encryptionRuntime{}
+	ok := r.tickOnce(context.Background(), func(context.Context) bool {
+		var keys []int
+		return keys[len(keys)] > 0
+	})
+	if !ok {
+		t.Fatal("a panicking tick stopped the refresher")
+	}
+	if !g.Wait(context.Background()) {
+		t.Fatal("the tick was not released")
+	}
+	if got := rec.Matching("encryption", "index out of range"); len(got) != 1 || got[0].Unit.ID != "keyring-refresher" {
+		t.Fatalf("reports %+v", rec.All())
+	}
+}
+
+// PAC-122 review blocker 1: the weekly detection, run with the real
+// ManagerEngine into a storage failure on a detected member, reports and
+// logs the failure without the member's (or anyone's) address, and Sentry
+// receives none either.
+func TestPAC122_ManagerDetectionRealEngineNoAddress(t *testing.T) {
+	logs := captureLog(t)
+	tr := &stubTransport{}
+	if err := sentry.Init(sentry.ClientOptions{Dsn: "https://k@sentry.invalid/1", Transport: tr}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sentry.Init(sentry.ClientOptions{}) })
+	t.Cleanup(lifecycle.SetReporter(nil))
+	installReporters()
+
+	dsn, cleanup, err := testdb.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+	db, err := storage.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mgr, err := storage.UpsertUser(db, "boss@pac122.test", "Boss", "", "google", "sub-boss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.UpsertUserToken(db, mgr.ID, &oauth2.Token{AccessToken: "tok", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	// Two weekly 1:1s with one report: a detected member.
+	now := time.Now().UTC()
+	ev := func(id string, at time.Time) map[string]any {
+		return map[string]any{
+			"id": id, "recurringEventId": "series-1",
+			"start": map[string]string{"dateTime": at.Format(time.RFC3339)},
+			"end":   map[string]string{"dateTime": at.Add(30 * time.Minute).Format(time.RFC3339)},
+			"attendees": []map[string]any{
+				{"email": "boss@pac122.test", "self": true},
+				{"email": "alex.report@pac122.test", "displayName": "Alex"},
+			},
+		}
+	}
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{ev("e1", now.Add(-14*24*time.Hour)), ev("e2", now.Add(-7*24*time.Hour))}})
+	}))
+	defer google.Close()
+	calendar.Configure(config.CalendarEndpoint{BaseURL: google.URL + config.CalendarAPIRoot, Guard: true})
+	t.Cleanup(func() { calendar.Configure(config.ProductionCalendarEndpoint()) })
+	// The member lookup fails.
+	if _, err := db.Exec(`ALTER TABLE manager_team_members RENAME TO manager_team_members_pac122`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := lifecycletest.Record(t)
+	run := managerDetectionRun(func() ([]uuid.UUID, error) { return []uuid.UUID{mgr.ID}, nil },
+		&engine.ManagerEngine{DB: db, OAuthConfig: &oauth2.Config{}})
+	if err := run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.Matching("cron", "detected member #1")
+	if len(got) != 1 {
+		t.Fatalf("the engine did not reach the member step: reports %+v; log %s", rec.All(), logs.String())
+	}
+	if strings.Contains(got[0].Err.Error(), "@") {
+		t.Fatalf("report carries an address: %v", got[0].Err)
+	}
+	if strings.Contains(logs.String(), "alex.report") {
+		t.Fatalf("log carries the member's address: %s", logs.String())
+	}
+	// What Sentry would receive: the reporter installed by main.
+	restore := lifecycle.SetReporter(reportUnitFailure)
+	lifecycle.Report(lifecycle.Unit{Kind: "cron", ID: "manager-detection"}, fmt.Errorf("wrapped: %w", errors.New("member alex.report@pac122.test")))
+	restore()
+	sentry.Flush(time.Second)
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	for _, e := range tr.events {
+		b, _ := json.Marshal(e)
+		if strings.Contains(string(b), "alex.report") {
+			t.Fatalf("Sentry event carries the address: %s", b)
+		}
 	}
 }

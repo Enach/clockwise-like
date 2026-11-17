@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -61,7 +62,7 @@ func TestPAC122_GoErrReportsTheError(t *testing.T) {
 	GoErr(Unit{Kind: "analytics-recompute", ID: "u3"}, func(context.Context) error { return nil })
 	g.Wait(context.Background())
 	units, errs := f.snapshot()
-	if len(units) != 1 || units[0].ID != "u2" || !errors.Is(errs[0], cause) {
+	if len(units) != 1 || units[0].ID != "u2" || errs[0].Error() != cause.Error() {
 		t.Fatalf("reports %v %v", units, errs)
 	}
 	if !sink.has("analytics-recompute u2 failed: list habits: db down") || sink.has("u3") {
@@ -120,5 +121,42 @@ func TestPAC122_SetReporterRestore(t *testing.T) {
 	Report(Unit{Kind: "k"}, errors.New("x"))
 	if n != 1 {
 		t.Fatalf("reported %d times, want 1", n)
+	}
+}
+
+// PAC-122 review: no email address reaches the reporter or the log, from a
+// returned error or a panic, whatever the error's chain.
+func TestPAC122_AddressesRedacted(t *testing.T) {
+	f := installFake(t)
+	sink := &logSink{}
+	defer SetLogf(sink.logf)()
+	g := NewGroup()
+	defer SetDefault(g)()
+	inner := errors.New("member alex@example.com refused")
+	GoErr(Unit{Kind: "manager-detection", ID: "u5"}, func(context.Context) error {
+		return fmt.Errorf("persist: %w", inner)
+	})
+	g.Go(Unit{Kind: "k", ID: "u6"}, func(context.Context) { panic("bad row for bo@example.org") })
+	g.Wait(context.Background())
+	_, errs := f.snapshot()
+	if len(errs) != 2 {
+		t.Fatalf("%d reports", len(errs))
+	}
+	for _, e := range errs {
+		for c := e; c != nil; c = errors.Unwrap(c) {
+			if strings.Contains(c.Error(), "@") {
+				t.Fatalf("report carries an address: %q", c.Error())
+			}
+		}
+		if !strings.Contains(e.Error(), "<address>") {
+			t.Fatalf("report %q lost its text", e)
+		}
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, l := range sink.lines {
+		if strings.Contains(l, "@") {
+			t.Fatalf("log carries an address: %q", l)
+		}
 	}
 }

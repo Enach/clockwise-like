@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,11 +79,15 @@ func TestPAC122_AnalyticsRecomputeErrorReported(t *testing.T) {
 type pac122FailingDetect struct{ fakeManagerWorkflow }
 
 func (*pac122FailingDetect) DetectTeam(context.Context, uuid.UUID) (*engine.DetectResult, error) {
-	return nil, errors.New("calendar not connected")
+	return nil, fmt.Errorf("calendar not connected: %w", errors.New("attendee alex.report@example.com"))
 }
 
 func TestPAC122_ManagerDetectionErrorReported(t *testing.T) {
 	rec := lifecycletest.Record(t)
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
 	g := pac122Group(t)
 	r := setupManagerRoutes(t, &pac122FailingDetect{})
 	user := createTestUser(t, "pac122-manager@example.com")
@@ -93,7 +100,12 @@ func TestPAC122_ManagerDetectionErrorReported(t *testing.T) {
 	if len(got) != 1 || got[0].Unit.ID != user.String() {
 		t.Fatalf("reports %+v", rec.All())
 	}
-	if strings.Contains(got[0].Err.Error(), "@example.com") {
-		t.Fatal("report carries the email address")
+	// The unit's error carries an address: neither the report nor the log
+	// may (PAC-122 review blocker 1).
+	if strings.Contains(got[0].Err.Error(), "alex.report") || strings.Contains(logs.String(), "alex.report") {
+		t.Fatalf("an address leaked: report %q, log %q", got[0].Err, logs.String())
+	}
+	if !strings.Contains(logs.String(), "manager-detection "+user.String()+" failed") {
+		t.Fatalf("failure not logged: %q", logs.String())
 	}
 }

@@ -11,6 +11,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -19,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Enach/paceday/backend/internal/outbound"
 )
 
 // Unit names a tracked piece of work.
@@ -142,8 +145,9 @@ func GoErr(u Unit, fn func(ctx context.Context) error) { Default().GoErr(u, fn) 
 // defers it so a panic never takes the process down (PAC-122 SF-097).
 func Recover(u Unit) {
 	if p := recover(); p != nil {
-		logf("lifecycle: %s panicked: %v", u, p)
-		Report(u, fmt.Errorf("%s panicked: %v", u, p))
+		msg := fmt.Sprintf("%s panicked: %v", u, p)
+		logf("lifecycle: %s", outbound.RedactAddresses(msg))
+		Report(u, errors.New(msg))
 	}
 }
 
@@ -152,7 +156,7 @@ func Fail(u Unit, err error) {
 	if err == nil {
 		return
 	}
-	logf("lifecycle: %s failed: %v", u, err)
+	logf("lifecycle: %s failed: %s", u, outbound.RedactAddresses(err.Error()))
 	Report(u, err)
 }
 
@@ -175,12 +179,16 @@ func SetReporter(f func(Unit, error)) (restore func()) {
 // Report hands err, a failure of u that is not returned to anyone, to the
 // installed reporter. It does not log: the caller logs in its own words. A
 // nil err does nothing.
+//
+// The reporter receives err's text with every email address redacted, as a
+// new error with no chain: error monitoring records each wrapped error's
+// text, so the original chain could carry an address past the redaction.
 func Report(u Unit, err error) {
 	if err == nil {
 		return
 	}
 	if r := reporter.Load(); r != nil {
-		(*r)(u, err)
+		(*r)(u, errors.New(outbound.RedactAddresses(err.Error())))
 	}
 }
 
