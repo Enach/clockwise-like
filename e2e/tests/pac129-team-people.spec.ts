@@ -198,16 +198,25 @@ test.describe('PAC-129 — people added to a team without Paceday access', () =>
     await expect(page.getByRole('button', { name: 'Manage members' })).toBeVisible();
     await expect(page.getByTestId('team-add-person-open')).toHaveCount(0);
     await expect(page.getByTestId('team-invite-open')).toHaveCount(0);
-    // Each slot shows the server's counts (SF-054).
-    const answered = page.waitForResponse((r) => r.url().includes(`/api/teams/${teamId}/availability`));
+    // Each slot shows the server's counts (SF-054). Opening the tab asks
+    // nothing: availability is read only when "Find slots" is clicked, for
+    // the Date and Duration chosen (web FindATimeTab at 195a533). The journey's
+    // own day is chosen, so the counts are this team's: 3 of 6 free, 3 unknown.
     await page.getByRole('button', { name: 'Find a time', exact: true }).click();
+    await page.getByLabel('Date', { exact: true }).fill(isoDate(day));
+    const answered = page.waitForResponse(
+      (r) =>
+        r.request().method() === 'GET' &&
+        r.url().includes(`/api/teams/${teamId}/availability`) &&
+        new URL(r.url()).searchParams.get('date') === isoDate(day),
+    );
+    await page.getByRole('button', { name: 'Find slots', exact: true }).click();
     const shown = await answered;
-    expect(shown.status()).toBe(200);
-    const first = ((await shown.json()) as { slots: Array<{ free_count: number; unknown_count: number; total_count: number }> }).slots[0];
-    if (first) {
-      const text = `${first.free_count} of ${first.total_count} free` + (first.unknown_count > 0 ? ` · ${first.unknown_count} unknown` : '');
-      await expect(page.getByTestId('team-slot-counts').first()).toHaveText(text);
-    }
+    expect(shown.status(), await shown.text()).toBe(200);
+    const shownSlots = ((await shown.json()) as { slots: Array<{ free_count: number; unknown_count: number; total_count: number }> }).slots;
+    expect(shownSlots.length).toBeGreaterThan(0);
+    expect(shownSlots[0]).toMatchObject({ free_count: 3, unknown_count: 3, total_count: 6 });
+    await expect(page.getByTestId('team-slot-counts').first()).toHaveText('3 of 6 free · 3 unknown');
   });
 
   test('AC-15: removing an added person removes the address and its invitations', async ({ db, apiAs, pageAs, assertNotDemo }) => {
