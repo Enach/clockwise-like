@@ -166,6 +166,8 @@ func TestPAC122_SF040_FailedMemberWeekIs500(t *testing.T) {
 // 403 "forbidden", on the team routes and the manager team scope.
 func TestPAC122_SF074_OwnerCheckReadErrorIs500(t *testing.T) {
 	teams := setupTeamRoutes(t)
+	// setupTeamRoutes does not mount the zone PATCH; it is an owner check too.
+	teams.Patch("/api/teams/{id}/no-meeting-zones/{zoneId}", newTeamHandlers(openTestDB(t), nil).updateZone)
 	manager := setupManagerRoutes(t, &fakeManagerWorkflow{})
 	u := createTestUser(t, "pac122-sf074-owner@example.com")
 	team := createManagerTestTeam(t, u, "pac122 sf074")
@@ -183,6 +185,7 @@ func TestPAC122_SF074_OwnerCheckReadErrorIs500(t *testing.T) {
 		{teams, http.MethodPatch, "/api/teams/" + team.ID.String(), map[string]string{"name": "x"}},
 		{teams, http.MethodDelete, "/api/teams/" + team.ID.String(), nil},
 		{teams, http.MethodPost, "/api/teams/" + team.ID.String() + "/no-meeting-zones", map[string]any{"dayOfWeek": 1, "startTime": "09:00", "endTime": "10:00"}},
+		{teams, http.MethodPatch, "/api/teams/" + team.ID.String() + "/no-meeting-zones/" + uuid.NewString(), map[string]any{"dayOfWeek": 1, "startTime": "09:00", "endTime": "10:00"}},
 		{teams, http.MethodDelete, "/api/teams/" + team.ID.String() + "/no-meeting-zones/" + uuid.NewString(), nil},
 		{teams, http.MethodDelete, "/api/teams/" + team.ID.String() + "/members/" + uuid.NewString(), nil},
 		{manager, http.MethodGet, "/api/manager/team?team_id=" + team.ID.String(), nil},
