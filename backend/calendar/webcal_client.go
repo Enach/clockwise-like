@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -97,8 +98,19 @@ func (c *WebcalClient) fetch(ctx context.Context) ([]icsEvent, error) {
 
 // recurrence is the part of rrule.Set that expansion needs.
 type recurrence interface {
-	Between(after, before time.Time, inc bool) []time.Time
+	Iterator() (next func() (time.Time, bool))
 }
+
+// Expansion bounds (PAC-122 SF-044, review minor 2). A series with more
+// than maxInstancesPerSeries instances in the window lists the first ones
+// and is also marked unreadable (its other blockers are kept, not deleted);
+// one that needs more than maxRecurrenceSteps occurrences to reach the end
+// of the window is unreadable. FREQ=SECONDLY and MINUTELY are refused
+// outright.
+const (
+	maxInstancesPerSeries = 500
+	maxRecurrenceSteps    = 100000
+)
 
 // icsEvent is one VEVENT as read from the feed, before expansion.
 type icsEvent struct {
@@ -178,6 +190,14 @@ func readICSEvent(ev *ical.Event, out *icsEvent) bool {
 		out.recurrenceID = at
 		return true
 	}
+	if rule := ev.Props.Get(ical.PropRecurrenceRule); rule != nil {
+		v := strings.ToUpper(rule.Value)
+		if strings.Contains(v, "FREQ=SECONDLY") || strings.Contains(v, "FREQ=MINUTELY") {
+			return false
+		}
+	}
+	splitDateLists(ev.Props, ical.PropExceptionDates)
+	splitDateLists(ev.Props, ical.PropRecurrenceDates)
 	rset, err := ev.RecurrenceSet(time.UTC)
 	if err != nil {
 		return false
@@ -186,6 +206,53 @@ func readICSEvent(ev *ical.Event, out *icsEvent) bool {
 		out.rset = rset
 	}
 	return true
+}
+
+// splitDateLists turns each multi-valued EXDATE or RDATE property
+// ("20250107T090000,20250108T090000", RFC 5545 §3.8.5.1/2) into one property
+// per value with the same parameters (TZID, VALUE), which is the form
+// go-ical parses (PAC-122 SF-044, review major 2).
+func splitDateLists(props ical.Props, name string) {
+	var out []ical.Prop
+	for _, p := range props[name] {
+		if !strings.Contains(p.Value, ",") {
+			out = append(out, p)
+			continue
+		}
+		for _, v := range strings.Split(p.Value, ",") {
+			q := p
+			q.Value = strings.TrimSpace(v)
+			out = append(out, q)
+		}
+	}
+	if len(out) > 0 {
+		props[name] = out
+	}
+}
+
+// seriesInstances returns the starts of the instances of rset whose
+// [start, start+dur) overlaps [start, end), in order; ok is false when the
+// series is over the expansion bounds (the instances returned are then the
+// first maxInstancesPerSeries, or none when maxRecurrenceSteps was hit).
+func seriesInstances(rset recurrence, dur time.Duration, start, end time.Time) ([]time.Time, bool) {
+	next := rset.Iterator()
+	var out []time.Time
+	for steps := 0; ; steps++ {
+		if steps >= maxRecurrenceSteps {
+			return nil, false
+		}
+		at, more := next()
+		if !more || !at.Before(end) {
+			return out, true
+		}
+		if !at.Add(dur).After(start) {
+			continue
+		}
+		if len(out) == maxInstancesPerSeries {
+			return out, false
+		}
+		out = append(out, at)
+	}
 }
 
 // expandICS returns the events of all that overlap [start, end), recurring
@@ -212,12 +279,16 @@ func expandICS(all []icsEvent, start, end time.Time) []GenericEvent {
 				events = append(events, GenericEvent{ID: instanceID(e.uid, e.recurrenceID), Title: e.title, Start: e.start, End: e.start.Add(e.dur)})
 			}
 		case e.rset != nil:
-			for _, at := range e.rset.Between(start.Add(-e.dur), end, true) {
+			instances, ok := seriesInstances(e.rset, e.dur, start, end)
+			for _, at := range instances {
 				id := instanceID(e.uid, at)
-				if overridden[id] || !overlaps(at, e.dur) {
+				if overridden[id] {
 					continue
 				}
 				events = append(events, GenericEvent{ID: id, Title: e.title, Start: at, End: at.Add(e.dur)})
+			}
+			if !ok {
+				events = append(events, GenericEvent{ID: e.uid, unreadable: true})
 			}
 		default:
 			if overlaps(e.start, e.dur) {

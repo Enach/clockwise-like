@@ -653,9 +653,16 @@ paths:
         instant for a date-time) instead of being left out; a recurring event
         (RRULE, with RDATE, EXDATE and per-instance overrides) is listed once
         per instance in the window, each with `id` `<UID>/<instance start in UTC,
-        YYYYMMDDTHHMMSSZ>` (a non-recurring event keeps its UID); and an event
-        whose time or recurrence cannot be read is not listed (the sync keeps
-        any blocker it has rather than reading it as gone).
+        YYYYMMDDTHHMMSSZ>` (a non-recurring event keeps its UID), local times
+        following the event's TZID across DST changes, and a comma-separated
+        EXDATE or RDATE list read value by value with its TZID and VALUE; and an
+        event whose time or recurrence cannot be read is not listed (the sync
+        keeps any blocker it has rather than reading it as gone). Expansion is
+        bounded: FREQ=SECONDLY and MINUTELY are unreadable, a series needing
+        more than 100000 occurrences to reach the end of the window is
+        unreadable, and a series with more than 500 instances in the window
+        lists its first 500 and is otherwise treated as unreadable (the sync
+        keeps the blockers of its other instances).
       responses:
         "200":
           description: >-
