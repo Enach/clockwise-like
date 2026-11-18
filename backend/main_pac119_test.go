@@ -45,7 +45,7 @@ func TestPAC119_LinkCreateKeyCleanupRunsAtStartupThenHourly(t *testing.T) {
 		if _, err := storage.ResolveLinkCreateKeyCtx(context.Background(), db, owner.ID, a); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := storage.CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, l, a.CoHostEmails, key, a.Digest); err != nil {
+		if _, _, _, err := storage.CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, l, a.CoHostEmails, key, a.Digest); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`UPDATE scheduling_link_create_keys SET created_at = now() - interval '25 hours' WHERE idempotency_key = $1`, key); err != nil {

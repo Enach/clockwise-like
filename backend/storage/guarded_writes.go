@@ -368,27 +368,40 @@ func UpdateSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID, l *Sche
 // transaction. A nil result with a nil error means the link was deleted before the UPDATE: nothing
 // changed. Any error rolls back the fields and the co-hosts together.
 func UpdateSchedulingLinkAndCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, err error) {
-	r0, _, err = UpdateSchedulingLinkReportingCoHostsCtx(ctx, db, id, l, ownerID, coHostEmails)
+	r0, _, _, err = updateSchedulingLinkTx(ctx, db, id, l, ownerID, coHostEmails, false)
 	return r0, err
 }
 
 // UpdateSchedulingLinkReportingCoHostsCtx is UpdateSchedulingLinkAndCoHostsCtx that also returns
 // what the save did to the co-hosts (PAC-112 contract md §2, §3.2): changes is nil exactly when
 // coHostEmails is nil. ErrCoHostListTooLong is a list over the limit that names someone who is
-// not a current host, decided after the UPDATE: nothing changed.
-func UpdateSchedulingLinkReportingCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
+// not a current host, decided after the UPDATE: nothing changed. PAC-132 (SF-029): it also
+// returns the link's roster, read strictly on the same transaction after the last write, for the
+// PATCH answer's `hosts`; a failed read is an error and rolls the whole PATCH back.
+func UpdateSchedulingLinkReportingCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, roster []*LinkRosterHost, err error) {
+	return updateSchedulingLinkTx(ctx, db, id, l, ownerID, coHostEmails, true)
+}
+
+// updateSchedulingLinkTx is the PATCH transaction; withRoster adds the
+// strict roster read after the last write (PAC-132).
+func updateSchedulingLinkTx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string, withRoster bool) (r0 *SchedulingLink, changes *CoHostChanges, roster []*LinkRosterHost, err error) {
 	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, changes, e = updateSchedulingLinkAndCoHosts(q, id, l, ownerID, coHostEmails)
+		if r0, changes, e = updateSchedulingLinkAndCoHosts(q, id, l, ownerID, coHostEmails); e != nil {
+			return e
+		}
+		if withRoster {
+			roster, e = readLinkRoster(ctx, q, id)
+		}
 		return e
 	})
 	if errors.Is(err, ErrLinkGone) {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return r0, changes, nil
+	return r0, changes, roster, nil
 }
 
 // CreateSchedulingLinkWithCoHostsCtx is a link create as one transaction (PAC-112 contract md
@@ -399,7 +412,8 @@ func UpdateSchedulingLinkReportingCoHostsCtx(ctx context.Context, db DBTX, id uu
 // the co-host list; changes is nil exactly when coHostEmails is nil. Any error, including
 // ErrCoHostListTooLong, leaves no link and no host row.
 func CreateSchedulingLinkWithCoHostsCtx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
-	return CreateSchedulingLinkWithCoHostsKeyedCtx(ctx, db, l, coHostEmails, "", nil)
+	r0, changes, _, err = createSchedulingLinkTx(ctx, db, l, coHostEmails, "", nil, false)
+	return r0, changes, err
 }
 
 // CreateSchedulingLinkWithCoHostsKeyedCtx is CreateSchedulingLinkWithCoHostsCtx
@@ -410,16 +424,31 @@ func CreateSchedulingLinkWithCoHostsCtx(ctx context.Context, db DBTX, l *Schedul
 // violation on the slug or on (owner, key) is a *LinkCreateConflictError
 // (errors.Is ErrLinkCreateConflict), with everything rolled back: the keyed
 // caller then resolves its key again in a new ResolveLinkCreateKeyCtx (R3).
-func CreateSchedulingLinkWithCoHostsKeyedCtx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string, key string, digest []byte) (r0 *SchedulingLink, changes *CoHostChanges, err error) {
+// PAC-132 (SF-029): it also returns the new link's roster, read strictly on
+// the same transaction after the last write, for the 201's `hosts`; a failed
+// read is an error and rolls the whole create back (no link, no host row, no
+// key).
+func CreateSchedulingLinkWithCoHostsKeyedCtx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string, key string, digest []byte) (r0 *SchedulingLink, changes *CoHostChanges, roster []*LinkRosterHost, err error) {
+	return createSchedulingLinkTx(ctx, db, l, coHostEmails, key, digest, true)
+}
+
+// createSchedulingLinkTx is the create transaction; withRoster adds the
+// strict roster read after the last write (PAC-132).
+func createSchedulingLinkTx(ctx context.Context, db DBTX, l *SchedulingLink, coHostEmails []string, key string, digest []byte, withRoster bool) (r0 *SchedulingLink, changes *CoHostChanges, roster []*LinkRosterHost, err error) {
 	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, changes, e = createSchedulingLinkWithCoHosts(q, l, coHostEmails, key, digest)
+		if r0, changes, e = createSchedulingLinkWithCoHosts(q, l, coHostEmails, key, digest); e != nil {
+			return e
+		}
+		if withRoster {
+			roster, e = readLinkRoster(ctx, q, r0.ID)
+		}
 		return e
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return r0, changes, nil
+	return r0, changes, roster, nil
 }
 
 // UpdateZoomCredentialCtx is UpdateZoomCredential under the in-request re-check (PAC-71, contract §5).
