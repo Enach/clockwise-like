@@ -51,7 +51,7 @@ expect "failure message names the register and the baseline" 1 "$TMP/minus-auth"
 awk '/ twice +storage[.]Save / && !d {d=1; next} {print}' "$TMP/full" > "$TMP/one-of-two"
 expect "a second identical discard in one func fails" 1 "$TMP/one-of-two" "^NEW .*twice discards the error from storage.Save"
 
-# The baseline only shrinks: an entry whose occurrence is gone fails.
+# A fixed occurrence must leave the baseline: an entry whose occurrence is gone fails.
 { cat "$TMP/full"; echo "api/api.go  checked  storage.GetUser  # PAC-122 fixed long ago"; } > "$TMP/stale"
 expect "stale baseline entry fails" 1 "$TMP/stale" "^STALE api/api.go checked storage.GetUser"
 
@@ -61,11 +61,32 @@ expect "baseline entry without a PAC issue fails" 1 "$TMP/unnamed" "no PAC issue
 
 # The excluded patterns never appear, even with an empty baseline.
 expect "excluded patterns are never reported" 1 "$TMP/empty" "^NEW " \
-  "json|Encode|Write|Atoi|ParseToken|Pure|Rollback|NewClient|unrelated|os\.|_test\.go|zz_gen|checked "
+  "json|Encode|Write|Atoi|ParseToken|Pure|Rollback|RowsAffected|NewClient|unrelated|os\.|_test\.go|zz_gen|checked "
 got=$("$BIN" -root "$FIX" -baseline "$TMP/empty" . 2>&1 | grep -c '^NEW ')
 runs=$((runs + 1))
 if [ "$got" = "$n" ]; then echo "ok   empty baseline reports exactly the $n targeted occurrences"
 else fails=$((fails + 1)); echo "FAIL empty baseline reports $got occurrences, want $n"; fi
+
+# PAC-0 is not an issue.
+sed 's/# PAC-122 /# PAC-0 /' "$TMP/full" > "$TMP/pac0"
+expect "baseline entry citing PAC-0 fails" 1 "$TMP/pac0" "no PAC issue"
+
+# Seams, generics and the other sql handles are covered; the phrase
+# "Code generated ... DO NOT EDIT" after the package clause exempts nothing.
+grep -v 'orgAIStore.read' "$TMP/full" > "$TMP/minus-seam"
+expect "new discard through a store seam fails" 1 "$TMP/minus-seam" "^NEW .*api.orgAIStore.read \(storage-seam\)"
+grep -v 'storage.Find' "$TMP/full" > "$TMP/minus-generic"
+expect "new generic storage discard fails" 1 "$TMP/minus-generic" "^NEW .*storage.Find"
+grep -v 'notGenerated' "$TMP/full" > "$TMP/minus-midgen"
+expect "a mid-file 'Code generated' phrase does not exempt a file" 1 "$TMP/minus-midgen" "^NEW +api/midgen.go"
+
+# An interface that wraps storage and is in neither seam list fails the run.
+runs=$((runs + 1))
+out=$("$BIN" -root "$HERE/testdata/seamfixture" -baseline "$TMP/empty" . 2>&1); code=$?
+if [ "$code" = 1 ] && grep -q '^SEAM  api.widgetStore' <<<"$out" && ! grep -q 'pure' <<<"$out"; then
+  echo "ok   unlisted seam fails -> exit 1"
+else fails=$((fails + 1)); echo "FAIL unlisted seam: exit $code"; printf '     %s
+' "$out" | head; fi
 
 echo "$((runs - fails))/$runs passed"
 [ "$fails" -eq 0 ]

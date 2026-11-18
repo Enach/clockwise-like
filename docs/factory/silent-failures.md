@@ -407,52 +407,110 @@ code under `backend/` and `mcp/`.
 
 - **How it matches.** A `go/analysis`-style check on the type-checked syntax
   (`go/packages` + `go/types`), not grep, so line breaks, parentheses,
-  `var (...)` blocks and calls through interfaces do not hide a call. It
-  flags an `=`, `:=` or `var` assignment whose `_` falls on an `error` result
-  of a call to: anything declared in `backend/storage`; `auth.Load*`; a method
-  declared in `backend/calendar` (`Provider`, the Google, Outlook and webcal
-  clients); the engine's calendar-ops seams (`calendarOps`/`realOps`,
-  `outlookFreeBusy`, `googleFreeBusy`); or a `database/sql` handle method (the
-  `_ = h.db.QueryRow(...).Scan(...)` shape). Methods named `Rollback` or
-  `Close` are never targeted. Anything else (`json.Encode`, `w.Write`,
-  `strconv`, `os`) is out of scope. `mcp/` is scanned too, but calls none of
-  these packages: it reaches the backend over HTTP.
+  `var (...)` blocks, generic instantiation and calls through interfaces do not
+  hide a call. It flags an `=`, `:=` or `var` assignment whose `_` falls on an
+  `error` result of a call to:
+  - anything declared in `backend/storage`;
+  - `auth.Load*`;
+  - a method declared in `backend/calendar` (`Provider`, the Google, Outlook
+    and webcal clients);
+  - a **seam**, keyed by package path and type name (`seams` in
+    `tools/sfguard/analyzer.go`): the engine's calendar-ops interfaces
+    (`calendarOps`/`realOps`, `outlookFreeBusy`, `googleFreeBusy`),
+    `api.ConferenceEventClient`, and the store interfaces `api.orgAIStore`,
+    `api.ssoStore`, `auth.credentialStore` and `nlp.AISource`, with their
+    production types;
+  - a `database/sql` handle method on `*sql.DB`, `*sql.Tx`, `*sql.Conn`,
+    `*sql.Stmt`, `*sql.Row` or `*sql.Rows` (the
+    `_ = h.db.QueryRow(...).Scan(...)` shape).
+
+  Methods named `Rollback` or `Close` are never targeted. Anything else
+  (`json.Encode`, `w.Write`, `strconv`, `os`) is out of scope. A file is
+  generated only when the Go header comes before the `package` clause
+  (`ast.IsGenerated`). The phrase anywhere else exempts nothing. `mcp/` is
+  scanned too, but calls none of these packages: it reaches the backend over
+  HTTP.
+- **The seam list is audited, not trusted.** The run fails (`SEAM`) when a
+  backend interface declared outside `storage` and `calendar` meets two
+  conditions: an implementation answers one of its error-returning methods
+  with a targeted call, or with a method declared in `storage` or `calendar`;
+  and the interface is neither in `seams` nor in `notSeams` (with a reason).
+  The audit looks one level deep, at the implementing method's own body. Today
+  it matches 18 interfaces:
+  - 8 guarded seams;
+  - 10 engine or service operations listed in `notSeams`: `BookingFlow`,
+    `Compressor`, `ConferenceProviderFactory`, `FocusEngine`,
+    `ManagerWorkflow`, `NLPParser`, `PersonalCalendarBlocker`, `Scheduler`,
+    `TeamAvailability` and main's `teamDetector`.
+
+  A Go test pins that classification, so a new or vanished seam shows up in
+  review. No blank-assigned call goes through any of the operations today.
 - **The ratchet.** `tools/sfguard/baseline.txt` lists the accepted
-  occurrences as `file  function  callee`, with no line numbers. It **may only
-  shrink**. An occurrence beyond the baseline fails as `NEW`. A baseline line
-  whose occurrence is gone fails as `STALE`, so a fix must delete its line.
-  Every line must carry a `# PAC-NN` comment, and growth relative to
-  `origin/main` is printed for the reviewer. The baseline is the only
-  exception mechanism. The failure message points here, and at the `-update`
-  command that prints the line to add.
-- **Its own tests run first:** `go test` in `tools/sfguard` (an exact-match
-  scan of `testdata/fixture` plus the ratchet), then
-  `tools/sfguard/sfguard.test.sh`. That script shows end to end that a new
-  storage, `auth.Load*`, calendar-ops or `h.db` discard fails, a baselined one
-  passes, a second identical discard in one function fails, a stale or
-  unnamed entry fails, and the excluded shapes are never reported. A package
-  that does not type-check fails the guard (exit 2); a partial scan is never a
+  occurrences as `file  function  callee`, with no line numbers. It **grows
+  only with a named PAC issue, reviewer-confirmed**:
+  - an occurrence beyond the baseline fails as `NEW`;
+  - a baseline line whose occurrence is gone fails as `STALE`, so a fix must
+    delete its line;
+  - every line must carry a `# PAC-N` comment with a positive N;
+  - growth relative to `origin/main` is printed.
+
+  The guard cannot judge whether the issue and the verdict are right. That
+  check is the reviewer's (`.claude/agents/reviewer.md`): an added line is a
+  finding unless both hold up. The baseline is the only exception mechanism.
+  The failure message points here, and at the `-update` command that prints
+  the line to add.
+- **Its own tests run first.** `make lint` runs `go test` in `tools/sfguard`:
+  an exact-match scan of `testdata/fixture`, the seam audit on
+  `testdata/seamfixture` and on the real backend, and the ratchet. Then it runs
+  `tools/sfguard/sfguard.test.sh`. That script shows end to end that:
+  - each of these new discards fails: storage, `auth.Load*`, calendar-ops,
+    store-seam, generic, `h.db`, and a file carrying the generated phrase
+    mid-file;
+  - a baselined discard passes;
+  - a second identical discard in one function fails;
+  - a stale, unnamed or `PAC-0` entry fails;
+  - an unlisted seam fails;
+  - the excluded shapes are never reported.
+
+  The guard is built and then run as a binary, so its exit 2 (a package that
+  does not type-check) reaches `make` as itself. A partial scan is never a
   pass.
+- **Known blind spots** (not flagged; review catches them):
+  - **function and method values:** `f := storage.Save; _ = f(q, v)`, and
+    calls through struct fields of function type;
+  - **same-package wrappers and generics:** a backend helper that calls
+    storage and returns its error is not a target, so `_ = helper()` passes.
+    Only the seams listed above are followed;
+  - **an `err` that is named and then ignored:** `v, err := storage.Get(...)`
+    followed by no check (`ineffassign` or `staticcheck` catch some of these);
+  - **anonymous-interface calls:** `interface{ Get() (T, error) }` declared
+    inline;
+  - **`sql.Result.RowsAffected`:** excluded on purpose, since the drivers in
+    use do not fail it once `Exec` succeeded.
+
+  Bare calls, and `defer` or `go` calls that drop an error, are not this
+  guard's job: `errcheck` already refuses them.
 - **The baseline at landing: 24 entries**, each checked against this register:
   - **5 known rows:** SF-038 ×2 (`authHandlers.status`) and SF-022 ×3
     (`MeetingBriefService.Generate`).
-  - **9 not yet in the register.** Each is a real silent default:
-    - recap preview and test, empty user name;
-    - invite preview, blank team and inviter (SF-077 fixed only the email
-      path);
-    - operator `encryption convert` and `rotate-data-key` drop a failed
-      `sealed_count` flush;
-    - `rotate-data-key` prints "0 values left" on a count error;
-    - focus blocks read as none in `SmartScheduler.Suggest` and
-      `TeamAvailabilityEngine.memberBusy`.
-
-    They are candidates for rows.
-  - **10 fine:**
+  - **10 not yet in the register.** Each is a real silent default, now tracked
+    by an issue:
+    - **PAC-140**, the operator's `encryption` command (4):
+      - `convert` and `rotate-data-key` drop a failed `sealed_count` flush;
+      - `rotate-data-key` prints "0 values left" on a count error;
+      - `dispatch` treats a failed `operator_audit` probe as "already
+        audited", so a failed run leaves no audit row.
+    - **PAC-141**, the rest (6):
+      - recap preview and test show an empty user name;
+      - invite preview shows a blank team and inviter (SF-077 fixed only the
+        email path);
+      - focus blocks read as none in `SmartScheduler.Suggest` and
+        `TeamAvailabilityEngine.memberBusy`.
+  - **9 fine:**
     - the four free/busy reads, where a nil result settles as coverage
       `unknown` (§5, PAC-133);
     - the advisory-unlock and lock-holder reads in `storage`;
-    - `WriteAuditLogCtx` (§4 L-c);
-    - the operator's audit-table probe on an already-failed run.
+    - `WriteAuditLogCtx` (§4 L-c).
 
   Removing entries is follow-up work, not part of the guard's PR.
 

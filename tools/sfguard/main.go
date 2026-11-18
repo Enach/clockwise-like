@@ -11,13 +11,16 @@
 // other call outside the targeted set is never flagged.
 //
 // It ratchets against a baseline of accepted occurrences (baseline.txt), keyed
-// by file, enclosing function and callee — never line numbers.
+// by file, enclosing function and callee — never line numbers. The baseline
+// grows only with a named PAC issue, reviewer-confirmed: the guard checks the
+// issue is named and prints the growth, the reviewer checks the verdict.
 //
 //	go run . -root ../.. -baseline baseline.txt backend mcp
 //	go run . -root ../.. -baseline baseline.txt -update backend mcp > new.txt
 //
-// Exit status: 0 clean, 1 a new occurrence / stale or malformed baseline,
-// 2 the packages could not be loaded (never treated as a pass).
+// Exit status: 0 clean; 1 a new occurrence, a stale or malformed baseline
+// entry, or an unlisted seam; 2 the packages could not be loaded (never
+// treated as a pass).
 package main
 
 import (
@@ -44,7 +47,9 @@ caller can see. If discarding it really is right, the baseline is the only
 exception mechanism (no //nolint): add the line printed by
   cd tools/sfguard && go run . -root ../.. -baseline baseline.txt -update backend mcp
 to tools/sfguard/baseline.txt with a comment naming the PAC issue that removes
-it (or that records why it is fine), and say so in the PR.`
+it (or that records why it is fine), and say so in the PR. The baseline grows
+only with a named PAC issue, reviewer-confirmed: the reviewer treats every
+added line as a finding unless its issue and verdict hold up.`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -71,13 +76,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var findings []Finding
+	var seamProblems []string
 	for _, dir := range fs.Args() {
-		fsx, err := scanModule(absRoot, dir)
+		fsx, sp, err := scanModule(absRoot, dir)
 		if err != nil {
 			fmt.Fprintf(stderr, "sfguard: %s: %v\n", dir, err)
 			return 2
 		}
 		findings = append(findings, fsx...)
+		seamProblems = append(seamProblems, sp...)
 	}
 
 	raw, err := os.ReadFile(*baselinePath)
@@ -106,10 +113,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	for _, s := range res.Stale {
 		fmt.Fprintln(stderr, "STALE", s, "— the occurrence is gone: delete this baseline line")
 	}
+	for _, s := range seamProblems {
+		fmt.Fprintln(stderr, "SEAM ", s)
+	}
 	if *baseRef != "" {
 		reportGrowth(stdout, stderr, absRoot, *baselinePath, *baseRef, baseline)
 	}
-	if !res.OK() || len(problems) > 0 {
+	if !res.OK() || len(problems) > 0 || len(seamProblems) > 0 {
 		if len(res.New) > 0 {
 			fmt.Fprintln(stderr, help)
 		}
@@ -119,8 +129,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func scanModule(root, dir string) ([]Finding, error) {
-	modDir := filepath.Join(root, dir)
+// scanModule returns the module's targeted discards and the seam audit's
+// problems (seams.go).
+func scanModule(root, dir string) ([]Finding, []string, error) {
+	pkgs, err := loadModule(filepath.Join(root, dir))
+	if err != nil {
+		return nil, nil, err
+	}
+	var out []Finding
+	for _, p := range pkgs {
+		out = append(out, checkPackage(p, root)...)
+	}
+	_, seamProblems := auditSeams(pkgs)
+	return out, seamProblems, nil
+}
+
+// loadModule type-checks every non-test package of the module in modDir. Any
+// package error fails the load: a partial scan is never a pass.
+func loadModule(modDir string) ([]*packages.Package, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
 			packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
@@ -143,11 +169,7 @@ func scanModule(root, dir string) ([]Finding, error) {
 		}
 		return nil, fmt.Errorf("could not type-check (a partial scan is not a pass):\n  %s", strings.Join(errs, "\n  "))
 	}
-	var out []Finding
-	for _, p := range pkgs {
-		out = append(out, checkPackage(p, root)...)
-	}
-	return out, nil
+	return pkgs, nil
 }
 
 // reportGrowth prints what this branch adds to the baseline relative to ref.

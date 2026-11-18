@@ -21,16 +21,17 @@ import (
 // has to name the issue that will remove it.
 type Baseline struct {
 	Count    map[string]int
-	Comments map[string]string // first comment seen per key, for --update
-	Order    []string          // keys in file order, unique
+	Comments map[string][]string // every entry's comment per key, in file order, for -update
+	Order    []string            // keys in file order, unique
 }
 
-var pacID = regexp.MustCompile(`\bPAC-[0-9]+\b`)
+// pacID is a real issue id: a positive number, so PAC-0 and PAC-007 are refused.
+var pacID = regexp.MustCompile(`\bPAC-[1-9][0-9]*\b`)
 
 // ParseBaseline reads a baseline. Malformed lines and entries without a PAC
 // issue are returned as problems; they never count as accepted.
 func ParseBaseline(r io.Reader) (*Baseline, []string, error) {
-	b := &Baseline{Count: map[string]int{}, Comments: map[string]string{}}
+	b := &Baseline{Count: map[string]int{}, Comments: map[string][]string{}}
 	var problems []string
 	sc := bufio.NewScanner(r)
 	n := 0
@@ -54,8 +55,8 @@ func ParseBaseline(r io.Reader) (*Baseline, []string, error) {
 		key := strings.Join(fields, " ")
 		if b.Count[key] == 0 {
 			b.Order = append(b.Order, key)
-			b.Comments[key] = comment
 		}
+		b.Comments[key] = append(b.Comments[key], comment)
 		b.Count[key]++
 	}
 	return b, problems, sc.Err()
@@ -72,7 +73,7 @@ func (r Result) OK() bool { return len(r.New) == 0 && len(r.Stale) == 0 }
 // Ratchet compares findings to the baseline. A key found more often than it is
 // baselined is NEW (every occurrence of it is reported, since lines are not
 // part of the key). A key baselined more often than found is STALE: the fix
-// landed, so the entry must go — that is how the baseline only shrinks.
+// landed, so the entry must go: nothing fixed stays accepted.
 func Ratchet(findings []Finding, b *Baseline) Result {
 	byKey := map[string][]Finding{}
 	for _, f := range findings {
@@ -104,27 +105,31 @@ func Grown(cur, base *Baseline) []string {
 	var out []string
 	for _, key := range cur.Order {
 		if cur.Count[key] > base.Count[key] {
-			out = append(out, fmt.Sprintf("%s  (%d -> %d)  # %s", key, base.Count[key], cur.Count[key], cur.Comments[key]))
+			out = append(out, fmt.Sprintf("%s  (%d -> %d)  # %s", key, base.Count[key], cur.Count[key], strings.Join(cur.Comments[key], " | ")))
 		}
 	}
 	return out
 }
 
-// Render writes findings as baseline lines, reusing the comment an existing
-// entry carries; a new occurrence gets a placeholder that fails the PAC check
-// until someone names the issue.
+// Render writes findings as baseline lines. The k-th occurrence of a key
+// reuses the k-th comment the existing baseline carries for it, so distinct
+// verdicts on one key survive; an occurrence beyond those gets a placeholder
+// that fails the PAC check until someone names the issue.
 func Render(w io.Writer, findings []Finding, old *Baseline) {
-	sort.Slice(findings, func(i, j int) bool {
+	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Key() != findings[j].Key() {
 			return findings[i].Key() < findings[j].Key()
 		}
 		return findings[i].Line < findings[j].Line
 	})
+	used := map[string]int{}
 	for _, f := range findings {
-		c, ok := old.Comments[f.Key()]
-		if !ok {
-			c = "TODO name the PAC issue that removes this (" + f.Why + ")"
+		k := f.Key()
+		c := "TODO name the PAC issue that removes this (" + f.Why + ")"
+		if cs := old.Comments[k]; used[k] < len(cs) {
+			c = cs[used[k]]
 		}
+		used[k]++
 		fmt.Fprintf(w, "%s  %s  %s  # %s\n", f.File, f.Func, f.Callee, c)
 	}
 }

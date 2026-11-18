@@ -163,9 +163,12 @@ lint:
 # tools/sfguard is a type-aware (go/types) check for exactly that shape: a
 # blank-assigned error from backend/storage, auth.Load*, the calendar clients,
 # the engine's calendar-ops seams, or database/sql handles, in non-test,
-# non-generated code. It ratchets against tools/sfguard/baseline.txt, which may
-# only shrink: a new occurrence fails, a fixed one must be deleted from the
-# baseline, and every baseline line names a PAC issue. Its own tests (go test
+# non-generated code. It ratchets against tools/sfguard/baseline.txt, which
+# grows only with a named PAC issue, reviewer-confirmed: a new occurrence
+# fails, a fixed one must be deleted from the baseline, every baseline line
+# names a PAC issue, and the reviewer treats an added line as a finding unless
+# its issue and verdict hold up. A storage or calendar seam interface outside
+# those packages that is in neither of its lists fails too. Its own tests (go test
 # and the end-to-end self-test) run first, so a broken guard cannot pass.
 # mcp/ is scanned too; it calls none of the targeted packages today.
 sfguard:
@@ -173,7 +176,12 @@ sfguard:
 	cd $(ROOT)/tools/sfguard && go vet ./... && go test ./...
 	bash $(ROOT)/tools/sfguard/sfguard.test.sh
 	@echo "-> sfguard backend mcp"
-	cd $(ROOT)/tools/sfguard && go run . -root $(ROOT) -baseline $(ROOT)/tools/sfguard/baseline.txt -base-ref origin/main backend mcp
+	@# Built, then exec'd: `go run` turns every failure into exit 1, and the
+	@# guard's 2 (could not type-check: not a pass, not a finding either) must
+	@# reach make's "Error 2" line as itself.
+	@mkdir -p "$(VERIFY_DIR)/bin"
+	cd $(ROOT)/tools/sfguard && go build -o "$(VERIFY_DIR)/bin/sfguard" .
+	"$(VERIFY_DIR)/bin/sfguard" -root $(ROOT) -baseline $(ROOT)/tools/sfguard/baseline.txt -base-ref origin/main backend mcp
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 # scripts/test-backend.sh runs the suite inside golang:1.26-alpine against a

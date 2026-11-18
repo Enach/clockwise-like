@@ -3,9 +3,12 @@
 # docs/factory/silent-failures.md §8). `make lint` fails on any occurrence not
 # listed here, and on any line here whose occurrence is gone.
 #
-# THIS FILE MAY ONLY SHRINK. Fixing an occurrence means deleting its line (the
-# guard reports it STALE until you do). Adding a line is the one exception
-# mechanism: it needs a comment naming a PAC issue, and the reviewer sees it.
+# THIS FILE GROWS ONLY WITH A NAMED PAC ISSUE, REVIEWER-CONFIRMED. Fixing an
+# occurrence means deleting its line (the guard reports it STALE until you do).
+# Adding a line is the one exception mechanism: the guard requires a comment
+# naming a PAC issue (a positive number) and prints the growth against
+# origin/main; the reviewer treats the added line as a finding unless its
+# issue and verdict hold up (.claude/agents/reviewer.md).
 #
 # Format: file  enclosing-func  callee  # PAC-NN  verdict: why
 # One line per occurrence; a key listed three times allows three. No line
@@ -13,10 +16,12 @@
 #
 # Verdicts, checked by reading each call site against the register:
 #   known SF-NNN  a register row already describes it (fix lands with that row)
-#   unregistered  a real silent default the register does not list yet
+#   unregistered  a real silent default the register does not list; tracked by
+#                 PAC-140 (operator encryption) or PAC-141 (the rest)
 #   fine          the discard carries no default anyone reads as an answer
 #
-# Totals: 24 entries = 5 known SF + 9 unregistered + 10 fine. mcp/: 0 (it is an
+# Totals: 24 entries = 5 known SF + 10 unregistered (4 PAC-140, 6 PAC-141)
+# + 9 fine. mcp/: 0 (it is an
 # HTTP client of the API and calls none of the targeted packages).
 
 # ── known SF rows ────────────────────────────────────────────────────────────
@@ -26,19 +31,19 @@ backend/engine/meeting_brief_service.go  (*MeetingBriefService).Generate  storag
 backend/engine/meeting_brief_service.go  (*MeetingBriefService).Generate  storage.UpsertMeetingBriefCtx  # PAC-122 known SF-022: the "LLM not configured" failed brief
 backend/engine/meeting_brief_service.go  (*MeetingBriefService).Generate  storage.UpsertMeetingBriefCtx  # PAC-122 known SF-022: the final ready/failed brief is returned as saved
 
-# ── unregistered: real silent defaults, not in the register yet ──────────────
-backend/api/handlers_daily_recap.go  (*dailyRecapHandlers).preview  sql.Row.Scan  # PAC-122 unregistered: a users read error previews the recap with an empty name
-backend/api/handlers_daily_recap.go  (*dailyRecapHandlers).test  sql.Row.Scan  # PAC-122 unregistered: same, for the test send
-backend/api/handlers_teams.go  (*teamHandlers).getInvite  storage.GetTeam  # PAC-122 unregistered: invite preview shows a blank team name on a read error (SF-077 fixed only the email path)
-backend/api/handlers_teams.go  (*teamHandlers).getInvite  storage.GetUserByID  # PAC-122 unregistered: invite preview shows a blank inviter on a read error (sibling of SF-077)
-backend/cmd/paceday-operator/encryption.go  (*encryptionRun).convert  storage.FlushSealCounts  # PAC-122 unregistered: a failed flush loses sealed_count (the data key's seal budget) with no message; the key refresher restores counts instead
-backend/cmd/paceday-operator/encryption.go  (*encryptionRun).rotate  storage.FlushSealCounts  # PAC-122 unregistered: same, for rotate-data-key
-backend/cmd/paceday-operator/encryption.go  (*encryptionRun).rotate  storage.CountValuesUnder  # PAC-122 unregistered: a count error prints "0 values left under data key N", inviting the operator to retire a key still in use
-backend/engine/smart_schedule.go  (*SmartScheduler).Suggest  storage.ListFocusBlocksForUserWeek  # PAC-122 unregistered: a focus-block read error suggests slots over focus time (the SF-013 shape)
-backend/engine/team_availability.go  (*TeamAvailabilityEngine).memberBusy  storage.ListFocusBlocksForUserWeek  # PAC-122 unregistered: a focus-block read error scores the member as having no focus time
+# ── unregistered: real silent defaults, tracked by PAC-140 / PAC-141 ─────────
+backend/api/handlers_daily_recap.go  (*dailyRecapHandlers).preview  sql.Row.Scan  # PAC-141 unregistered: a users read error previews the recap with an empty name
+backend/api/handlers_daily_recap.go  (*dailyRecapHandlers).test  sql.Row.Scan  # PAC-141 unregistered: same, for the test send
+backend/api/handlers_teams.go  (*teamHandlers).getInvite  storage.GetTeam  # PAC-141 unregistered: invite preview shows a blank team name on a read error (SF-077 fixed only the email path)
+backend/api/handlers_teams.go  (*teamHandlers).getInvite  storage.GetUserByID  # PAC-141 unregistered: invite preview shows a blank inviter on a read error (sibling of SF-077)
+backend/cmd/paceday-operator/encryption.go  (*encryptionRun).convert  storage.FlushSealCounts  # PAC-140 unregistered: a failed flush loses sealed_count (the data key's seal budget) with no message; the key refresher restores counts instead
+backend/cmd/paceday-operator/encryption.go  (*encryptionRun).rotate  storage.FlushSealCounts  # PAC-140 unregistered: same, for rotate-data-key
+backend/cmd/paceday-operator/encryption.go  (*encryptionRun).rotate  storage.CountValuesUnder  # PAC-140 unregistered: a count error prints "0 values left under data key N", inviting the operator to retire a key still in use
+backend/cmd/paceday-operator/encryption.go  (*encryptionRun).dispatch  sql.Row.Scan  # PAC-140 unregistered: a failed operator_audit probe marks the run audited, so a failed run leaves no audit row and nothing says so
+backend/engine/smart_schedule.go  (*SmartScheduler).Suggest  storage.ListFocusBlocksForUserWeek  # PAC-141 unregistered: a focus-block read error suggests slots over focus time (the SF-013 shape)
+backend/engine/team_availability.go  (*TeamAvailabilityEngine).memberBusy  storage.ListFocusBlocksForUserWeek  # PAC-141 unregistered: a focus-block read error scores the member as having no focus time
 
 # ── fine: no default is read as an answer ────────────────────────────────────
-backend/cmd/paceday-operator/encryption.go  (*encryptionRun).dispatch  sql.Row.Scan  # PAC-122 fine: on a run that already failed and said so; the probe only decides whether to try the audit row
 backend/engine/freebusy_service.go  (*FreeBusyService).Query  calendar.CalendarClient.GetFreeBusy  # PAC-122 fine: nil result settles every address as coverage "unknown" (pinned §5, PAC-72 D-6; SF-032 fixed by PAC-133)
 backend/engine/freebusy_service.go  (*FreeBusyService).Query  engine.outlookFreeBusy.GetFreeBusy  # PAC-122 fine: same, Outlook branch
 backend/engine/team_freebusy.go  (*FreeBusyService).fetchThrough  engine.googleFreeBusy.GetFreeBusy  # PAC-122 fine: nil result settles as "unknown", never "known"/free (PAC-133 settleLookup)

@@ -16,15 +16,30 @@ import (
 // guard runs on it exactly as it runs on backend/.
 const backendModule = "github.com/Enach/paceday/backend"
 
-// calendarOpsTypes are the engine's calendar-operation seams: the interface the
-// engine calls Google through (calendarOps, its production realOps), and the
-// free/busy readers of the team and Outlook paths. A call through them is a
-// calendar read or write, whatever the concrete client behind it.
-var calendarOpsTypes = map[string]bool{
-	"calendarOps":     true,
-	"realOps":         true,
-	"outlookFreeBusy": true,
-	"googleFreeBusy":  true,
+// seams are the types declared outside backend/storage and backend/calendar
+// that a storage or calendar call goes through: interfaces that exist so a
+// test can substitute the store or the client, and their production
+// implementations. A call through one is a storage read or write, or a
+// calendar operation, whatever the concrete type behind it. Keyed by package
+// path and type name; the value is the target set reported.
+//
+// The list is enforced, not trusted: auditSeams (seams.go) fails the run when a
+// backend interface outside storage and calendar has an error-returning method
+// that an implementation answers with a targeted call, and it is in neither
+// this map nor notSeams.
+var seams = map[string]string{
+	backendModule + "/engine.calendarOps":        "calendar-ops",
+	backendModule + "/engine.realOps":            "calendar-ops",
+	backendModule + "/engine.outlookFreeBusy":    "calendar-ops",
+	backendModule + "/engine.googleFreeBusy":     "calendar-ops",
+	backendModule + "/api.ConferenceEventClient": "calendar-ops",
+	backendModule + "/api.orgAIStore":            "storage-seam",
+	backendModule + "/api.dbOrgAIStore":          "storage-seam",
+	backendModule + "/api.ssoStore":              "storage-seam",
+	backendModule + "/api.dbSSOStore":            "storage-seam",
+	backendModule + "/nlp.AISource":              "storage-seam",
+	backendModule + "/nlp.DBSource":              "storage-seam",
+	backendModule + "/auth.credentialStore":      "storage-seam",
 }
 
 // Finding is one blank-assigned error from a targeted call.
@@ -46,11 +61,17 @@ func (f Finding) Key() string { return f.File + " " + f.Func + " " + f.Callee }
 //   - auth.Load* (the stored-credential loads);
 //   - methods declared in backend/calendar (Provider, CalendarClient,
 //     OutlookClient, the webcal client): the calendar operations themselves;
-//   - the engine's calendar-ops seams (calendarOpsTypes);
+//   - methods of the seams above (engine calendar-ops, api and auth store
+//     interfaces and their production implementations);
 //   - methods of database/sql's handles (*sql.DB, *sql.Tx, *sql.Conn,
-//     *sql.Stmt, *sql.Row, *sql.Rows) — the `_ = h.db.Exec(...)` shape —
-//     except Rollback and Close, whose blank-assigned error is the idiom
-//     after a failure or a completed read and carries no default.
+//     *sql.Stmt, *sql.Row, *sql.Rows): the `_ = h.db.Exec(...)` and
+//     `_ = h.db.QueryRow(...).Scan(...)` shapes.
+//
+// Methods named Rollback or Close are never targeted: `_ = tx.Rollback()` on
+// a path that already failed, or after a commit, is the idiom, and its error
+// carries no value anyone reads as a default. sql.Result is not a handle, so
+// `n, _ := res.RowsAffected()` is out of scope by design (the drivers in use
+// never fail it once Exec succeeded).
 func target(fn *types.Func) (string, bool) {
 	pkg := fn.Pkg()
 	if pkg == nil {
@@ -72,8 +93,8 @@ func target(fn *types.Func) (string, bool) {
 		return "auth.Load*", true
 	case path == backendModule+"/calendar" && recv != "":
 		return "calendar", true
-	case path == backendModule+"/engine" && calendarOpsTypes[recv]:
-		return "calendar-ops", true
+	case recv != "" && seams[path+"."+recv] != "":
+		return seams[path+"."+recv], true
 	case path == "database/sql" && recv != "":
 		switch recv {
 		case "DB", "Tx", "Conn", "Stmt", "Row", "Rows":
@@ -136,16 +157,9 @@ func isBlank(e ast.Expr) bool {
 	return ok && id.Name == "_"
 }
 
-func isGenerated(f *ast.File) bool {
-	for _, cg := range f.Comments {
-		for _, c := range cg.List {
-			if strings.Contains(c.Text, "Code generated") && strings.Contains(c.Text, "DO NOT EDIT") {
-				return true
-			}
-		}
-	}
-	return false
-}
+// isGenerated is the Go convention (go.dev/s/generatedcode): the marker line
+// before the package clause. The phrase anywhere else exempts nothing.
+func isGenerated(f *ast.File) bool { return ast.IsGenerated(f) }
 
 // funcName names a top-level declaration the way the baseline records it.
 func funcName(d *ast.FuncDecl) string {
@@ -177,8 +191,8 @@ func funcName(d *ast.FuncDecl) string {
 // package's non-test, non-generated files.
 func checkPackage(pkg *packages.Package, root string) []Finding {
 	var out []Finding
-	for i, file := range pkg.Syntax {
-		name := pkg.CompiledGoFiles[i]
+	for _, file := range pkg.Syntax {
+		name := pkg.Fset.File(file.Pos()).Name()
 		if strings.HasSuffix(name, "_test.go") || isGenerated(file) {
 			continue
 		}
