@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -34,7 +36,9 @@ func randomState() string {
 func (h *integrationsHandlers) slackConnect(w http.ResponseWriter, r *http.Request) {
 	clientID := os.Getenv("SLACK_CLIENT_ID")
 	redirectURI := os.Getenv("SLACK_REDIRECT_URI")
-	if clientID == "" {
+	// PAC-122 SF-081: without a redirect URI the provider can only show its
+	// own error page, so it is "not configured" too.
+	if clientID == "" || redirectURI == "" {
 		writeError(w, "Slack not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -102,7 +106,13 @@ func (h *integrationsHandlers) slackStatus(w http.ResponseWriter, r *http.Reques
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
-	if err != nil || conn.TokenErr != nil { // PAC-84 AC-16b: an undecryptable token is not connected
+	// PAC-122 SF-045: only "no connection" and an undecryptable token
+	// (PAC-84 AC-16b) are "not connected"; a failed read is the 500.
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeServerError(w, r, "slack status", err, http.StatusInternalServerError)
+		return
+	}
+	if err != nil || conn.TokenErr != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return
 	}
@@ -179,7 +189,9 @@ func slackExchangeCode(code, clientID, clientSecret, redirectURI string) (*slack
 func (h *integrationsHandlers) notionConnect(w http.ResponseWriter, r *http.Request) {
 	clientID := os.Getenv("NOTION_CLIENT_ID")
 	redirectURI := os.Getenv("NOTION_REDIRECT_URI")
-	if clientID == "" {
+	// PAC-122 SF-081: without a redirect URI the provider can only show its
+	// own error page, so it is "not configured" too.
+	if clientID == "" || redirectURI == "" {
 		writeError(w, "Notion not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -245,7 +257,13 @@ func (h *integrationsHandlers) notionStatus(w http.ResponseWriter, r *http.Reque
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion")
-	if err != nil || conn.TokenErr != nil { // PAC-84 AC-16b: an undecryptable token is not connected
+	// PAC-122 SF-045: only "no connection" and an undecryptable token
+	// (PAC-84 AC-16b) are "not connected"; a failed read is the 500.
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeServerError(w, r, "notion status", err, http.StatusInternalServerError)
+		return
+	}
+	if err != nil || conn.TokenErr != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return
 	}
@@ -281,6 +299,12 @@ func notionExchangeCode(code, clientID, clientSecret, redirectURI string) (*noti
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
+	// PAC-122 SF-023: a refusal is any non-2xx answer, whatever its body
+	// carries, and a 2xx without an access token is no connection either.
+	// Only the status goes into the error, never the body.
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, &httpError{Code: http.StatusBadGateway, Msg: fmt.Sprintf("notion token exchange: status %d", resp.StatusCode)}
+	}
 
 	var result struct {
 		AccessToken   string `json:"access_token"`
@@ -293,6 +317,9 @@ func notionExchangeCode(code, clientID, clientSecret, redirectURI string) (*noti
 	}
 	if result.Error != "" {
 		return nil, &httpError{Code: http.StatusBadGateway, Msg: result.Error}
+	}
+	if strings.TrimSpace(result.AccessToken) == "" {
+		return nil, &httpError{Code: http.StatusBadGateway, Msg: "notion token exchange: no access token"}
 	}
 	return &notionTokenResponse{
 		accessToken:   result.AccessToken,

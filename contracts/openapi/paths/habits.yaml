@@ -621,7 +621,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "503":
           description: >-
-            `SLACK_CLIENT_ID` is unset. Body: `{"error":"Slack not configured"}`.
+            `SLACK_CLIENT_ID` is unset, or (PAC-122 SF-081) `SLACK_REDIRECT_URI` is unset,
+            which would only send the user to Slack's own error page. Body:
+            `{"error":"Slack not configured"}`. No state cookie is set.
           content:
             application/json:
               schema:
@@ -692,8 +694,10 @@ paths:
       tags: [integrations]
       summary: Whether Slack is connected for this user
       description: |
-        Always 200. Any storage error (including "no row") is collapsed into
-        `{"connected": false}` — the `workspace_name` key is then absent entirely.
+        `{"connected": false}` when no Slack connection is stored, or when its stored
+        token cannot be decrypted (PAC-84 AC-16b); the `workspace_name` key is then
+        absent entirely. PAC-122 (SF-045): any other failure to read the connection is
+        the 500 `{"error":"internal error"}`, never "not connected".
       responses:
         '500':
           $ref: '#/components/responses/SessionGenerationUnavailable'
@@ -753,7 +757,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "503":
           description: >-
-            `NOTION_CLIENT_ID` is unset. Body: `{"error":"Notion not configured"}`.
+            `NOTION_CLIENT_ID` is unset, or (PAC-122 SF-081) `NOTION_REDIRECT_URI` is unset,
+            which would only send the user to Notion's own error page. Body:
+            `{"error":"Notion not configured"}`. No state cookie is set.
           content:
             application/json:
               schema:
@@ -808,8 +814,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "502":
           description: >-
-            The token exchange failed (transport error, unparseable JSON, or a non-empty
-            `error` field from Notion). Body: `{"error":"upstream provider error"}`.
+            The token exchange failed (transport error, unparseable JSON, a non-empty
+            `error` field from Notion, or, since PAC-122 SF-023, a non-2xx status whatever
+            its body holds, or a 2xx with no `access_token`). Nothing is stored. Body: `{"error":"upstream provider error"}`.
             Notion's string is not returned. The detail is written to the server log and
             Sentry only (PAC-21).
           content:
@@ -822,7 +829,11 @@ paths:
       operationId: getNotionStatus
       tags: [integrations]
       summary: Whether Notion is connected for this user
-      description: 'Always 200. Any storage error collapses into `{"connected": false}` with no `workspace_name` key.'
+      description: |
+        `{"connected": false}` with no `workspace_name` key when no Notion connection is
+        stored, or when its stored token cannot be decrypted (PAC-84 AC-16b). PAC-122
+        (SF-045): any other failure to read the connection is the 500
+        `{"error":"internal error"}`, never "not connected".
       responses:
         '500':
           $ref: '#/components/responses/SessionGenerationUnavailable'

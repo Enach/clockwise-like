@@ -1,0 +1,69 @@
+package auth
+
+import (
+	"database/sql"
+	"strings"
+	"testing"
+	"time"
+
+	"golang.org/x/oauth2"
+)
+
+// failingOutlookRead is a Querier whose read of the stored Outlook
+// credential fails; every other statement runs on the database.
+type failingOutlookRead struct{ *sql.DB }
+
+func (f failingOutlookRead) QueryRow(q string, args ...any) *sql.Row {
+	if strings.Contains(q, "microsoft_tokens FROM settings") {
+		return f.DB.QueryRow(`SELECT (1/0)::text`)
+	}
+	return f.DB.QueryRow(q, args...)
+}
+
+// PAC-122 SF-007: a failed read of the Outlook credential is an error, never
+// "no credential" (as LoadUserToken). No row and an empty column still are.
+func TestPAC122_SF007_OutlookReadFailureIsAnError(t *testing.T) {
+	db := openTestDB(t)
+	uid := seedUser(t, db, "pac122-sf007-load@example.com")
+	if tok, err := LoadMicrosoftToken(db, uid); tok != nil || err != nil {
+		t.Fatalf("no settings row = %v, %v; want nil, nil", tok, err)
+	}
+	if _, err := db.Exec(`INSERT INTO settings (user_id) VALUES ($1)`, uid); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := LoadMicrosoftToken(db, uid); tok != nil || err != nil {
+		t.Fatalf("no stored credential = %v, %v; want nil, nil", tok, err)
+	}
+	if err := SaveMicrosoftToken(db, uid, &oauth2.Token{AccessToken: "a1", RefreshToken: "r1", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := LoadMicrosoftToken(failingOutlookRead{db}, uid)
+	if err == nil || tok != nil {
+		t.Fatalf("failed read = %v, %v; want the error", tok, err)
+	}
+}
+
+// PAC-122 SF-007: a store without a refresh token keeps the stored one; when
+// the stored one cannot be read the store is refused, so the credential is
+// never replaced by one that cannot be renewed.
+func TestPAC122_SF007_StoreWithoutRefreshRefusedOnReadFailure(t *testing.T) {
+	db := openTestDB(t)
+	uid := seedUser(t, db, "pac122-sf007-store@example.com")
+	if err := SaveMicrosoftToken(db, uid, &oauth2.Token{AccessToken: "a1", RefreshToken: "r1", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := StoreMicrosoftCredential(failingOutlookRead{db}, uid, &oauth2.Token{AccessToken: "a2", Expiry: time.Now().Add(time.Hour)}, false); err == nil {
+		t.Fatal("a store whose refresh token could not be carried over succeeded")
+	}
+	got, err := LoadMicrosoftToken(db, uid)
+	if err != nil || got == nil || got.AccessToken != "a1" || got.RefreshToken != "r1" {
+		t.Fatalf("stored credential = %+v, %v; want a1/r1 untouched", got, err)
+	}
+	// Unchanged: a readable stored credential gives its refresh token.
+	if err := StoreMicrosoftCredential(db, uid, &oauth2.Token{AccessToken: "a3", Expiry: time.Now().Add(time.Hour)}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadMicrosoftToken(db, uid); err != nil || got.AccessToken != "a3" || got.RefreshToken != "r1" {
+		t.Fatalf("after a store without refresh = %+v, %v; want a3/r1", got, err)
+	}
+}

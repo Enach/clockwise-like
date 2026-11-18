@@ -21,6 +21,7 @@ import (
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/domain"
 	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
@@ -185,12 +186,21 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	// PAC-68's organisation rule, evaluated for the account the identity is
 	// bound to (never one reached by address), on the address it holds.
-	_ = storage.AssociateUserWithOrg(h.db, res.User.ID, res.User.Email)
+	associateOrg(h.db, res.User.ID, res.User.Email)
 	if err := h.issueJWT(w, res.User, res.Gen); err != nil {
 		h.signInFailed(w, r, "issue session", err)
 		return
 	}
 	http.Redirect(w, r, h.frontendURL+"/auth/callback", http.StatusFound)
+}
+
+// associateOrg applies PAC-68's organisation rule after a sign-in. A failure
+// does not refuse the sign-in (the next sign-in applies the rule again), but
+// it is logged and reported, by user id only (PAC-122 SF-071).
+func associateOrg(db storage.DBTX, userID uuid.UUID, email string) {
+	if err := storage.AssociateUserWithOrg(db, userID, email); err != nil {
+		lifecycle.Fail(lifecycle.Unit{Kind: "org-association", ID: userID.String()}, err)
+	}
 }
 
 // --- Microsoft -------------------------------------------------------------
@@ -311,7 +321,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		h.signInFailed(w, r, "creating or binding the account failed", err)
 		return
 	}
-	_ = storage.AssociateUserWithOrg(h.db, res.User.ID, res.User.Email)
+	associateOrg(h.db, res.User.ID, res.User.Email)
 	if err := h.issueJWT(w, res.User, res.Gen); err != nil {
 		h.signInFailed(w, r, "issue session", err)
 		return

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -116,8 +117,16 @@ func StoreMicrosoftCredential(db storage.Querier, userID uuid.UUID, token *oauth
 		Expiry:       token.Expiry.UTC(),
 	}
 	if rec.RefreshToken == "" {
-		if old, err := LoadMicrosoftToken(db, userID); err == nil && old != nil {
+		// PAC-122 SF-007: a renewal without a refresh token keeps the stored
+		// one. A stored credential that cannot be read refuses the store, so
+		// a read failure never replaces it with one that cannot be renewed;
+		// an undecryptable one (PAC-84) is unrecoverable, and is replaced.
+		old, err := LoadMicrosoftToken(db, userID)
+		switch {
+		case err == nil && old != nil:
 			rec.RefreshToken = old.RefreshToken
+		case err != nil && !errors.Is(err, secretbox.ErrDecrypt):
+			return fmt.Errorf("SaveMicrosoftToken: read the stored credential: %w", err)
 		}
 	}
 	data, err := json.Marshal(rec)
@@ -156,11 +165,18 @@ func MicrosoftConfigFromEnv() *MicrosoftConfig {
 }
 
 // LoadMicrosoftToken returns userID's Outlook credential, or nil when they
-// have none.
+// have none. A read failure is returned, never read as "none" (PAC-122
+// SF-007, as LoadUserToken).
 func LoadMicrosoftToken(db storage.Querier, userID uuid.UUID) (*oauth2.Token, error) {
 	row := db.QueryRow(`SELECT microsoft_tokens FROM settings WHERE user_id = $1`, userID)
 	var raw sql.NullString
-	if err := row.Scan(&raw); err != nil || !raw.Valid || raw.String == "" {
+	if err := row.Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !raw.Valid || raw.String == "" {
 		return nil, nil
 	}
 	// PAC-84: a decryption failure is returned (errors.Is secretbox.ErrDecrypt).
