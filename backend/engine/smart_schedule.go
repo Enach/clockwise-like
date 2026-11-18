@@ -109,7 +109,12 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 	}
 
 	// The requester's own focus blocks; calClient uses the same user.
-	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(storage.Bind(ctx, e.DB), auth.UserIDFromContext(ctx), req.RangeStart)
+	// PAC-141 SF-111: a failed read is the error (the operation's 500), never
+	// "no focus blocks", which would offer slots over the caller's focus time.
+	focusBlocks, err := storage.ListFocusBlocksForUserWeek(storage.Bind(ctx, e.DB), auth.UserIDFromContext(ctx), req.RangeStart)
+	if err != nil {
+		return nil, fmt.Errorf("focus blocks: %w", err)
+	}
 	allowOutOfHours, err := canScheduleOutOfHours(ctx, client, s, req.RangeStart)
 	if err != nil {
 		return nil, fmt.Errorf("count out-of-hours meetings: %w", err)

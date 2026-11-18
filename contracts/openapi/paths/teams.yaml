@@ -1335,6 +1335,11 @@ paths:
         when their reported windows blocked other slots, and no offered slot overlaps
         any reported window.
 
+        Focus blocks (PAC-141 SF-112): a Paceday member whose focus blocks cannot be read
+        is counted unknown, never free, even when their calendar was read; busy windows
+        already read from their calendar still block. Their focus time is then not in
+        the slot's quality_score.
+
         Batching (spec §3.5, D-11): the added people are requested from the owner's
         provider in batches of at most 50 addresses (Google `freebusy.query`) or 20
         (Microsoft Graph `getSchedule`), at most 3 batches at a time, each on its own
@@ -2297,17 +2302,22 @@ components:
         PAC-34 acceptance criteria name and the web normalizer reads (see
         contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and
         expires_at come from the invite row itself, so they are always present. The team
-        and inviter rows are read separately and a failed read is not an error: teamName
-        and inviterName become "" and inviter_email becomes null.
+        and inviter rows are read separately. A failed read of either is the operation's
+        500, never a 200 with a blank name (PAC-141 SF-110; before PAC-141 it was a 200
+        with teamName and inviterName "" and inviter_email null). A row that does not
+        exist (not a failed read) still gives "" and null; team_id and invited_by both
+        cascade on delete, so it does not arise in practice.
       properties:
         teamName:
           type: string
-          description: Empty string when the team row could not be read.
+          description: >
+            Empty string when the team row does not exist. A failed read is the 500
+            (PAC-141).
         inviterName:
           type: string
           description: >
             The inviter's DISPLAY NAME, not their email. Empty string when the user row
-            could not be read.
+            does not exist or holds no name. A failed read is the 500 (PAC-141).
         email:
           type: string
           format: email
@@ -2329,9 +2339,9 @@ components:
           format: email
           description: >
             The inviter's account email, users.email of team_invites.invited_by (PAC-34).
-            null, never "", when the inviter's user row could not be read. invited_by is
-            NOT NULL with ON DELETE CASCADE, so a deleted inviter removes the invite (404),
-            and null only arises from a failed read.
+            null, never "", when the inviter's user row holds no email or does not exist.
+            invited_by is NOT NULL with ON DELETE CASCADE, so a deleted inviter removes the
+            invite (404). A failed read of the row is the 500, never null (PAC-141).
       required: [teamName, inviterName, email, team_id, expires_at, inviter_email]
       additionalProperties: false
 

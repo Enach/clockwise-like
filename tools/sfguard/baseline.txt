@@ -16,13 +16,13 @@
 #
 # Verdicts, checked by reading each call site against the register:
 #   known SF-NNN  a register row already describes it (fix lands with that row)
-#   unregistered  a real silent default the register does not list; tracked by
-#                 PAC-141 (PAC-140's four operator encryption lines were
-#                 fixed and removed)
+#   unregistered  a real silent default the register does not list (none
+#                 left: PAC-140 fixed its four operator encryption lines and
+#                 PAC-141 its six (SF-109 to SF-112); both removed their lines)
 #   fine          the discard carries no default anyone reads as an answer
 #
-# Totals: 20 entries = 5 known SF + 6 unregistered (PAC-141) + 9 fine
-# (24 at landing; PAC-140 removed its 4). mcp/: 0 (it is an
+# Totals: 14 entries = 5 known SF + 9 fine
+# (24 at landing; PAC-140 removed its 4, PAC-141 its 6). mcp/: 0 (it is an
 # HTTP client of the API and calls none of the targeted packages).
 
 # ── known SF rows ────────────────────────────────────────────────────────────
@@ -31,14 +31,6 @@ backend/api/handlers_auth.go  (*authHandlers).status  storage.IsCredentialLost  
 backend/engine/meeting_brief_service.go  (*MeetingBriefService).Generate  storage.UpsertMeetingBriefCtx  # PAC-122 known SF-022: "every upsert error is discarded" (pending row)
 backend/engine/meeting_brief_service.go  (*MeetingBriefService).Generate  storage.UpsertMeetingBriefCtx  # PAC-122 known SF-022: the "LLM not configured" failed brief
 backend/engine/meeting_brief_service.go  (*MeetingBriefService).Generate  storage.UpsertMeetingBriefCtx  # PAC-122 known SF-022: the final ready/failed brief is returned as saved
-
-# ── unregistered: real silent defaults, tracked by PAC-141 ───────────────────
-backend/api/handlers_daily_recap.go  (*dailyRecapHandlers).preview  sql.Row.Scan  # PAC-141 unregistered: a users read error previews the recap with an empty name
-backend/api/handlers_daily_recap.go  (*dailyRecapHandlers).test  sql.Row.Scan  # PAC-141 unregistered: same, for the test send
-backend/api/handlers_teams.go  (*teamHandlers).getInvite  storage.GetTeam  # PAC-141 unregistered: invite preview shows a blank team name on a read error (SF-077 fixed only the email path)
-backend/api/handlers_teams.go  (*teamHandlers).getInvite  storage.GetUserByID  # PAC-141 unregistered: invite preview shows a blank inviter on a read error (sibling of SF-077)
-backend/engine/smart_schedule.go  (*SmartScheduler).Suggest  storage.ListFocusBlocksForUserWeek  # PAC-141 unregistered: a focus-block read error suggests slots over focus time (the SF-013 shape)
-backend/engine/team_availability.go  (*TeamAvailabilityEngine).memberBusy  storage.ListFocusBlocksForUserWeek  # PAC-141 unregistered: a focus-block read error scores the member as having no focus time
 
 # ── fine: no default is read as an answer ────────────────────────────────────
 backend/engine/freebusy_service.go  (*FreeBusyService).Query  calendar.CalendarClient.GetFreeBusy  # PAC-122 fine: nil result settles every address as coverage "unknown" (pinned §5, PAC-72 D-6; SF-032 fixed by PAC-133)

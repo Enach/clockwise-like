@@ -325,14 +325,26 @@ func (h *teamHandlers) getInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invite is "+invite.Status, http.StatusGone)
 		return
 	}
-	team, _ := storage.GetTeam(h.db, invite.TeamID)
-	inviter, _ := storage.GetUserByID(h.db, invite.InvitedBy)
+	// PAC-141 SF-110: a failed team or inviter read is the documented 500,
+	// never a preview with a blank team or inviter. A row that does not exist
+	// (sql.ErrNoRows) is not a failure: its name is "" and inviter_email null,
+	// as the contract's TeamInvitePreview states.
+	team, err := storage.GetTeam(h.db, invite.TeamID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeServerError(w, r, "getInvite: team", err, http.StatusInternalServerError)
+		return
+	}
+	inviter, err := storage.GetUserByID(h.db, invite.InvitedBy)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeServerError(w, r, "getInvite: inviter", err, http.StatusInternalServerError)
+		return
+	}
 	teamName := ""
 	if team != nil {
 		teamName = team.Name
 	}
 	inviterName := ""
-	// inviter_email is null, never "", when the inviter row cannot be read or
+	// inviter_email is null, never "", when the inviter row does not exist or
 	// holds no email, so the contract's format: email holds (PAC-34 D-4).
 	var inviterEmail *string
 	if inviter != nil {
