@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/Enach/paceday/backend/storage"
@@ -209,6 +210,10 @@ func (s *renewingSource) Token() (*oauth2.Token, error) {
 	cancel()
 	if err != nil {
 		log.Printf("credential: renewed %s token for user %s not stored: %v", s.provider, s.owner, err)
+		// PAC-122 SF-073: with a rotating provider the stored refresh token
+		// is now dead; the owner will be asked to reconnect, so say so.
+		lifecycle.Report(lifecycle.Unit{Kind: "credential-renewal", ID: s.owner.String()},
+			fmt.Errorf("credential: renewed %s token for user %s not stored: %w", s.provider, s.owner, err))
 	}
 	s.cur = renewed
 	return copyToken(renewed), nil

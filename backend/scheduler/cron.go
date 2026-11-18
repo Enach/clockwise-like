@@ -77,7 +77,7 @@ func (fc *FocusCron) Start() {
 			case <-t.C:
 				// PAC-81 AC-A6: each tick is a tracked unit, awaited by the drain.
 				at := fc.now()
-				lifecycle.Go(lifecycle.Unit{Kind: "cron", ID: "focus-scheduler"}, func(context.Context) { fc.tick(at) })
+				lifecycle.Go(focusUnit, func(context.Context) { fc.tick(at) })
 			}
 		}
 	}()
@@ -105,7 +105,7 @@ func (fc *FocusCron) tick(at time.Time) bool {
 
 	candidates, err := storage.ListAutoScheduleCandidates(fc.db)
 	if err != nil {
-		fc.logf("focus scheduler: listing auto-schedule users: %v", err)
+		fc.fail("focus scheduler: listing auto-schedule users: %v", err)
 		return true
 	}
 	for _, c := range candidates {
@@ -126,19 +126,19 @@ func (fc *FocusCron) tick(at time.Time) bool {
 func (fc *FocusCron) consider(c storage.AutoScheduleCandidate, at time.Time) {
 	sched, err := engine.ParseAutoScheduleCron(c.CronExpr)
 	if err != nil {
-		fc.logf("focus scheduler: skipping user %s: stored schedule %q is not usable: %v", c.UserID, c.CronExpr, err)
+		fc.fail("focus scheduler: skipping user %s: stored schedule %q is not usable: %v", c.UserID, c.CronExpr, err)
 		return
 	}
 	loc, err := time.LoadLocation(c.Timezone)
 	if err != nil {
-		fc.logf("focus scheduler: skipping user %s: stored timezone %q is not usable: %v", c.UserID, c.Timezone, err)
+		fc.fail("focus scheduler: skipping user %s: stored timezone %q is not usable: %v", c.UserID, c.Timezone, err)
 		return
 	}
 
 	if c.LastRun == nil {
 		// Only a direct database edit produces this: treat it as "now".
 		if _, err := storage.AdvanceAutoScheduleWatermark(fc.db, c.UserID, nil, at); err != nil {
-			fc.logf("focus scheduler: setting the watermark for user %s: %v", c.UserID, err)
+			fc.fail("focus scheduler: setting the watermark for user %s: %v", c.UserID, err)
 		}
 		return
 	}
@@ -151,7 +151,7 @@ func (fc *FocusCron) consider(c storage.AutoScheduleCandidate, at time.Time) {
 	}
 	advanced, err := storage.AdvanceAutoScheduleWatermark(fc.db, c.UserID, c.LastRun, at)
 	if err != nil {
-		fc.logf("focus scheduler: advancing the watermark for user %s: %v", c.UserID, err)
+		fc.fail("focus scheduler: advancing the watermark for user %s: %v", c.UserID, err)
 		return
 	}
 	if !advanced {
@@ -187,14 +187,28 @@ func (fc *FocusCron) runOne(userID uuid.UUID, week time.Time) {
 	case o := <-out:
 		switch {
 		case o.err != nil:
-			fc.logf("focus scheduler: run for user %s failed: %v", userID, o.err)
+			fc.fail("focus scheduler: run for user %s failed: %v", userID, o.err)
 		case o.result != nil:
 			fc.logf("focus scheduler: run for user %s created %d blocks (%d min), %d day errors",
 				userID, len(o.result.CreatedBlocks), o.result.TotalMinutes, len(o.result.Errors))
+			// PAC-122 SF-098: each day's error, not only their count.
+			for _, e := range o.result.Errors {
+				fc.fail("focus scheduler: run for user %s: day error: %s", userID, e)
+			}
 		}
 	case <-ctx.Done():
-		fc.logf("focus scheduler: run for user %s abandoned after %s", userID, fc.runTimeout)
+		fc.fail("focus scheduler: run for user %s abandoned after %s", userID, fc.runTimeout)
 	}
+}
+
+// focusUnit tags the focus scheduler's reported failures.
+var focusUnit = lifecycle.Unit{Kind: "cron", ID: "focus-scheduler"}
+
+// fail logs a failure of the loop and reports it through the lifecycle hook
+// (PAC-122 SF-098). The loop carries on: the watermark rules are unchanged.
+func (fc *FocusCron) fail(format string, args ...any) {
+	fc.logf(format, args...)
+	lifecycle.Report(focusUnit, fmt.Errorf(format, args...))
 }
 
 // nextSlot is the user's first slot strictly after the watermark, in loc.

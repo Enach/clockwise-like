@@ -104,10 +104,12 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 		// PAC-81 AC-A6: a tracked unit, awaited by the drain (own 30 s).
 		// PAC-71: GoFrom keeps the request's values, so the session guard
 		// stays: detection's token load and roster writes are re-checked.
-		lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "manager-detection", ID: userID.String()}, func(work context.Context) {
+		// PAC-122 SF-096: its error is logged and reported, not discarded.
+		lifecycle.GoFromErr(r.Context(), lifecycle.Unit{Kind: "manager-detection", ID: userID.String()}, func(work context.Context) error {
 			ctx, cancel := context.WithTimeout(work, 30*time.Second)
 			defer cancel()
-			_, _ = eng.DetectTeam(ctx, userID)
+			_, err := eng.DetectTeam(ctx, userID)
+			return err
 		})
 	}
 	p, err := storage.GetOrCreateUserProfileCtx(r.Context(), h.db, userID)
