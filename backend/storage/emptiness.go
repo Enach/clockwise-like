@@ -36,6 +36,7 @@ var accountDataChecks = []accountDataCheck{
 	{"team_created", `SELECT EXISTS (SELECT 1 FROM teams WHERE created_by = $1)`},                                                  // D9
 	{"team_membership", `SELECT EXISTS (SELECT 1 FROM team_members WHERE user_id = $1)`},                                           // D9
 	{"team_invite_sent", `SELECT EXISTS (SELECT 1 FROM team_invites WHERE invited_by = $1)`},                                       // D9
+	{"team_person_added", `SELECT EXISTS (SELECT 1 FROM team_added_members WHERE added_by = $1)`},                                  // D9, PAC-129 (migration 041)
 	{"scheduling_link_owned", `SELECT EXISTS (SELECT 1 FROM scheduling_links WHERE owner_user_id = $1)`},                           // D10
 	{"scheduling_link_host", `SELECT EXISTS (SELECT 1 FROM scheduling_link_hosts WHERE user_id = $1)`},                             // D10
 	{"booking", `SELECT EXISTS (SELECT 1 FROM bookings b JOIN scheduling_links l ON l.id = b.link_id WHERE l.owner_user_id = $1)`}, // D11
@@ -72,14 +73,17 @@ var accountDataChecks = []accountDataCheck{
 // counts a row there as non-empty (fail closed, spec §3 rule (b)), and
 // TestPAC71_EveryUserForeignKeyIsClassified fails until it is classified.
 var classifiedUserRefs = map[string]bool{
-	"oauth_tokens.user_id":           true,
-	"settings.user_id":               true,
-	"workspace_connections.user_id":  true,
-	"personal_calendars.user_id":     true,
-	"credential_losses.user_id":      true,
-	"teams.created_by":               true,
-	"team_members.user_id":           true,
-	"team_invites.invited_by":        true,
+	"oauth_tokens.user_id":          true,
+	"settings.user_id":              true,
+	"workspace_connections.user_id": true,
+	"personal_calendars.user_id":    true,
+	"credential_losses.user_id":     true,
+	"teams.created_by":              true,
+	"team_members.user_id":          true,
+	"team_invites.invited_by":       true,
+	// PAC-129 (migration 041): ON DELETE SET NULL; the team_person_added check
+	// above makes an account that added someone non-empty.
+	"team_added_members.added_by":    true,
 	"scheduling_links.owner_user_id": true,
 	"scheduling_link_hosts.user_id":  true,
 	// PAC-119 (migration 040): a link-create key row always names a link of

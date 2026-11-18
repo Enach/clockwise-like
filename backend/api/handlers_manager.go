@@ -237,7 +237,7 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	priorWeekStart := weekStart.Add(-7 * 24 * time.Hour)
 
-	members, err := h.listManagerMembers(userID, teamID)
+	members, err := h.listManagerMembers(userID, teamID, includeAdded(r))
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -261,8 +261,11 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 
 	var result []memberResp
 	for _, m := range members {
-		thisWeek, _ := eng.GetMemberWeek(r.Context(), userID, m, weekStart)
-		lastWeek, _ := eng.GetMemberWeek(r.Context(), userID, m, priorWeekStart)
+		var thisWeek, lastWeek *engine.MemberWeekStats
+		if m.Source != "added" { // PAC-129: no calendar read, nothing stored
+			thisWeek, _ = eng.GetMemberWeek(r.Context(), userID, m, weekStart)
+			lastWeek, _ = eng.GetMemberWeek(r.Context(), userID, m, priorWeekStart)
+		}
 		if thisWeek == nil {
 			thisWeek = &engine.MemberWeekStats{}
 		}
@@ -363,50 +366,38 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	teamID, ok := h.managerTeamScope(w, r, userID, true)
-	if !ok {
-		return
-	}
 	email := managerEmailParam(r)
-	if teamID == nil {
+	raw := strings.TrimSpace(r.URL.Query().Get("team_id"))
+	if raw == "" {
 		if err := storage.DeleteManagerTeamMemberByEmailCtx(r.Context(), h.db, userID, email); err != nil {
 			writeServerError(w, r, "remove member", err, http.StatusInternalServerError)
 			return
 		}
-	} else {
-		// PAC-71 revoking site: every account carrying the address, at any
-		// standing and in any letter case, loses its formal membership (spec
-		// AC-43); if the owner is among them nothing is removed (422).
-		targets, terr := storage.CarrierIDs(h.db, []string{email})
-		if terr != nil {
-			writeServerError(w, r, "remove member: lookup", terr, http.StatusInternalServerError)
-			return
-		}
-		members := make([]uuid.UUID, 0, len(targets))
-		for _, targetID := range targets {
-			membership, memberErr := storage.GetTeamMember(h.db, *teamID, targetID)
-			if errors.Is(memberErr, sql.ErrNoRows) {
-				continue // not a member of this team
-			}
-			if memberErr != nil {
-				// PAC-122 SF-001: only "no row" means not a member.
-				writeServerError(w, r, "remove member: membership", memberErr, http.StatusInternalServerError)
-				return
-			}
-			if membership.Role == "owner" {
-				writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
-				return
-			}
-			members = append(members, targetID)
-		}
-		// PAC-122 SF-001: the memberships, the assignment and the pending
-		// invites go in one transaction, so a failure removes nothing.
-		if err := storage.RemoveManagerTeamMemberFromTeamCtx(r.Context(), h.db, userID, *teamID, email, members); err != nil {
-			writeServerError(w, r, "remove member", err, http.StatusInternalServerError)
-			return
-		}
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	teamID, err := uuid.Parse(raw)
+	if err != nil {
+		writeError(w, "team_id must be a valid UUID", http.StatusBadRequest)
+		return
+	}
+	// PAC-129 (contract §5.3, D-8): one transaction under the team lock, with
+	// the owner check, the carrier lookup (PAC-71 revoking site: every account
+	// carrying the address, at any standing, in any letter case) and the
+	// membership reads inside it; then the memberships, this team's
+	// assignment, the added entry and every invitation of the team for the
+	// address (P3-m1: matched on lower(TrimAddressSpace(path))).
+	err = storage.RemoveManagerTeamPersonCtx(r.Context(), h.db, userID, teamID, email)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, storage.ErrNotTeamOwner):
+		writeError(w, "forbidden", http.StatusForbidden)
+	case errors.Is(err, storage.ErrLastOwner):
+		writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
+	default:
+		writeServerError(w, r, "remove member", err, http.StatusInternalServerError)
+	}
 }
 
 func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
@@ -426,6 +417,10 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := h.getOrCreateScopedMember(r.Context(), userID, teamID, email)
+	if errors.Is(err, errAddedWithoutRoster) {
+		writeError(w, msgAddedWithoutRoster, http.StatusUnprocessableEntity)
+		return
+	}
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -488,7 +483,7 @@ func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 	}
 	// Compute over the roster in scope, so a team's own members and cadences
 	// are what count (PAC-54).
-	members, err := h.listManagerMembers(userID, teamID)
+	members, err := h.listManagerMembers(userID, teamID, false)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -529,6 +524,10 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 	}
 
 	m, err := h.getOrCreateScopedMember(r.Context(), userID, teamID, email)
+	if errors.Is(err, errAddedWithoutRoster) {
+		writeError(w, msgAddedWithoutRoster, http.StatusUnprocessableEntity)
+		return
+	}
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -570,7 +569,7 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		weekStart = t
 	}
 	months := 3
-	members, err := h.listManagerMembers(userID, teamID)
+	members, err := h.listManagerMembers(userID, teamID, teamID != nil && includeAdded(r))
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -601,7 +600,10 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		anyMeasured := false
 		for i := 0; i < numWeeks; i++ {
 			ws := weekStart.Add(time.Duration(-i*7) * 24 * time.Hour)
-			stats, _ := eng.GetMemberWeek(r.Context(), userID, m, ws)
+			var stats *engine.MemberWeekStats
+			if m.Source != "added" { // PAC-129: unmeasured, team_analytics_cache never written
+				stats, _ = eng.GetMemberWeek(r.Context(), userID, m, ws)
+			}
 			if stats == nil {
 				stats = &engine.MemberWeekStats{}
 			}
@@ -659,7 +661,7 @@ func (h *managerHandlers) managerTeamScope(w http.ResponseWriter, r *http.Reques
 	return &teamID, true
 }
 
-func (h *managerHandlers) listManagerMembers(userID uuid.UUID, teamID *uuid.UUID) ([]*storage.ManagerTeamMember, error) {
+func (h *managerHandlers) listManagerMembers(userID uuid.UUID, teamID *uuid.UUID, withAdded bool) ([]*storage.ManagerTeamMember, error) {
 	if teamID == nil {
 		return storage.ListManagerTeamMembers(h.db, userID)
 	}
@@ -695,6 +697,31 @@ func (h *managerHandlers) listManagerMembers(userID uuid.UUID, teamID *uuid.UUID
 			DisplayName:   displayName,
 			Source:        "formal",
 			Cadence:       "none",
+		}
+	}
+	// PAC-129 (contract §5.1): with include_added, the team's added people
+	// with no assignment and no formal membership, read-only: no account
+	// signal (MemberUserID nil), cadence none, never measured or stored.
+	if withAdded {
+		added, err := storage.ListAddedMembers(h.db, *teamID)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range added {
+			if _, exists := byEmail[a.Email]; exists {
+				continue
+			}
+			displayName := strings.TrimSpace(a.DisplayName)
+			if displayName == "" {
+				displayName = strings.Split(a.Email, "@")[0]
+			}
+			byEmail[a.Email] = &storage.ManagerTeamMember{
+				ManagerUserID: userID,
+				MemberEmail:   a.Email,
+				DisplayName:   displayName,
+				Source:        "added",
+				Cadence:       "none",
+			}
 		}
 	}
 	result := make([]*storage.ManagerTeamMember, 0, len(byEmail))
@@ -742,7 +769,25 @@ func (h *managerHandlers) getOrCreateScopedMember(ctx context.Context, userID uu
 		}
 		return member, nil
 	}
+	// PAC-129 (contract §5.2, D-13): a person added to the team with no roster
+	// entry on it is read-only here; nothing is written for them.
+	if _, err := storage.GetAddedMember(h.db, *teamID, email); err == nil {
+		return nil, errAddedWithoutRoster
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	return nil, sql.ErrNoRows
+}
+
+// errAddedWithoutRoster is the patch and schedule 422 for a person added to
+// the team who has no roster entry on it (PAC-129 spec §3.9, AC-31).
+var errAddedWithoutRoster = errors.New(msgAddedWithoutRoster)
+
+const msgAddedWithoutRoster = "this person was added to the team without Paceday access; add them with Add person to track 1:1s"
+
+// includeAdded reads include_added: only "true" is true (PAC-129).
+func includeAdded(r *http.Request) bool {
+	return r.URL.Query().Get("include_added") == "true"
 }
 
 func currentWeekStart() time.Time {
@@ -755,8 +800,13 @@ func currentWeekStart() time.Time {
 	return time.Date(monday.Year(), monday.Month(), monday.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+// normalizeManagerEmail is the one address normaliser (PAC-129 contract §3.0):
+// trim the address set of contract §2.2 (storage.TrimAddressSpace), lowercase,
+// then net/mail.ParseAddress, whose address must equal the result. Manager
+// add, detection confirm, inviteTeamMember, addTeamPerson, removeTeamPerson
+// and the Manager {email} paths use it, and storage writes the same form.
 func normalizeManagerEmail(raw string) (string, error) {
-	email := strings.ToLower(strings.TrimSpace(raw))
+	email := strings.ToLower(storage.TrimAddressSpace(raw))
 	if email == "" {
 		return "", fmt.Errorf("email is required")
 	}

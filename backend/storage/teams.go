@@ -207,6 +207,11 @@ func GetTeamMember(db DBTX, teamID, userID uuid.UUID) (*TeamMember, error) {
 }
 
 func ListTeamMembers(db DBTX, teamID uuid.UUID) ([]*TeamMember, error) {
+	if fn, ok := teamMembersListRead.get(); ok {
+		if err := fn(teamID); err != nil {
+			return nil, err
+		}
+	}
 	rows, err := db.Query(`
 		SELECT tm.team_id, tm.user_id, tm.role, tm.joined_at,
 		       COALESCE(u.name,''), COALESCE(u.email,'')
@@ -231,7 +236,11 @@ func ListTeamMembers(db DBTX, teamID uuid.UUID) ([]*TeamMember, error) {
 
 // --- Invites ---
 
+// CreateTeamInvite stores the address as lower(TrimAddressSpace(address))
+// whatever the caller passes (PAC-129 contract §2.2, challenge M-2): migration
+// 041's CHECK holds every invitee address in that form.
 func CreateTeamInvite(db Querier, teamID uuid.UUID, inviteeEmail string, invitedBy uuid.UUID) (*TeamInvite, error) {
+	inviteeEmail = NormaliseStoredAddress(inviteeEmail)
 	token := uuid.New().String()
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 	row := db.QueryRow(`

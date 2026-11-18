@@ -435,6 +435,11 @@ const analyticsCache4h = 4 * time.Hour
 const totalWorkMinutesPerWeek = 5 * 8 * 60 // Mon–Fri, 8h/day
 
 func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember, weekStart time.Time) (*MemberWeekStats, error) {
+	// PAC-129 (spec §3.9, AC-31): a person added to the team with no roster
+	// entry is never measured here and nothing is stored for them.
+	if member.Source == "added" {
+		return &MemberWeekStats{}, nil
+	}
 	// A Paceday user's minutes are visible only to an owner of a team that user
 	// is on. Without this, anyone could add a colleague's email to their 1:1
 	// list and read their week (PAC-60). Checked before the cache, so figures
