@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Enach/paceday/backend/internal/outbound"
@@ -79,4 +80,34 @@ func (t *TeamsProvider) CreateMeeting(ctx context.Context, title string, start, 
 		JoinURL:   result.JoinURL,
 		MeetingID: result.ID,
 	}, nil
+}
+
+// DeleteMeeting deletes an online meeting this provider created
+// (PAC-122 SF-069).
+func (t *TeamsProvider) DeleteMeeting(ctx context.Context, meetingID string) error {
+	accessToken, err := bearer(t.Tokens, t.AccessToken)
+	if err != nil {
+		return err
+	}
+	return deleteAt(ctx, GraphBase+"/me/onlineMeetings/"+url.PathEscape(meetingID), accessToken, "teams")
+}
+
+// deleteAt sends an authenticated DELETE; 2xx and 404 (already gone) are
+// success.
+func deleteAt(ctx context.Context, url, accessToken, provider string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := outbound.ProviderClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("%s: delete meeting: HTTP %d", provider, resp.StatusCode)
+	}
+	return nil
 }

@@ -236,6 +236,8 @@ type pac67Calendar struct {
 	puts    int
 	inserts int
 	failAll bool
+	// failPut answers every event update with a 503 (PAC-122 SF-069).
+	failPut bool
 }
 
 func newPAC67Calendar(t *testing.T) *pac67Calendar {
@@ -244,7 +246,7 @@ func newPAC67Calendar(t *testing.T) *pac67Calendar {
 		c.mu.Lock()
 		c.bearers = append(c.bearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		busy := c.busyFor[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
-		fail := c.failAll
+		fail := c.failAll || (c.failPut && (r.Method == http.MethodPut || r.Method == http.MethodPatch))
 		if r.Method == http.MethodPut {
 			c.puts++
 		}
@@ -332,4 +334,3 @@ func (c *pac67Calendar) insertCount() int {
 	defer c.mu.Unlock()
 	return c.inserts
 }
-

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/conference"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
@@ -29,7 +32,7 @@ type generatedServer struct {
 	gen.StrictServerInterface
 	db  *sql.DB
 	ch  *conferencingHandlers
-	sso *ssoHandlers // getSsoStepupOptions only (PAC-50)
+	sso *ssoHandlers  // getSsoStepupOptions only (PAC-50)
 	ah  *authHandlers // startGoogleConnect, startMicrosoftConnect (PAC-71)
 	// orgAI serves the organisation AI operations (PAC-73 Part 2).
 	orgAI *orgAIHandlers
@@ -343,7 +346,26 @@ func (s *generatedServer) AddEventConference(ctx context.Context, req gen.AddEve
 	}
 	setExternalConference(event, requested, details.JoinURL)
 	if _, err := client.UpdateEvent(ctx, client.CurrentCalendarID(), eventID, event); err != nil {
+		// PAC-122 SF-069: the meeting just created is deleted at the
+		// provider, so the 500 does not leave it orphaned there.
+		discardUnattachedMeeting(ctx, provider, requested, details.MeetingID)
 		return gen.AddEventConference500JSONResponse{Error: serverFailure(ctx, "update failed", err, http.StatusInternalServerError)}, nil
 	}
 	return eventLink(requested, details.JoinURL, strings.ToUpper(requested)), nil
+}
+
+// discardUnattachedMeeting deletes a provider meeting that could not be
+// attached to its event (PAC-122 SF-069). The delete runs on a context the
+// request's end does not cancel; a failure is logged and reported with the
+// provider and the meeting's id only.
+func discardUnattachedMeeting(ctx context.Context, provider conference.Provider, name, meetingID string) {
+	deleter, ok := provider.(conference.MeetingDeleter)
+	if !ok || meetingID == "" {
+		return
+	}
+	if err := deleter.DeleteMeeting(context.WithoutCancel(ctx), meetingID); err != nil {
+		err = fmt.Errorf("addEventConference: %s meeting %s left at the provider after a failed event update: %w", name, meetingID, err)
+		log.Printf("ERROR: %v", err)
+		lifecycle.Report(lifecycle.Unit{Kind: "conference-meeting-cleanup", ID: name + "/" + meetingID}, err)
+	}
 }

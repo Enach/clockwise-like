@@ -129,7 +129,12 @@ paths:
       description: >
         Deletes the caller's focus blocks for the Monday-anchored week containing
         `week`, from the caller's calendar and from storage. Other users' blocks
-        are not touched and not counted.
+        are not touched and not counted. A block's stored row is deleted only
+        once its calendar event is gone (deleted now, or already absent: Google's
+        404/410). When an event delete fails, that block's row stays and the
+        call is the 500, so a retry deletes it (PAC-122 SF-018: before, the row
+        was deleted anyway and a retry answered `{"deleted":0}` with the event
+        still on the calendar).
       parameters:
         - name: week
           in: query
@@ -537,6 +542,14 @@ paths:
             never a 500; it is the 200 with `not_configured`. Since PAC-81 (spec
             AC-A3) each LLM call has its own 30 s limit; a call that fails on that
             limit is a provider failure and answers as one does today, not the 503.
+            Since PAC-122 (SF-037) two more failures are this 500 rather than a 200
+            missing something: the first LLM call (attendee extraction) failing,
+            which was ignored and left the attendees out, and, for a
+            `schedule_meeting` result with a range, the slot search failing (a
+            calendar or freebusy failure, the settings read), which left
+            `suggested_slots` absent so the web said "No available slots found". A
+            caller with no Google calendar connected still gets the 200 with no
+            `suggested_slots`.
           content:
             application/json:
               schema:
@@ -2519,9 +2532,13 @@ components:
           type: string
           description: >
             Set (with intent `unknown`) when the LLM call fails or returns
-            invalid JSON, when the destination is refused, and when AI is not
-            configured (then equal to `not_configured.message`) - still HTTP
-            200.
+            invalid JSON (`LLM returned invalid JSON`; since PAC-122 the first
+            call, attendee extraction, too), when the destination is refused,
+            when AI is not configured (then equal to `not_configured.message`),
+            and since PAC-122 (SF-037) when `range_start` or `range_end` in the
+            model's answer is not a `YYYY-MM-DD` date (`LLM returned an invalid
+            date range`; before, the range was dropped and no slot was searched)
+            - still HTTP 200.
         not_configured:
           $ref: '#/components/schemas/AINotConfigured'
           description: >

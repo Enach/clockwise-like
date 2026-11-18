@@ -71,6 +71,14 @@ func (s *AutoDeclineService) RunForUser(ctx context.Context, userID uuid.UUID, n
 	if !settings.AutoDeclineOutsideWorkingHours {
 		return 0, nil
 	}
+	// PAC-122 SF-006: a user whose zone is empty or cannot be loaded is
+	// skipped and the run fails for them (RunAll joins it, the cron reports
+	// it). Before, "outside working hours" was computed in UTC and RSVPs
+	// were declined for the wrong hours.
+	loc, err := settingsLocation(settings.Timezone)
+	if err != nil {
+		return 0, fmt.Errorf("auto-decline: user %s skipped: %w", userID, err)
+	}
 	if s.OAuthConfig == nil {
 		return 0, fmt.Errorf("auto-decline: OAuth configuration is required")
 	}
@@ -83,7 +91,6 @@ func (s *AutoDeclineService) RunForUser(ctx context.Context, userID uuid.UUID, n
 		return 0, fmt.Errorf("auto-decline: no calendar token for user %s", userID)
 	}
 
-	loc := settingsLocation(settings.Timezone)
 	start, end := nextWorkingDaysWindow(now.In(loc), AutoDeclineWorkingDays)
 	client, err := calendar.NewClient(ctx, auth.UserTokenSource(ctx, s.DB, s.OAuthConfig, userID, token))
 	if err != nil {
@@ -137,15 +144,21 @@ func isWorkingDay(day time.Weekday) bool {
 	return day >= time.Monday && day <= time.Friday
 }
 
-func settingsLocation(name string) *time.Location {
+// errNoUsableTimezone is settingsLocation's refusal. Its text names no zone:
+// the error is logged and reported with the user's id only.
+var errNoUsableTimezone = errors.New("timezone is empty or cannot be loaded")
+
+// settingsLocation loads the user's zone. An empty or unloadable one is
+// errNoUsableTimezone, never UTC (PAC-122 SF-006).
+func settingsLocation(name string) (*time.Location, error) {
 	if name == "" {
-		return time.UTC
+		return nil, errNoUsableTimezone
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {
-		return time.UTC
+		return nil, errNoUsableTimezone
 	}
-	return loc
+	return loc, nil
 }
 
 func pendingSelfAttendee(event *googlecalendar.Event) *googlecalendar.EventAttendee {

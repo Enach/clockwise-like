@@ -68,6 +68,10 @@ func toCalendarEventDTO(e *googlecalendar.Event) calendarEventDTO {
 		Title:       e.Summary,
 		Description: e.Description,
 		Location:    e.Location,
+		// PAC-122 SF-035: a "[Personal] Busy" blocker of the personal-calendar
+		// sync is tagged; before, the field was never set and the web gave
+		// blockers meeting controls.
+		IsPersonalBlock: engine.IsPersonalBlocker(e),
 	}
 
 	// Flatten start/end — prefer dateTime over date (all-day events have date only).

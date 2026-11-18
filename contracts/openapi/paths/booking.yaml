@@ -2075,8 +2075,12 @@ paths:
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: >-
-            Settings load failed. Body: `{"error":"internal error"}`. The detail is written
-            to the server log and Sentry only (PAC-21).
+            Settings load failed, the recorded credential losses could not be read, or
+            (since PAC-122, SF-036) the caller's stored Google or Microsoft credential
+            could not be read, which before read as `connected: false`. A credential
+            that cannot be decrypted is not this 500: it still reads as not connected
+            (PAC-84). Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -2268,7 +2272,10 @@ paths:
         '500':
           description: >-
             Google Meet creation, settings load, or the event update failed, or the
-            stored credential could not be read. Body:
+            stored credential could not be read. When the event update fails after a
+            Zoom or Teams meeting was created, that meeting is deleted at the provider
+            (PAC-122 SF-069; before, it was left there); a failed delete is logged and
+            reported with the provider and meeting id. Body:
             `{"error":"internal error"}`. The detail is written to the server log and Sentry
             only (PAC-21).
           content:

@@ -197,8 +197,16 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 		return &ParseResult{Intent: "unknown", Error: refusal.Message}, nil
 	}
 
-	// Pass 1: Extract attendee emails with a lightweight prompt
-	attendees := s.extractAttendees(ctx, client, text, decision.Redact)
+	// Pass 1: Extract attendee emails with a lightweight prompt. PAC-122
+	// SF-037: its failure is the parse's (as pass 2's is), never "no
+	// attendees".
+	attendees, err := s.extractAttendees(ctx, client, text, decision.Redact)
+	if errors.Is(err, errInvalidLLMJSON) {
+		return &ParseResult{Intent: "unknown", Error: invalidJSONMessage}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	// Resolve participant info (timezone, working hours)
 	participants := calendar.ResolveParticipants(attendees)
@@ -233,26 +241,46 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 			AvoidTimes:      result.AvoidTimes,
 		}
 		suggestions, err := scheduler.Suggest(ctx, req)
-		if err == nil {
+		switch {
+		case err == nil:
 			result.SuggestedSlots = suggestions.Slots
+		case errors.Is(err, engine.ErrCalendarNotConnected):
+			// No calendar to search: the result carries no slots, as before.
+		default:
+			// PAC-122 SF-037: a failed slot search is the parse's 500, never
+			// a 200 with no slots (which the web shows as "No available
+			// slots found").
+			return nil, fmt.Errorf("suggest slots: %w", err)
 		}
 	}
 
-	storage.WriteAuditLogCtx(ctx, s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
+	storage.WriteAuditLogCtx(ctx, s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", storage.AuditJSON(map[string]string{"text": text, "intent": result.Intent}))
 	return result, nil
 }
 
-func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, text string, redact func(string) string) []string {
+// invalidJSONMessage is the result's error when the model's answer is not
+// the JSON asked for.
+const invalidJSONMessage = "LLM returned invalid JSON"
+
+// errInvalidLLMJSON is extractAttendees' error for an answer that does not
+// decode.
+var errInvalidLLMJSON = errors.New(invalidJSONMessage)
+
+func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, text string, redact func(string) string) ([]string, error) {
 	rawJSON, err := client.Complete(ctx, attendeeExtractionPrompt, text)
 	if err != nil {
-		return nil
+		// As pass 2: the provider text goes to the log and Sentry only,
+		// redacted (spec §3.1a).
+		return nil, errors.New(redact("LLM error: " + err.Error()))
 	}
 	rawJSON = cleanJSON(redact(rawJSON))
 	var result struct {
 		Attendees []string `json:"attendees"`
 	}
-	_ = json.Unmarshal([]byte(rawJSON), &result)
-	return result.Attendees
+	if err := json.Unmarshal([]byte(rawJSON), &result); err != nil {
+		return nil, errInvalidLLMJSON
+	}
+	return result.Attendees, nil
 }
 
 func parseRawJSON(rawJSON string) *ParseResult {
@@ -272,7 +300,7 @@ func parseRawJSON(rawJSON string) *ParseResult {
 		Error           string   `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &raw); err != nil {
-		return &ParseResult{Intent: "unknown", Error: "LLM returned invalid JSON"}
+		return &ParseResult{Intent: "unknown", Error: invalidJSONMessage}
 	}
 
 	result := &ParseResult{
@@ -286,14 +314,24 @@ func parseRawJSON(rawJSON string) *ParseResult {
 		TimezoneNotes:   raw.TimezoneNotes,
 		Error:           raw.Error,
 	}
+	// PAC-122 SF-037: a range date that does not parse is an unusable
+	// answer, never "no range" (which silently skipped the slot search).
+	var startErr, endErr error
 	if raw.RangeStart != "" {
-		result.RangeStart, _ = time.Parse("2006-01-02", raw.RangeStart)
+		result.RangeStart, startErr = time.Parse("2006-01-02", raw.RangeStart)
 	}
 	if raw.RangeEnd != "" {
-		result.RangeEnd, _ = time.Parse("2006-01-02", raw.RangeEnd)
+		result.RangeEnd, endErr = time.Parse("2006-01-02", raw.RangeEnd)
+	}
+	if startErr != nil || endErr != nil {
+		return &ParseResult{Intent: "unknown", Error: invalidRangeMessage}
 	}
 	return result
 }
+
+// invalidRangeMessage is the result's error when the model's range_start or
+// range_end is not a YYYY-MM-DD date.
+const invalidRangeMessage = "LLM returned an invalid date range"
 
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
