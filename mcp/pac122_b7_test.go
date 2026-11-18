@@ -271,7 +271,8 @@ func TestPAC122_SF095_TruncatedBodyIsError(t *testing.T) {
 func TestPAC122_SF063_EmptyPlanIsNothingToApply(t *testing.T) {
 	b := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, `{"applied":[],"failed":[]}` })
 	s := buildServer(newClient(b.srv.URL))
-	for _, plan := range []string{`{"proposals":[]}`, `[]`, `[{"date":"2026-05-04","proposals":[]}]`} {
+	for _, plan := range []string{`{"proposals":[]}`, `{"proposals":null}`, `[]`,
+		`[{"date":"2026-05-04","proposals":[]}]`, `[{"date":"2026-05-04","proposals":null}]`} {
 		got := decodeToolResult(t, callTool(t, s, "clockwise_apply_compression", map[string]any{"plan": plan}))
 		if got.isError || !strings.Contains(got.text, "Nothing to apply") {
 			t.Errorf("plan %s: %+v, want the non-error nothing-to-apply text", plan, got)
@@ -297,5 +298,50 @@ func TestPAC122_SF063_FullyFailedApplyIsError(t *testing.T) {
 	got = decodeToolResult(t, callTool(t, s, "clockwise_apply_compression", map[string]any{"plan": plan}))
 	if got.isError || !strings.Contains(got.text, "evt-1: event not found") {
 		t.Errorf("partial apply relayed as %+v, want a success carrying the failed list", got)
+	}
+}
+
+// SF-063 re-review: a bare list of proposals is applied as the proposals.
+func TestPAC122_SF063_BareProposalArrayIsApplied(t *testing.T) {
+	b := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, `{"applied":["evt-1","evt-2"],"failed":[]}` })
+	s := buildServer(newClient(b.srv.URL))
+	plan := `[{"eventId":"evt-1","proposedStart":"2026-05-04T10:00:00Z","proposedEnd":"2026-05-04T10:30:00Z"},` +
+		`{"event_id":"evt-2","proposed_start":"2026-05-04T11:00:00Z","proposed_end":"2026-05-04T11:30:00Z"}]`
+	got := decodeToolResult(t, callTool(t, s, "clockwise_apply_compression", map[string]any{"plan": plan}))
+	if got.isError {
+		t.Fatalf("bare proposal list refused: %+v", got)
+	}
+	calls := b.to("/api/schedule/compress/apply")
+	if len(calls) != 1 {
+		t.Fatalf("apply calls = %d, want 1", len(calls))
+	}
+	props, _ := calls[0].body["proposals"].([]any)
+	if len(props) != 2 {
+		t.Fatalf("proposals sent = %v, want 2", calls[0].body)
+	}
+	for i, want := range []string{"evt-1", "evt-2"} {
+		if p, _ := props[i].(map[string]any); p["event_id"] != want || p["proposed_start"] == "" || p["proposed_end"] == "" {
+			t.Errorf("proposal %d sent = %v, want %s with its times", i, p, want)
+		}
+	}
+}
+
+// SF-063 re-review: an element with no proposals key is an error naming its
+// index, never "nothing to apply".
+func TestPAC122_SF063_ElementWithoutProposalsIsError(t *testing.T) {
+	b := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, `{"applied":[],"failed":[]}` })
+	s := buildServer(newClient(b.srv.URL))
+	for _, tc := range []struct{ plan, want string }{
+		{`[{"date":"2026-05-04"}]`, "index 0"},
+		{`[{"date":"2026-05-04","proposals":[]},{"date":"2026-05-05"}]`, "index 1"},
+		{`{"date":"2026-05-04"}`, "no proposals"},
+	} {
+		got := decodeToolResult(t, callTool(t, s, "clockwise_apply_compression", map[string]any{"plan": tc.plan}))
+		if !got.isError || !strings.Contains(got.text, tc.want) {
+			t.Errorf("plan %s: %+v, want a tool error naming %q", tc.plan, got, tc.want)
+		}
+	}
+	if n := b.count(); n != 0 {
+		t.Errorf("a plan without proposals reached the backend %d times", n)
 	}
 }

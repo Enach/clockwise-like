@@ -303,23 +303,68 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-func decodeCompressionProposals(raw string) ([]compressionProposal, error) {
-	var plan []planProposal
-	var direct struct {
-		Proposals []planProposal `json:"proposals"`
+// decodePlan reads the proposals of a plan in one of the shapes the tool
+// takes: an object {"proposals": [...]}, an array of such results (as
+// compress_schedule returns it), or a bare array of proposals. Only an
+// explicitly empty plan ([], or a proposals key that is [] or null) decodes
+// to no proposals; anything else without proposals is an error, never an
+// empty plan (PAC-122 SF-063).
+func decodePlan(raw string) ([]planProposal, error) {
+	var asObject map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &asObject); err == nil {
+		props, ok := asObject["proposals"]
+		if !ok {
+			return nil, fmt.Errorf("plan has no proposals key")
+		}
+		var plan []planProposal
+		if err := json.Unmarshal(props, &plan); err != nil {
+			return nil, fmt.Errorf("plan proposals must be a list: %w", err)
+		}
+		return plan, nil
 	}
-	if err := json.Unmarshal([]byte(raw), &direct); err == nil && direct.Proposals != nil {
-		plan = direct.Proposals
-	} else {
-		var results []struct {
-			Proposals []planProposal `json:"proposals"`
+	var elements []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &elements); err != nil {
+		return nil, fmt.Errorf("plan must be compression JSON: %w", err)
+	}
+	isProposal := func(e map[string]json.RawMessage) bool {
+		_, camel := e["eventId"]
+		_, snake := e["event_id"]
+		return camel || snake
+	}
+	bare := len(elements) > 0
+	for _, e := range elements {
+		if _, ok := e["proposals"]; ok || !isProposal(e) {
+			bare = false
+			break
 		}
-		if err := json.Unmarshal([]byte(raw), &results); err != nil {
-			return nil, fmt.Errorf("plan must be compression JSON: %w", err)
+	}
+	if bare {
+		// A bare list of proposals: each one's times are checked below.
+		var plan []planProposal
+		if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+			return nil, fmt.Errorf("plan proposals must be objects: %w", err)
 		}
-		for _, result := range results {
-			plan = append(plan, result.Proposals...)
+		return plan, nil
+	}
+	var plan []planProposal
+	for i, e := range elements {
+		props, ok := e["proposals"]
+		if !ok {
+			return nil, fmt.Errorf("plan element at index %d has no proposals key", i)
 		}
+		var part []planProposal
+		if err := json.Unmarshal(props, &part); err != nil {
+			return nil, fmt.Errorf("plan element at index %d: proposals must be a list: %w", i, err)
+		}
+		plan = append(plan, part...)
+	}
+	return plan, nil
+}
+
+func decodeCompressionProposals(raw string) ([]compressionProposal, error) {
+	plan, err := decodePlan(raw)
+	if err != nil {
+		return nil, err
 	}
 	proposals := make([]compressionProposal, 0, len(plan))
 	for i, p := range plan {
