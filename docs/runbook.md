@@ -674,7 +674,7 @@ run reports 0 changes). Exit codes:
 | Code | Meaning |
 |---|---|
 | 0 | done (including "nothing to do") |
-| 1 | the run failed or ended incomplete (database error, values that could not be processed, rotation wait timed out); the audit row says `failed`/`partial` and a re-run resumes |
+| 1 | the run failed or ended incomplete (database error, values that could not be processed, rotation wait timed out, for `rotate-data-key` values still under the retired data key or a count of them that failed); the audit row says `failed`/`partial` and a re-run resumes. Exception: `seal counts not recorded after a retry` (`convert`, `rotate-data-key`) is **not** fixed by a re-run; record the printed counts by hand ([Recording missing seal counts](#recording-missing-seal-counts)) |
 | 2 | usage: unknown subcommand or flag, missing `--operator`/`--reason`/`--retire`/`--confirm-lost-key`, missing `DATABASE_URL` |
 | 3 | `status --check` only: at least one plain value remains |
 | 4 | key refused: active key missing or malformed, a configured key does not open a data key, a data key wrapped by an unknown key id, `convert`/`rotate-data-key` run with an active key that does not wrap the active data key; for `reset-lost-key`: a configured key **does** open a stored data key (the key is not lost) |
@@ -728,9 +728,44 @@ docker compose -f docker-compose.prod.yml exec backend /paceday-operator encrypt
 
 It creates a new active data key, waits (up to `--wait`, default 5m) until
 every running backend reports it, then re-encrypts the values under the old
-one in batches. Afterwards `status` shows 0 values under it; retired data keys
-are kept (60 bytes each). A backend also rotates by itself when its active
-data key reaches 2^30 encryptions.
+one in batches, and counts the values still under it. Only exit 0 means the
+rotation is done; every failure exits 1:
+
+- `<n> values re-encrypted; 0 values left under data key <id>` (stdout) is
+  printed only after a count that succeeded and read 0.
+- A failed count prints `<n> values re-encrypted` with no count of values
+  left, and `could not count the values left under data key <id>` on
+  stderr. Run the same command again.
+- Values still under the old data key are named on stderr (`<n> values left
+  under data key <id>; run the same command again`). Run it again.
+- `seal counts not recorded after a retry`: a re-run does not fix this;
+  see [Recording missing seal counts](#recording-missing-seal-counts).
+
+`status` also shows the values per data key. Retired data keys are kept (60
+bytes each). A backend also rotates by itself when its active data key
+reaches 2^30 encryptions.
+
+### Recording missing seal counts
+
+`convert` and `rotate-data-key` add the number of encryptions they made to
+each data key's `sealed_count` (the count that triggers automatic rotation
+at 2^30). If that write fails twice, the command exits 1 and prints, for
+each data key, the missing count and the statement that records it:
+
+```text
+encryption convert: data key seal counts not recorded after a retry (<error>); a re-run does not record them. Record them by hand (docs/runbook.md, "Recording missing seal counts"):
+  data key 3: 412 seals missing: UPDATE encryption_data_keys SET sealed_count = sealed_count + 412 WHERE id = 3;
+```
+
+The counts exist only in the finished command, so a re-run records nothing
+for them. Once the database answers again, run each printed statement
+**once**, exactly as printed, for example:
+
+```sh
+docker compose -f docker-compose.prod.yml exec postgres psql -U clockwise -d clockwise -c "UPDATE encryption_data_keys SET sealed_count = sealed_count + 412 WHERE id = 3;"
+```
+
+Values were encrypted correctly; only the seal budget was short.
 
 ### Losing the key
 
