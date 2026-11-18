@@ -381,32 +381,90 @@ with SF-049 (web toggle); SF-018 (clear-week) with SF-064 (MCP clear wording);
 SF-050 (web drops focus `errors[]`) after SF-019; SF-062 before any other MCP
 row can be verified end to end.
 
-## 8. Guardrail candidate
+## 8. Guardrail
 
 The most common pattern is a **discarded error that becomes a default** (41
 of 100 rows): `_ = storage.X(...)`, `v, _ := storage.Y(...)`, or
 `if v, ok, err := ...; err == nil && ok` read as "absent". The backend's
 `errcheck` is enabled (`.golangci.yml`), but with its default
 `check-blank: false`, which accepts every `_ =`. One count, run for this
-document:
+document at `0f11003`:
 
 ```
 $ git grep -c "_ = storage\.\|, _ := storage\.\|_ = h\.db\.\|, _ = storage\." -- 'backend/*.go' ':!*_test.go'   # summed
 44
 ```
 
-Proposal: a `make lint` rule (`forbidigo` or a `ruleguard` rule under
-golangci-lint) that refuses a blank-assigned error from `storage.*`,
-`auth.Load*` and the calendar-ops interfaces in non-test code. Like the design
-gate, it would ratchet against a baseline file, and a new baseline entry would
-need a PAC issue. A blanket `check-blank: true` would also flag the deliberate
-`_ = json.NewEncoder(w).Encode(...)` lines, so it is the noisier option.
+That grep is superseded by the guard below, which counts by type, not by text.
+A blanket `check-blank: true`
+would also flag the deliberate `_ = json.NewEncoder(w).Encode(...)` lines, so
+it was not used.
+
+**The backend guardrail exists: `tools/sfguard`, run by `make lint`** (so by
+`make verify` and by the `lint + openapi-check` job in `ci.yml`). It refuses a
+new blank-assigned error from the targeted calls in non-test, non-generated
+code under `backend/` and `mcp/`.
+
+- **How it matches.** A `go/analysis`-style check on the type-checked syntax
+  (`go/packages` + `go/types`), not grep, so line breaks, parentheses,
+  `var (...)` blocks and calls through interfaces do not hide a call. It
+  flags an `=`, `:=` or `var` assignment whose `_` falls on an `error` result
+  of a call to: anything declared in `backend/storage`; `auth.Load*`; a method
+  declared in `backend/calendar` (`Provider`, the Google, Outlook and webcal
+  clients); the engine's calendar-ops seams (`calendarOps`/`realOps`,
+  `outlookFreeBusy`, `googleFreeBusy`); or a `database/sql` handle method (the
+  `_ = h.db.QueryRow(...).Scan(...)` shape). Methods named `Rollback` or
+  `Close` are never targeted. Anything else (`json.Encode`, `w.Write`,
+  `strconv`, `os`) is out of scope. `mcp/` is scanned too, but calls none of
+  these packages: it reaches the backend over HTTP.
+- **The ratchet.** `tools/sfguard/baseline.txt` lists the accepted
+  occurrences as `file  function  callee`, with no line numbers. It **may only
+  shrink**. An occurrence beyond the baseline fails as `NEW`. A baseline line
+  whose occurrence is gone fails as `STALE`, so a fix must delete its line.
+  Every line must carry a `# PAC-NN` comment, and growth relative to
+  `origin/main` is printed for the reviewer. The baseline is the only
+  exception mechanism. The failure message points here, and at the `-update`
+  command that prints the line to add.
+- **Its own tests run first:** `go test` in `tools/sfguard` (an exact-match
+  scan of `testdata/fixture` plus the ratchet), then
+  `tools/sfguard/sfguard.test.sh`. That script shows end to end that a new
+  storage, `auth.Load*`, calendar-ops or `h.db` discard fails, a baselined one
+  passes, a second identical discard in one function fails, a stale or
+  unnamed entry fails, and the excluded shapes are never reported. A package
+  that does not type-check fails the guard (exit 2); a partial scan is never a
+  pass.
+- **The baseline at landing: 24 entries**, each checked against this register:
+  - **5 known rows:** SF-038 ×2 (`authHandlers.status`) and SF-022 ×3
+    (`MeetingBriefService.Generate`).
+  - **9 not yet in the register.** Each is a real silent default:
+    - recap preview and test, empty user name;
+    - invite preview, blank team and inviter (SF-077 fixed only the email
+      path);
+    - operator `encryption convert` and `rotate-data-key` drop a failed
+      `sealed_count` flush;
+    - `rotate-data-key` prints "0 values left" on a count error;
+    - focus blocks read as none in `SmartScheduler.Suggest` and
+      `TeamAvailabilityEngine.memberBusy`.
+
+    They are candidates for rows.
+  - **10 fine:**
+    - the four free/busy reads, where a nil result settles as coverage
+      `unknown` (§5, PAC-133);
+    - the advisory-unlock and lock-holder reads in `storage`;
+    - `WriteAuditLogCtx` (§4 L-c);
+    - the operator's audit-table probe on an already-failed run.
+
+  Removing entries is follow-up work, not part of the guard's PR.
 
 The web counterpart is the **optimistic UI claim** (29 rows). It matches
 `@typescript-eslint/no-floating-promises` (which catches `void
 api.setProfile(...)`, SF-049) and a review checklist line: "a success toast
-quotes the server's answer, never the request". Neither guardrail has been
-tried here.
+quotes the server's answer, never the request". It is **not enabled**. Run
+type-aware over web `src/` at `origin/main` 4e5ac00 (generated code excluded),
+it reports **72 violations in 25 files**, all in non-test code. The most are in
+`pages/Team.tsx` (15), `pages/Dashboard.tsx` (6) and
+`components/links/LinkEditDrawer.tsx` (5). Enabling it needs the same
+baseline treatment.
 
 ## 9. Deduplication map
 
