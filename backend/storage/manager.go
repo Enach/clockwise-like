@@ -43,6 +43,11 @@ func GetUserProfile(db Querier, userID uuid.UUID) (*UserProfile, error) {
 }
 
 func UpsertUserProfile(db Querier, p *UserProfile) error {
+	if hook, ok := userProfileUpsert.get(); ok {
+		if err := hook(p.UserID); err != nil {
+			return err
+		}
+	}
 	_, err := db.Exec(`
 		INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_with_manager, updated_at)
 		VALUES ($1,$2,$3,$4,now())
@@ -88,8 +93,11 @@ func upsertManagerTeamMember(exec sqlExecutor, m *ManagerTeamMember) error {
 			display_name=CASE WHEN EXCLUDED.source='auto' AND manager_team_members.source='manual'
 				THEN manager_team_members.display_name ELSE EXCLUDED.display_name END,
 			source=CASE WHEN manager_team_members.source='manual' THEN 'manual' ELSE EXCLUDED.source END,
-			cadence=EXCLUDED.cadence,
-			cadence_custom_days=EXCLUDED.cadence_custom_days,
+			-- PAC-122 SF-011: detection never replaces a manual row's cadence.
+			cadence=CASE WHEN EXCLUDED.source='auto' AND manager_team_members.source='manual'
+				THEN manager_team_members.cadence ELSE EXCLUDED.cadence END,
+			cadence_custom_days=CASE WHEN EXCLUDED.source='auto' AND manager_team_members.source='manual'
+				THEN manager_team_members.cadence_custom_days ELSE EXCLUDED.cadence_custom_days END,
 			last_one_on_one_at=GREATEST(EXCLUDED.last_one_on_one_at, manager_team_members.last_one_on_one_at),
 			updated_at=now()`,
 		m.ManagerUserID, m.MemberEmail, m.MemberUserID, m.DisplayName, m.Source,
@@ -109,6 +117,19 @@ func GetManagerTeamMemberByEmail(db *sql.DB, managerID uuid.UUID, email string) 
 		FROM manager_team_members
 		WHERE manager_user_id=$1 AND member_email=$2`, managerID, email)
 	return scanTeamMember(row)
+}
+
+// CountManagerTeamMembers counts the manager's global roster rows
+// (manager_team_members), the profile's team_member_count (PAC-122 SF-076).
+func CountManagerTeamMembers(db DBTX, managerID uuid.UUID) (int, error) {
+	if hook, ok := managerRosterCount.get(); ok {
+		if err := hook(managerID); err != nil {
+			return 0, err
+		}
+	}
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM manager_team_members WHERE manager_user_id=$1`, managerID).Scan(&n)
+	return n, err
 }
 
 func ListManagerTeamMembers(db DBTX, managerID uuid.UUID) ([]*ManagerTeamMember, error) {

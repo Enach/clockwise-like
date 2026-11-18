@@ -64,6 +64,11 @@ func GetUserByEmail(db DBTX, email string) (*User, error) {
 }
 
 func GetUserByID(db DBTX, id uuid.UUID) (*User, error) {
+	if hook, ok := userRead.get(); ok {
+		if err := hook(id); err != nil {
+			return nil, err
+		}
+	}
 	row := db.QueryRow(`
 		SELECT id, email, name, avatar_url, provider, address_standing, org_id, created_at
 		FROM users WHERE id = $1

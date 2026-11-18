@@ -5598,6 +5598,12 @@ paths:
         roster for the same caller and members, and data_available is derived only from the buckets this
         response already returns.
 
+        PAC-122 SF-040: a failed read of any member''s week (the PAC-60 ownership check, the cached figures,
+        the consent or analytics read, the FreeBusy query, or the cache write) is the 500, never a bucket
+        of zeroes with data_available=false. An external member whose FreeBusy coverage is unknown (a
+        provider failure, PAC-67 D-6) is data_available=false for this answer and is not cached, so a
+        later request asks again.
+
         PAC-129 (spec §3.6, §3.9, AC-31): with `team_id` and `include_added=true`, the members gain every
         person added to the team who has no assignment of the caller on it and is not a formal member,
         with is_paceday_user false, data_available false and 12 zero buckets. No calendar is read for
@@ -5812,7 +5818,8 @@ paths:
       description: 'When `is_manager` is true and the profile has no `detected_at` yet, the handler spawns
         a background goroutine running DetectTeam with a 30s timeout. That background run persists detected
         members into the GLOBAL manager_team_members table only; it never creates team assignments. The
-        response is written before the goroutine completes.
+        response is written before the goroutine completes. A failed profile write is the 500 (PAC-122
+        SF-009): the 200 echoes only a stored value.
 
         '
       requestBody:
@@ -5849,7 +5856,8 @@ paths:
         not ownership — suffices. The roster is the union of (a) manager assignments for this team and
         (b) formal team_members of this team that have no assignment yet, synthesised with source="formal"
         and cadence="none". The caller is always excluded from (b). Sorted case-insensitively by display_name.
-        `members` is always an array, never null.
+        `members` is always an array, never null. A failed read of a member''s week (this week or last
+        week) is the 500, never a member shown with zeroes (PAC-122 SF-040).
 
         PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): merging formal
         members with roster entries is a keeping site: a roster entry represents a formal member whose
@@ -5923,7 +5931,9 @@ paths:
         is resolved to an account only when exactly one account holds `email` DOMAIN-CONFIRMED (compared
         case-insensitively; before PAC-71 an exact-case match on any account). An address that is carried
         only unconfirmed, by several accounts (a letter-case collision), or by none resolves to nobody:
-        the roster row is stored with `member_user_id` null, as for a non-Paceday address today.
+        the roster row is stored with `member_user_id` null, as for a non-Paceday address today. A failed
+        holder lookup is the 500 and nothing is stored (PAC-122 SF-010); before PAC-122 it was read as
+        "nobody", storing the member as external.
 
         '
       parameters:
@@ -6007,9 +6017,9 @@ paths:
         is removed by it, and one that waits for it finds no invitation (404). The manager''s global roster
         row and its 1:1 history are kept; only this team''s assignment goes, as before. Cached manager
         figures (team_analytics_cache) are the manager''s data and are kept. The answer is still 204 whatever
-        was found. A storage error in the owner check inside the transaction is still the 403 (SF-074
-        is fixed for PAC-129''s new operations only, spec OQ-12). Without `team_id` (the global delete)
-        nothing about team membership changes: a person added to a team stays on it.
+        was found. A storage error in the owner check inside the transaction is the 500 (PAC-122 SF-074;
+        before it, the 403, spec OQ-12). Without `team_id` (the global delete) nothing about team membership
+        changes: a person added to a team stays on it.
 
         '
       parameters:
@@ -9145,8 +9155,10 @@ paths:
       - teams
       summary: Create a formal team; the caller becomes its owner.
       description: 'Registered via chi `r.Route("/api/teams")` + `r.Post("/")`, so both `/api/teams` and
-        `/api/teams/` route here. The owner team_members row is inserted with its error discarded, so
-        a failed AddTeamMember still returns 201 with an ownerless team.
+        `/api/teams/` route here. The team row and the caller''s owner team_members row are written in
+        one transaction (PAC-122 SF-008): a failed owner insert is the 500 and leaves no team. Before
+        PAC-122 the owner row was inserted after the team with its error discarded, so a failed insert
+        still returned 201 with an ownerless team.
 
         '
       requestBody:
@@ -9613,8 +9625,8 @@ paths:
         (trim set of contract §2.2, which since revision 1.2 includes U+FEFF; lowercase; ParseAddress),
         and every check below compares that form. The write is ONE storage-owned transaction: the PAC-71
         re-check (stale session: 401, nothing written); the team row locked FOR NO KEY UPDATE (no row:
-        403); the owner check (not an owner: 403; a storage error there is still the 403, SF-074 left
-        open on this existing operation, spec OQ-12). Then, judged under the lock, with "pending" meaning
+        403); the owner check (not an owner: 403; a storage error there is the 500 since PAC-122 SF-074,
+        which closed spec OQ-12 for this operation). Then, judged under the lock, with "pending" meaning
         stored status `pending` AND expires_at after the database''s now() (spec D-12):
 
         1. the address is held by a Paceday member of the team (compared on the account''s single address,
@@ -13241,8 +13253,8 @@ components:
         team_member_count:
           type: integer
           description: 'COUNT(*) over manager_team_members for this manager — the GLOBAL roster size,
-            not the size of any one team. The query''s error is discarded, so a failed count is reported
-            as 0.
+            not the size of any one team. A failed count is the 500 (PAC-122 SF-076); before PAC-122 it
+            was reported as 0.
 
             '
       required:
@@ -13310,13 +13322,14 @@ components:
           allOf:
           - $ref: '#/components/schemas/MemberWeekStats'
           description: 'Never null — the handler substitutes a zero-valued MemberWeekStats when the engine
-            returns nil or errors (the engine error is discarded).
+            returns nil (a person added to the team: no calendar read). A failed engine read is the 500,
+            never zeroes (PAC-122 SF-040).
 
             '
         last_week:
           allOf:
           - $ref: '#/components/schemas/MemberWeekStats'
-          description: Same nil-substitution as this_week; the week 7 days before `week`.
+          description: Same nil-substitution and failure rule as this_week; the week 7 days before `week`.
         focus_trend_pct:
           type: number
           description: 'engine.TrendPct(this_week.focus, last_week.focus). Clamped to [-200, 200], rounded
@@ -17832,7 +17845,10 @@ components:
     JsonForbidden:
       description: 'JSON error "forbidden". Emitted when the caller is not a member of `team_id`, when
         the route requires ownership and the caller''s role is not "owner", AND when the team simply does
-        not exist — the membership lookup error is not distinguished from a role mismatch.
+        not exist (no membership row either way). A failed membership read is not a 403 on the manager
+        routes'' `team_id` scope or on any owner check: it is the 500 (PAC-122 SF-074). The formal-team
+        member checks (team detail, zone list, availability, analytics) still answer a failed read with
+        this 403.
 
         '
       content:

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -95,11 +96,28 @@ func LoadZoomCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID) (c *Z
 }
 
 // CreateTeamCtx creates a team under the re-check (spec AC-46/AC-47
-// "creates a team").
+// "creates a team"), with its creator as its owner. PAC-122 SF-008: the team
+// row and the owner's membership are one transaction (owned, or joined when it
+// is the re-check's), so a failed owner insert leaves no ownerless team.
 func CreateTeamCtx(ctx context.Context, db DBTX, name string, createdBy uuid.UUID) (t *Team, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		t, err = CreateTeam(q, name, createdBy)
-		return err
+		tx, sc, err := beginOn(q)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = sc.Rollback() }()
+		created, err := CreateTeam(tx, name, createdBy)
+		if err != nil {
+			return err
+		}
+		if err := AddTeamMember(tx, created.ID, createdBy, "owner"); err != nil {
+			return fmt.Errorf("add team owner: %w", err)
+		}
+		if err := sc.Commit(); err != nil {
+			return err
+		}
+		t = created
+		return nil
 	})
 	return t, err
 }

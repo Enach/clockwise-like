@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -247,8 +248,14 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		// Check if member is a Paceday user
 		// PAC-71 granting site (roster import): only the one account that
 		// holds the address domain-confirmed, ignoring letter case.
+		// PAC-122 SF-010: a failed lookup stops the run, never stores the
+		// member as external (member_user_id NULL).
 		var memberUserID *uuid.UUID
-		if uid, ok, err := storage.ConfirmedHolder(e.DB, c.email); err == nil && ok {
+		uid, holder, err := storage.ConfirmedHolder(e.DB, c.email)
+		if err != nil {
+			return nil, fmt.Errorf("holder lookup for detected member #%d: %w", n, err)
+		}
+		if holder {
 			memberUserID = &uid
 		}
 
@@ -341,7 +348,12 @@ func (e *ManagerEngine) GetGaps(ctx context.Context, managerID uuid.UUID, member
 		}
 
 		// Check if there's a future event with this member in the next 14 days.
-		if e.hasFutureEvent(ctx, managerID, m.MemberEmail, now, now.Add(14*24*time.Hour)) {
+		// PAC-122 SF-040: a failed read is the error, never a false gap.
+		future, err := e.hasFutureEvent(ctx, managerID, m.MemberEmail, now, now.Add(14*24*time.Hour))
+		if err != nil {
+			return nil, err
+		}
+		if future {
 			continue
 		}
 
@@ -411,15 +423,19 @@ func hasCadence(m *storage.ManagerTeamMember) bool {
 	return false
 }
 
-func (e *ManagerEngine) hasFutureEvent(_ context.Context, managerID uuid.UUID, memberEmail string, from, to time.Time) bool {
+func (e *ManagerEngine) hasFutureEvent(_ context.Context, managerID uuid.UUID, memberEmail string, from, to time.Time) (bool, error) {
 	var count int
-	_ = e.DB.QueryRow(`
+	err := e.DB.QueryRow(`
 		SELECT COUNT(*) FROM one_on_one_occurrences
 		WHERE manager_user_id=$1 AND member_email=$2
 		  AND occurred_at >= $3 AND occurred_at < $4`,
 		managerID, memberEmail, from, to,
 	).Scan(&count)
-	return count > 0
+	err = managerStepErr(StepFutureOccurrences, memberEmail, err)
+	if err != nil {
+		return false, fmt.Errorf("gap check: future occurrences: %w", err)
+	}
+	return count > 0, nil
 }
 
 // ── Team Analytics ────────────────────────────────────────────────────────────
@@ -444,16 +460,29 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 	// is on. Without this, anyone could add a colleague's email to their 1:1
 	// list and read their week (PAC-60). Checked before the cache, so figures
 	// cached before this gate existed are never served, and failing closed:
-	// a lookup error shows no data rather than someone else's.
+	// a lookup error shows nothing, as the error (PAC-122 SF-040), never as
+	// someone else's figures nor as "no data".
+	//
+	// PAC-122 SF-040: every read below that fails is returned as the error
+	// (the handlers answer the 500); nothing computed from a failed read is
+	// cached, and a failed cache write is the error too.
 	if member.MemberUserID != nil {
 		allowed, err := storage.OwnsTeamWithMember(e.DB, managerID, *member.MemberUserID)
-		if err != nil || !allowed {
+		err = managerStepErr(StepOwnerCheck, member.MemberEmail, err)
+		if err != nil {
+			return nil, fmt.Errorf("member week: owner check: %w", err)
+		}
+		if !allowed {
 			return &MemberWeekStats{}, nil
 		}
 	}
 
 	// Check cache (4h TTL)
 	cached, err := storage.GetTeamAnalytics(e.DB, managerID, member.MemberEmail, weekStart)
+	err = managerStepErr(StepCacheRead, member.MemberEmail, err)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("member week: cache read: %w", err)
+	}
 	if err == nil && time.Since(cached.ComputedAt) < analyticsCache4h {
 		return &MemberWeekStats{
 			FocusMinutes:   cached.FocusMinutes,
@@ -465,15 +494,24 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 
 	var stats MemberWeekStats
 	var isPacedayUser bool
+	// cacheable is false for an answer that is not a fact about the week: an
+	// external member whose free/busy coverage is not known (a provider
+	// failure degrades to unknown, PAC-67 D-6). Such an answer is shown as
+	// "no data" but never cached, so the next read asks again (SF-040).
+	cacheable := true
 
 	if member.MemberUserID != nil {
 		// Member is a Paceday user — read their analytics_weeks row
-		// Check consent first
+		// Check consent first. No profile row reads as not shared, as before.
 		var shared bool
-		_ = e.DB.QueryRow(`
+		err := e.DB.QueryRow(`
 			SELECT COALESCE(analytics_shared_with_manager, true)
 			FROM user_profiles WHERE user_id=$1`, *member.MemberUserID,
 		).Scan(&shared)
+		err = managerStepErr(StepConsentRead, member.MemberEmail, err)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("member week: consent read: %w", err)
+		}
 		if shared {
 			var focusMin, meetMin, freeMin int
 			err := e.DB.QueryRow(`
@@ -482,11 +520,15 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 				WHERE user_id=$1 AND week_start=$2`,
 				*member.MemberUserID, weekStart.Format("2006-01-02"),
 			).Scan(&focusMin, &meetMin, &freeMin)
-			if err == nil {
+			err = managerStepErr(StepAnalyticsWeekRead, member.MemberEmail, err)
+			switch {
+			case err == nil:
 				stats.FocusMinutes = focusMin
 				stats.MeetingMinutes = meetMin
 				stats.FreeMinutes = freeMin
 				stats.DataAvailable = true
+			case !errors.Is(err, sql.ErrNoRows):
+				return nil, fmt.Errorf("member week: analytics read: %w", err)
 			}
 		}
 		isPacedayUser = true
@@ -495,9 +537,15 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 		fbSvc := NewFreeBusyService(e.DB, e.OAuthConfig)
 		weekEnd := weekStart.Add(7 * 24 * time.Hour)
 		results, err := fbSvc.Query(ctx, managerID, []string{member.MemberEmail}, weekStart, weekEnd)
-		if err == nil && len(results) > 0 {
+		err = managerStepErr(StepFreeBusy, member.MemberEmail, err)
+		if err != nil {
+			return nil, fmt.Errorf("member week: free/busy: %w", err)
+		}
+		cacheable = false
+		if len(results) > 0 {
 			r := results[0]
 			if r.Coverage == "known" {
+				cacheable = true
 				busy := 0
 				for _, slot := range r.Busy {
 					busy += int(slot.End.Sub(slot.Start).Minutes())
@@ -512,17 +560,26 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 		}
 	}
 
-	// Cache the result
-	_ = storage.UpsertTeamAnalyticsCtx(ctx, e.DB, &storage.TeamAnalyticsRow{
-		ManagerUserID:  managerID,
-		MemberEmail:    member.MemberEmail,
-		WeekStart:      weekStart,
-		FocusMinutes:   stats.FocusMinutes,
-		MeetingMinutes: stats.MeetingMinutes,
-		FreeMinutes:    stats.FreeMinutes,
-		IsPacedayUser:  isPacedayUser,
-		DataAvailable:  stats.DataAvailable,
-	})
+	if !cacheable {
+		return &stats, nil
+	}
+	// Cache the result. The step seam, when it fails the write, stands in
+	// for it (nothing is written).
+	if err = managerStepErr(StepCacheWrite, member.MemberEmail, nil); err == nil {
+		err = storage.UpsertTeamAnalyticsCtx(ctx, e.DB, &storage.TeamAnalyticsRow{
+			ManagerUserID:  managerID,
+			MemberEmail:    member.MemberEmail,
+			WeekStart:      weekStart,
+			FocusMinutes:   stats.FocusMinutes,
+			MeetingMinutes: stats.MeetingMinutes,
+			FreeMinutes:    stats.FreeMinutes,
+			IsPacedayUser:  isPacedayUser,
+			DataAvailable:  stats.DataAvailable,
+		})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("member week: cache write: %w", err)
+	}
 
 	return &stats, nil
 }
