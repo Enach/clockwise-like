@@ -77,14 +77,29 @@ func cronJobErr(name string, fn func(ctx context.Context) error) func() {
 // reportUnitFailure is lifecycle's reporter in the backend (PAC-122 §6):
 // the failure goes to Sentry tagged with the unit's kind and id, which
 // never contain an email address.
+//
+// Grouping (PAC-125): Sentry's default grouping plus the unit's kind, and
+// the unit's id only for kinds whose id names the job (cron, encryption).
+// Every other kind's id is a user, booking or request, and grouping on it
+// would split one failure into an issue per user.
 func reportUnitFailure(u lifecycle.Unit, err error) {
 	sentry.WithScope(func(scope *sentry.Scope) {
 		scope.SetTag("unit.kind", u.Kind)
 		if u.ID != "" {
 			scope.SetTag("unit.id", u.ID)
 		}
+		scope.SetFingerprint(unitFingerprint(u))
 		sentry.CaptureException(err)
 	})
+}
+
+// unitFingerprint is a unit failure's Sentry fingerprint (PAC-125).
+func unitFingerprint(u lifecycle.Unit) []string {
+	fp := []string{"{{ default }}", u.Kind}
+	if u.ID != "" && (u.Kind == "cron" || u.Kind == "encryption") {
+		fp = append(fp, u.ID)
+	}
+	return fp
 }
 
 // installReporters routes background failures to error monitoring: the

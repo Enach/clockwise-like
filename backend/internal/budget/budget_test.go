@@ -272,3 +272,37 @@ func TestWriterFlushHijackNoUnwrap(t *testing.T) {
 		t.Fatalf("late flush changed the answer: %d", rec.Code)
 	}
 }
+
+// PAC-125: the late-panic line names the route WithRoute gives, read before
+// the handler ran, and never the raw path (an email address or a token).
+func TestPanicAfterExpiryLogsRouteNotPath(t *testing.T) {
+	for _, c := range []struct {
+		opts []Option
+		want string
+	}{
+		{[]Option{WithRoute(func(*http.Request) string { return "/api/teams/invites/{token}" })}, "GET /api/teams/invites/{token} panicked"},
+		{nil, "GET unmatched panicked"},
+	} {
+		logged := &syncBuf{}
+		prev := log.Writer()
+		log.SetOutput(logged)
+		done := make(chan struct{})
+		rec := httptest.NewRecorder()
+		Middleware(10*time.Millisecond, nil, c.opts...)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			defer close(done)
+			<-r.Context().Done()
+			for !Expired(r.Context()) {
+				time.Sleep(time.Millisecond)
+			}
+			panic("late")
+		})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/teams/invites/SECRET-TOKEN", nil))
+		<-done
+		for i := 0; i < 100 && !strings.Contains(logged.String(), "late"); i++ {
+			time.Sleep(10 * time.Millisecond)
+		}
+		log.SetOutput(prev)
+		if got := logged.String(); !strings.Contains(got, c.want) || strings.Contains(got, "SECRET-TOKEN") {
+			t.Errorf("logged %q, want %q and no token", got, c.want)
+		}
+	}
+}

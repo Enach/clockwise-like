@@ -309,20 +309,55 @@ func guarded(ctx context.Context, db storage.DBTX, fn func(q storage.Querier) er
 // handler still runs is logged without a data race.
 var routeMux atomic.Pointer[chi.Mux]
 
-// routeOf is r's route pattern, "unmatched" when no route matches, or the
-// path when no router is registered (handlers tested without one).
-func routeOf(r *http.Request) string {
+// noRoute stands in for a path when no route pattern is known: the raw path
+// never reaches a log line or Sentry, since a path parameter can carry an
+// email address (/api/manager/team/members/{email}) or a bearer secret
+// (/api/teams/invites/{token}) (PAC-125).
+const noRoute = "unmatched"
+
+// matchRoute is the registered router's pattern for method and path. It
+// matches on a fresh route context, so it reads nothing a handler goroutine
+// writes and nothing chi recycles once the budget has answered.
+func matchRoute(method, path string) (string, bool) {
 	mx := routeMux.Load()
 	if mx == nil {
-		return r.URL.Path
+		return "", false
 	}
 	rctx := chi.NewRouteContext()
-	if mx.Match(rctx, r.Method, r.URL.Path) {
+	if mx.Match(rctx, method, path) {
+		if p := rctx.RoutePattern(); p != "" {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// RouteLabel is what logs and error monitoring carry in place of a request
+// path: the route pattern, or a fixed placeholder when no route matches or
+// no router is registered (PAC-125).
+func RouteLabel(method, path string) string {
+	if p, ok := matchRoute(method, path); ok {
+		return p
+	}
+	return noRoute
+}
+
+// routeOf is r's route label for the access log and the request unit.
+func routeOf(r *http.Request) string { return RouteLabel(r.Method, r.URL.Path) }
+
+// requestRoute is r's route label for a line its handler writes: the
+// registered router's pattern, else the pattern chi recorded while routing r
+// (a handler tested on a router of its own), else the placeholder.
+func requestRoute(r *http.Request) string {
+	if p, ok := matchRoute(r.Method, r.URL.Path); ok {
+		return p
+	}
+	if rctx := chi.RouteContext(r.Context()); rctx != nil {
 		if p := rctx.RoutePattern(); p != "" {
 			return p
 		}
 	}
-	return "unmatched"
+	return noRoute
 }
 
 // accessLogf is the access log's writer (a test seam).

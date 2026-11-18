@@ -58,14 +58,18 @@ Contract is `yes`, and `light` otherwise.
 
 ## 2. Summary
 
-103 register rows from about 90 candidates (101, plus SF-102 and SF-103 added by the PAC-133 contract). Duplicates across reports were merged
+104 register rows from about 90 candidates (101, plus SF-102 and SF-103 added by the PAC-133 contract and SF-104 added by PAC-125). Duplicates across reports were merged
 (see §9); F3, F6, F14, F24 and L-k were split because their parts differ in
-severity or domain. In total, 92 rows are confirmed and 11 are likely. Four candidates
+severity or domain. In total, 93 rows are confirmed and 11 are likely. Four candidates
 or parts were rejected (§4), and seven finder claims were corrected in place.
 SF-100 was added after review (PR #288) and keeps its number; it sits in its
 sorted position in the register. SF-101 was added by the PAC-120 contract (from
 that spec's challenge, M-2) and sits after SF-068; it is counted in no pattern
 below (its error is answered with the right status but never logged). SF-102 and SF-103 were added by the PAC-133 contract (from that spec's §0 items 1 and 2) and sit after SF-065 and SF-037; they are in the domain counts below and in no pattern.
+SF-104 was added by PAC-125 (an observability leak, not a silent failure:
+request paths carrying an email address or an invite token reached logs and
+Sentry) and sits after SF-099; it is in the domain counts below and in no
+pattern.
 
 | Domain | critical | high | medium | low | total |
 |---|---:|---:|---:|---:|---:|
@@ -80,15 +84,15 @@ below (its error is answered with the right status but never logged). SF-102 and
 | recap | · | · | 1 | 2 | 3 |
 | web-only | 1 | 1 | 14 | 10 | 26 |
 | mcp | · | 2 | 6 | 2 | 10 |
-| observability | · | · | · | 4 | 4 |
-| **total** | **4** | **22** | **41** | **36** | **103** |
+| observability | · | · | 1 | 4 | 5 |
+| **total** | **4** | **22** | **42** | **36** | **104** |
 
 | | count |
 |---|---:|
-| confirmed | 92 |
+| confirmed | 93 |
 | likely | 11 |
 | contract change (`full` process) | 17 |
-| no contract change (`light` process) | 86 |
+| no contract change (`light` process) | 87 |
 
 By shape of failure:
 
@@ -212,6 +216,7 @@ web `web H*`, `web M*` and `web L*`; MCP `M1`..`M11` (no hyphen) and `X1`.
 | SF-097 | low | observability | confirmed | no | light | — | **robfig cron jobs have no panic recovery** | `main.go:52-62` (`cronJob`), `:261`, `:289`, `:304`, `:316`, `:339`; `github.com/robfig/cron/v3 v3.0.1` | `cron.New()` with v3's empty default chain and a `cronJob` wrapper without `recover`: a panic in the personal, auto-decline, recap, manager or erasure job kills the process. See the Observability section. **Fixed (PAC-122)** (batch O): `cronJob` (and the new error-returning `cronJobErr`) defers `lifecycle.Recover`, so a panicking job is recovered, logged, reported through the hook and released; every robfig job goes through it. Pinned by `TestPAC122_CronJobPanicRecoveredAndReported`, `TestPAC122_CronJobErrPanicRecovered` (`backend/main_pac122_test.go`) and `TestPAC122_RecoverReports` (`backend/internal/lifecycle/pac122_test.go`). | internals obs. |
 | SF-098 | low | observability | confirmed | no | light | API-082 (related) | **Background jobs that log only** | `scheduler/cron.go:186-191`; `main.go:316-330`; `engine/auto_decline.go:39-56` | The focus cron logs an error count; the manager cron logs per-user errors; auto-decline reports only the first error. None reaches Sentry per failure. **Fixed (PAC-122)** (batch O): the focus cron reports each failure through the hook, one report per day error (the watermark rule is unchanged); the manager cron reports each manager's failure (`managerDetectionRun`) and a failed listing; auto-decline's `RunAll` returns every user's failure joined, which `cronJobErr` logs and reports. Pinned by `TestPAC122_FocusCronReportsEachFailure`, `TestPAC122_FocusCronReportsUnusableStoredValue` (`backend/scheduler/pac122_test.go`), `TestPAC122_ManagerDetectionReportsEachFailure`, `TestPAC122_CronJobErrReportsTheError` (`backend/main_pac122_test.go`) and `TestPAC122_AutoDeclineReturnsEveryFailure` (`backend/engine/pac122_test.go`). | F9; F14 (cron); F24 (part) |
 | SF-099 | low | observability | confirmed | no | light | — | **Encryption conversion and key-refresher failures are logged only** | `encryption.go:162-169`; `storage/encryption_keys.go:521-553` | Not routed through the existing `secretbox.SetReporter` hook (`encryption.go:57`). **Fixed (PAC-122)** (batch O): a failed automatic conversion (not a stop by shutdown) and every failed refresher step (data-key read, unwrap, `sealed_count` flush, automatic rotation, heartbeat) are reported through the lifecycle hook as `encryption/conversion` and `encryption/keyring-refresher`; the log lines and the tick are unchanged. A step cut short by shutdown is not reported, and a panicking refresher tick is recovered and reported. Pinned by `TestPAC122_ConversionFailureReported`, `TestPAC122_RefresherTickPanicRecovered` (`backend/main_pac122_test.go`), `TestPAC122_RefresherFailuresReported` and `TestPAC122_RefresherShutdownNotReported` (`backend/storage/pac122_refresher_test.go`). | F22 |
+| SF-104 | medium | observability | confirmed | no | light | — | **Path parameters (email addresses, invite tokens) reach the logs and Sentry** | `api/server_errors.go:47` (`logServerError`); `api/handlers_teams.go:702` (invite sweep); `api/handlers_pac71_auth.go:123`; `api/routes.go:22` (request unit id); `internal/budget/budget.go:160`; `sentry.go` (`scrubRequest`); `nginx/nginx.conf:16` (`log_format`) | `DELETE /api/manager/team/members/{email}` carries an address and `/api/teams/invites/{token}` a bearer secret. Every server-error line and the invite-sweep line logged `r.URL.Path`; the request unit and the budget's late-panic line named it too; `scrubRequest` dropped the query string but sent the path (and the `Referer`, which on the web app's invite page `/app/team/invite/:token` holds the token) to Sentry; nginx's access log wrote `$uri`. Unit failures grouped by Sentry's default only. **Fixed (PAC-125)**: every backend line that named a path names the chi route pattern instead (`requestRoute`, `routeOf`; the request unit and the budget line via `budget.WithRoute`), with the fixed placeholder `unmatched` when no pattern is known; the backend access log already did (PAC-81 AC-A13) and now falls back to the placeholder, not the path, when no router is registered. `scrubRequest` replaces the event URL's path with the route pattern (`api.RouteLabel`) and drops `Referer`. nginx logs `$paceday_log_uri`: `$uri` with the member address and the invite token (API and web page) replaced by `{email}`/`{token}`, case-insensitively, copying nothing after the fixed prefix. `reportUnitFailure` sets the fingerprint `{{ default }}`, kind, plus the id for `cron` and `encryption` only. `outbound.RedactAddresses` also redacts words containing `%40`. Pinned by `TestPAC125_ServerErrorOnParamRoutesLeaksNoParam` (a 500 on both routes against a real database: log, access line and the whole Sentry event), `TestPAC125_ScrubRequestReplacesPathWithPattern`, `TestPAC125_UnitFailureFingerprint` (`backend/main_pac125_test.go`), `TestPAC125_AccessLogCarriesNoEmailOrToken`, `TestPAC125_NoRouterLogsPlaceholder`, `TestPAC125_LogServerErrorNamesPattern`, `TestPAC125_RequestUnitNamesPattern` (`backend/api/pac125_test.go`), `TestPanicAfterExpiryLogsRouteNotPath` (`backend/internal/budget`), `TestRedactAddressesPercentEncoded` (`backend/internal/outbound`) and `TestPAC125AccessLogHasNoEmailOrInviteToken` (`nginx/test/pac125_test.go`). | PAC-125 |
 
 ## 4. Rejected
 
