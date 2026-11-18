@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/peritem"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
@@ -60,6 +62,11 @@ func (b *PersonalBlocker) SyncAllForUser(ctx context.Context, userID uuid.UUID) 
 		}
 		if err := b.syncOne(ctx, &cal); err != nil {
 			log.Printf("personal_blocker: sync cal %d (%s): %v", cal.ID, cal.Name, err)
+			// PAC-122 SF-042 (reporting half): the failure reaches error
+			// monitoring by calendar id (never its name); the user's other
+			// calendars still sync and the result is unchanged.
+			lifecycle.Report(lifecycle.Unit{Kind: "personal-calendar-sync", ID: strconv.FormatInt(cal.ID, 10)},
+				fmt.Errorf("personal_blocker: sync cal %d for user %s: %w", cal.ID, userID, err))
 		}
 	}
 	return nil

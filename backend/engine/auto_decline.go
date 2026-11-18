@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -36,24 +37,24 @@ func (s *AutoDeclineService) RunAll(ctx context.Context) error {
 		return err
 	}
 
-	var firstErr error
+	// PAC-122 SF-098: every user's failure is returned (joined), not only
+	// the first, so the cron reports each one.
+	var errs []error
 	for _, userID := range userIDs {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return errors.Join(append(errs, ctx.Err())...)
 		}
 		count, runErr := s.RunForUser(ctx, userID, time.Now())
 		if runErr != nil {
 			log.Printf("auto-decline for user %s: %v", userID, runErr)
-			if firstErr == nil {
-				firstErr = runErr
-			}
+			errs = append(errs, fmt.Errorf("auto-decline for user %s: %w", userID, runErr))
 			continue
 		}
 		if count > 0 {
 			log.Printf("auto-decline for user %s: declined %d invitation(s)", userID, count)
 		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }
 
 // RunForUser scans the next ten working days and sends declined RSVP updates

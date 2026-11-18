@@ -92,8 +92,10 @@ func (h *analyticsHandlers) meetings(w http.ResponseWriter, r *http.Request) {
 func (h *analyticsHandlers) recompute(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
-	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "analytics-recompute", ID: userID.String()}, func(ctx context.Context) {
-		_, _ = h.eng.ForceCompute(ctx, userID, time.Now())
+	// PAC-122 SF-096: its error is logged and reported, not discarded.
+	lifecycle.GoFromErr(r.Context(), lifecycle.Unit{Kind: "analytics-recompute", ID: userID.String()}, func(ctx context.Context) error {
+		_, err := h.eng.ForceCompute(ctx, userID, time.Now())
+		return err
 	})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
