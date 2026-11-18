@@ -11,6 +11,7 @@ package api
 // picks another one and the create succeeds.
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -118,5 +119,63 @@ func TestPAC126_ExplicitSlugIsNeverReplaced(t *testing.T) {
 	}
 	if _, err := storage.GetSchedulingLinkBySlug(e.db, slug); err != nil {
 		t.Fatalf("A's link: %v", err)
+	}
+}
+
+// pac126LoseSlug makes the first n create attempts lose their slug: the
+// owner-host seam runs inside the create transaction right after the link
+// insert, and answering it with the slug's conflict error rolls the attempt
+// back exactly as a concurrent winner's index entry would. It returns how
+// many attempts reached the seam.
+func pac126LoseSlug(t *testing.T, n int) *int {
+	t.Helper()
+	calls := 0
+	storage.InstallCreateOwnerHost(t, func(uuid.UUID) error {
+		calls++
+		if calls <= n {
+			return &storage.LinkCreateConflictError{Constraint: storage.LinkSlugConstraint, Err: errors.New("pac126: slug taken")}
+		}
+		return nil
+	})
+	return &calls
+}
+
+// Two lost generated slugs: the third insert succeeds, under a slug of its own.
+func TestPAC126_ThirdGeneratedSlugInsertSucceeds(t *testing.T) {
+	e := newPAC119Env(t)
+	owner := e.owner("p126-third")
+	calls := pac126LoseSlug(t, 2)
+	s := pac112Saved(t, e.send(owner, "", `{"title":"PAC-126 third"}`, ""), http.StatusCreated)
+	if *calls != 3 {
+		t.Errorf("%d inserts; want 3", *calls)
+	}
+	if n := e.linkCount(owner); n != 1 || s.Slug == "" {
+		t.Errorf("%d links, slug %q; want 1 link", n, s.Slug)
+	}
+}
+
+// Every generated slug lost: the third loss is the 500, after exactly three
+// inserts, and nothing is left behind.
+func TestPAC126_ThirdGeneratedSlugCollisionIs500(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		keyed bool
+	}{{"keyless", false}, {"keyed", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newPAC119Env(t)
+			owner := e.owner("p126-500")
+			key := ""
+			if c.keyed {
+				key = pac119NewKey()
+			}
+			calls := pac126LoseSlug(t, 1<<30)
+			pac112Body(t, e.send(owner, key, `{"title":"PAC-126 lost"}`, ""), http.StatusInternalServerError, `{"error":"internal error"}`, "third loss")
+			if *calls != 3 {
+				t.Errorf("%d inserts; want 3", *calls)
+			}
+			if n, k := e.linkCount(owner), e.keyRows(owner); n != 0 || k != 0 {
+				t.Errorf("%d links, %d key rows; want none", n, k)
+			}
+		})
 	}
 }
