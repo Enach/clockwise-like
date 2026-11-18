@@ -19,16 +19,26 @@
  * Every other person is run-unique, and every team is created and deleted by
  * its own journey. The journeys run serially: the team page shows the owner's
  * newest team, so two journeys of this file must not hold a team at once.
+ *
+ * Owner controls on the page (web factory/pac-129 @ 9ca80d6): the "Remove
+ * <name>" button exists only in the Manage members sheet (opened from the
+ * Protected hours tab), and only for the owner. The web decides ownership by
+ * comparing the team's owner_email with the email it cached from the FIRST
+ * team of GET /api/teams (newest first), so each journey asserts that its team
+ * is that first team before using an owner control. The button is labelled
+ * with the display name (the name given, else the address) and deletes at once,
+ * with no confirmation; the Manager Team tab's own remove button (title
+ * "Remove", AlertDialog) is never used here.
  * Find a time is asked for a Thursday thirteen weeks ahead, a day no other
  * journey seeds.
  *
- * Selectors are the web half's (smart-calendar-flow factory/pac-129, de24859,
+ * Selectors are the web half's (smart-calendar-flow factory/pac-129, 9ca80d6,
  * src/components/team/teamTexts.ts): team-add-person-open,
  * team-add-person-submit, team-person-<email>, team-person-added-label,
  * team-slot-counts; texts are contract §9's.
  */
 
-import { test, expect, type Db } from '../fixtures';
+import { test, expect, type ApiClient, type Db } from '../fixtures';
 import type { SessionUser } from '../auth';
 import { fake } from '../fake';
 import { CONNECTED } from '../seed/ids';
@@ -63,6 +73,17 @@ async function teamOf(db: Db, run: string, members: SessionUser[]): Promise<stri
   return team!.id;
 }
 
+/**
+ * The web's owner check rests on the first team of the owner's list: it must
+ * be this journey's team, or the owner controls do not render.
+ */
+async function expectFirstTeam(apiAs: (u: SessionUser) => ApiClient, teamId: string): Promise<void> {
+  const res = await apiAs(OWNER).get('/api/teams');
+  expect(res.status()).toBe(200);
+  const teams = (await res.json()) as Array<{ id: string }>;
+  expect(teams[0]?.id, 'the journey team must be the owner\'s first team').toBe(teamId);
+}
+
 async function count(db: Db, sql: string, params: unknown[]): Promise<number> {
   const row = await db.queryOne<{ n: string }>(sql, params);
   return Number(row!.n);
@@ -75,9 +96,10 @@ test.describe('PAC-129 — people added to a team without Paceday access', () =>
     teamId = '';
   });
 
-  test('AC-1, AC-3: the owner adds a person from the team page; nothing is sent', async ({ db, pageAs, assertNotDemo }) => {
+  test('AC-1, AC-3: the owner adds a person from the team page; nothing is sent', async ({ db, apiAs, pageAs, assertNotDemo }) => {
     const run = runId();
     teamId = await teamOf(db, run, []);
+    await expectFirstTeam(apiAs, teamId);
     const pat = `e2e.pac129.pat.${run}@ext.e2e.test`;
 
     const page = await pageAs(OWNER);
@@ -106,8 +128,10 @@ test.describe('PAC-129 — people added to a team without Paceday access', () =>
     // "added", never "sent" or "invited"; the person is listed without a reload.
     await expect(page.getByText(`${pat} added.`)).toBeVisible();
     await expect(page.getByText(/invite sent|invited/i)).toHaveCount(0);
+    // The add dialog closed on success; the sheet lists the person.
     await page.getByRole('button', { name: 'Manage members' }).click();
-    const row = page.getByTestId(`team-person-${pat}`);
+    const sheet = page.getByRole('dialog', { name: 'Manage members' });
+    const row = sheet.getByTestId(`team-person-${pat}`);
     await expect(row).toBeVisible();
     await expect(row.getByTestId('team-person-added-label')).toHaveText('Added (no Paceday access)');
 
@@ -200,19 +224,25 @@ test.describe('PAC-129 — people added to a team without Paceday access', () =>
       [teamId, sam, OWNER.id, `e2e-pac129-old-${run}`],
     );
 
+    await expectFirstTeam(apiAs, teamId);
+
     const page = await pageAs(OWNER);
     await page.goto('/app/team');
     await assertNotDemo(page);
     await page.getByRole('tab', { name: 'Protected hours' }).click();
     await page.getByRole('button', { name: 'Manage members' }).click();
-    const row = page.getByTestId(`team-person-${sam}`);
+    const sheet = page.getByRole('dialog', { name: 'Manage members' });
+    const row = sheet.getByTestId(`team-person-${sam}`);
     await expect(row.getByTestId('team-person-added-label')).toBeVisible();
 
+    // Labelled with the display name ("Sam", given with the invitation); it
+    // deletes at once, with no confirmation dialog.
     const removed = page.waitForResponse((r) => r.url().includes(`/api/teams/${teamId}/people/`) && r.request().method() === 'DELETE');
-    await page.getByRole('button', { name: 'Remove Sam' }).click();
+    await sheet.getByRole('button', { name: 'Remove Sam', exact: true }).click();
     expect((await removed).status()).toBe(204);
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
     await expect(page.getByText('Sam removed.')).toBeVisible();
-    await expect(page.getByTestId(`team-person-${sam}`)).toHaveCount(0);
+    await expect(sheet.getByTestId(`team-person-${sam}`)).toHaveCount(0);
 
     // No row of T holds the address; the old link no longer works.
     expect(await count(db, 'SELECT count(*) AS n FROM team_added_members WHERE team_id = $1', [teamId])).toBe(0);
