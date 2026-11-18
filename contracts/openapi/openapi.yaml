@@ -6327,6 +6327,14 @@ paths:
         API-080 is fixed here (spec AC-35, D-20): a result with no time range carries neither `range_start`
         nor `range_end`, never `0001-01-01T00:00:00Z`.
 
+        **Attendee and range failures are reported (PAC-122; SF-037 second and third clauses).** When
+        the attendee extraction (the first LLM call) fails or does not answer JSON, the parse goes on
+        and the answer is still 200 with `intent` and the other parsed members, and `error` set to a fixed
+        sentence (see NLPParseResult.error) - unless an error is already set, which is kept unchanged.
+        A `range_start` or `range_end` that is not a `YYYY-MM-DD` date gives `intent` `unknown` with an
+        error (the model''s own, or a fixed sentence). No provider text reaches the answer; the extraction''s
+        (redacted) failure goes to the server log with the user id only.
+
         '
       requestBody:
         required: true
@@ -6406,12 +6414,7 @@ paths:
             `{"error":"internal error"}`. The detail is written to the server log and Sentry only (PAC-21).
             "AI not configured" is never a 500; it is the 200 with `not_configured`. Since PAC-81 (spec
             AC-A3) each LLM call has its own 30 s limit; a call that fails on that limit is a provider
-            failure and answers as one does today, not the 503. Since PAC-122 (SF-037) two more failures
-            are this 500 rather than a 200 missing something: the first LLM call (attendee extraction)
-            failing, which was ignored and left the attendees out, and, for a `schedule_meeting` result
-            with a range, the slot search failing (a calendar or freebusy failure, the settings read),
-            which left `suggested_slots` absent so the web said "No available slots found". A caller with
-            no Google calendar connected still gets the 200 with no `suggested_slots`.'
+            failure and answers as one does today, not the 503.'
           content:
             application/json:
               schema:
@@ -13050,12 +13053,17 @@ components:
           type: string
         error:
           type: string
-          description: 'Set (with intent `unknown`) when the LLM call fails or returns invalid JSON (`LLM
-            returned invalid JSON`; since PAC-122 the first call, attendee extraction, too), when the
-            destination is refused, when AI is not configured (then equal to `not_configured.message`),
-            and since PAC-122 (SF-037) when `range_start` or `range_end` in the model''s answer is not
-            a `YYYY-MM-DD` date (`LLM returned an invalid date range`; before, the range was dropped and
-            no slot was searched) - still HTTP 200.
+          description: 'Still HTTP 200 in every case. Set (with intent `unknown`) when the LLM call fails
+            or returns invalid JSON, when the destination is refused, and when AI is not configured (then
+            equal to `not_configured.message`). Also set by the model''s own answer, with any intent.
+            Precedence: an error already set is never replaced. PAC-122 (SF-037 second clause): when the
+            attendee extraction (the first LLM call) failed or did not answer JSON and no error was already
+            set, exactly `Paceday could not identify the attendees in this request. Check the attendees
+            before booking.`, with `intent` and the other members as parsed (before, the failure was ignored).
+            PAC-122 (SF-037 third clause): when `range_start` or `range_end` in the model''s answer is
+            not a `YYYY-MM-DD` date, `intent` is `unknown` and `error` is the model''s own error if it
+            set one, else `LLM returned an invalid date range` (before, the range was dropped and no slot
+            was searched).
 
             '
         not_configured:

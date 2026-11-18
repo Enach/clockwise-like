@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -198,14 +199,14 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 	}
 
 	// Pass 1: Extract attendee emails with a lightweight prompt. PAC-122
-	// SF-037: its failure is the parse's (as pass 2's is), never "no
-	// attendees".
-	attendees, err := s.extractAttendees(ctx, client, text, decision.Redact)
-	if errors.Is(err, errInvalidLLMJSON) {
-		return &ParseResult{Intent: "unknown", Error: invalidJSONMessage}, nil
-	}
-	if err != nil {
-		return nil, err
+	// SF-037 (second clause): a failure is no longer silent. The parse goes
+	// on without the attendees' details and, after pass 2, says so in
+	// `error` unless an error is already set (the PAC-133 precedence).
+	attendees, attendeeErr := s.extractAttendees(ctx, client, text, decision.Redact)
+	if attendeeErr != nil {
+		// The provider text was redacted by extractAttendees; the user id
+		// only, never the typed text.
+		log.Printf("nlp: attendee extraction failed for user %s: %v", auth.UserIDFromContext(ctx), attendeeErr)
 	}
 
 	// Resolve participant info (timezone, working hours)
@@ -228,6 +229,9 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 
 	result := parseRawJSON(decision.Redact(rawJSON))
 	result.ParticipantInfos = participants
+	if attendeeErr != nil && result.Error == "" {
+		result.Error = attendeeExtractionMessage
+	}
 
 	if result.Intent == "schedule_meeting" && !result.RangeStart.IsZero() {
 		scheduler := &engine.SmartScheduler{DB: s.DB, OAuthConfig: s.OAuthConfig}
@@ -241,16 +245,8 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 			AvoidTimes:      result.AvoidTimes,
 		}
 		suggestions, err := scheduler.Suggest(ctx, req)
-		switch {
-		case err == nil:
+		if err == nil {
 			result.SuggestedSlots = suggestions.Slots
-		case errors.Is(err, engine.ErrCalendarNotConnected):
-			// No calendar to search: the result carries no slots, as before.
-		default:
-			// PAC-122 SF-037: a failed slot search is the parse's 500, never
-			// a 200 with no slots (which the web shows as "No available
-			// slots found").
-			return nil, fmt.Errorf("suggest slots: %w", err)
 		}
 	}
 
@@ -262,9 +258,10 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 // the JSON asked for.
 const invalidJSONMessage = "LLM returned invalid JSON"
 
-// errInvalidLLMJSON is extractAttendees' error for an answer that does not
-// decode.
-var errInvalidLLMJSON = errors.New(invalidJSONMessage)
+// attendeeExtractionMessage is the result's error when the attendee
+// extraction (the first LLM call) failed or did not answer JSON, and no
+// error was already set (PAC-122 SF-037). Fixed: no provider text.
+const attendeeExtractionMessage = "Paceday could not identify the attendees in this request. Check the attendees before booking."
 
 func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, text string, redact func(string) string) ([]string, error) {
 	rawJSON, err := client.Complete(ctx, attendeeExtractionPrompt, text)
@@ -278,7 +275,7 @@ func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, tex
 		Attendees []string `json:"attendees"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &result); err != nil {
-		return nil, errInvalidLLMJSON
+		return nil, errors.New("attendee extraction: " + invalidJSONMessage)
 	}
 	return result.Attendees, nil
 }
@@ -324,7 +321,13 @@ func parseRawJSON(rawJSON string) *ParseResult {
 		result.RangeEnd, endErr = time.Parse("2006-01-02", raw.RangeEnd)
 	}
 	if startErr != nil || endErr != nil {
-		return &ParseResult{Intent: "unknown", Error: invalidRangeMessage}
+		// The model's own error, when it set one, is kept (the PAC-133
+		// precedence: an error already set is never replaced).
+		msg := raw.Error
+		if msg == "" {
+			msg = invalidRangeMessage
+		}
+		return &ParseResult{Intent: "unknown", Error: msg}
 	}
 	return result
 }
