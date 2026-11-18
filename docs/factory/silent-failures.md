@@ -523,6 +523,8 @@ code under `backend/` and `mcp/`.
     - `WriteAuditLogCtx` (§4 L-c).
 
   Removing entries is follow-up work, not part of the guard's PR.
+- **The baseline now: 20 entries** (5 known, 6 PAC-141, 9 fine). PAC-140
+  fixed its 4 (SF-108) and removed their lines.
 
 The web counterpart is the **optimistic UI claim** (29 rows). It matches
 `@typescript-eslint/no-floating-promises` (which catches `void
