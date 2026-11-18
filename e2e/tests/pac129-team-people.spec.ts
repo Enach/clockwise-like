@@ -20,25 +20,31 @@
  * its own journey. The journeys run serially: the team page shows the owner's
  * newest team, so two journeys of this file must not hold a team at once.
  *
- * Owner controls on the page (web factory/pac-129 @ 9ca80d6): the "Remove
- * <name>" button exists only in the Manage members sheet (opened from the
- * Protected hours tab), and only for the owner. The web decides ownership by
- * comparing the team's owner_email with the email it cached from the FIRST
- * team of GET /api/teams (newest first), so each journey asserts that its team
- * is that first team before using an owner control. The button is labelled
- * with the display name (the name given, else the address) and deletes at once,
- * with no confirmation; the Manager Team tab's own remove button (title
- * "Remove", AlertDialog) is never used here.
+ * The team page's tabs ("Protected hours", "Find a time") are plain buttons
+ * in its tab bar (src/pages/Team.tsx TABS), not role="tab"; they are matched
+ * as buttons by their exact name.
+ *
+ * Owner controls on the page (web factory/pac-129 @ 195a533, #180): the web
+ * decides "me" from the signed-in session (/api/auth/me, lower-cased) and
+ * shows owner controls to any owner of the team. Every journey that uses one
+ * is signed in as OWNER, the owner of its team. "Add to team"
+ * (team-add-person-open) and "Invite to Paceday" (team-invite-open) render
+ * only for owners. The "Remove <name>" button exists only in the Manage
+ * members sheet (opened from the Protected hours tab); it is labelled with the
+ * display name (the name given, else the address; with the address in
+ * parentheses only when two people share a name) and deletes at once, with no
+ * confirmation. The Manager Team tab's own remove button (title "Remove",
+ * AlertDialog) is never used here.
  * Find a time is asked for a Thursday thirteen weeks ahead, a day no other
  * journey seeds.
  *
- * Selectors are the web half's (smart-calendar-flow factory/pac-129, 9ca80d6,
+ * Selectors are the web half's (smart-calendar-flow factory/pac-129, 195a533,
  * src/components/team/teamTexts.ts): team-add-person-open,
  * team-add-person-submit, team-person-<email>, team-person-added-label,
  * team-slot-counts; texts are contract §9's.
  */
 
-import { test, expect, type ApiClient, type Db } from '../fixtures';
+import { test, expect, type Db } from '../fixtures';
 import type { SessionUser } from '../auth';
 import { fake } from '../fake';
 import { CONNECTED } from '../seed/ids';
@@ -73,17 +79,6 @@ async function teamOf(db: Db, run: string, members: SessionUser[]): Promise<stri
   return team!.id;
 }
 
-/**
- * The web's owner check rests on the first team of the owner's list: it must
- * be this journey's team, or the owner controls do not render.
- */
-async function expectFirstTeam(apiAs: (u: SessionUser) => ApiClient, teamId: string): Promise<void> {
-  const res = await apiAs(OWNER).get('/api/teams');
-  expect(res.status()).toBe(200);
-  const teams = (await res.json()) as Array<{ id: string }>;
-  expect(teams[0]?.id, 'the journey team must be the owner\'s first team').toBe(teamId);
-}
-
 async function count(db: Db, sql: string, params: unknown[]): Promise<number> {
   const row = await db.queryOne<{ n: string }>(sql, params);
   return Number(row!.n);
@@ -96,16 +91,15 @@ test.describe('PAC-129 — people added to a team without Paceday access', () =>
     teamId = '';
   });
 
-  test('AC-1, AC-3: the owner adds a person from the team page; nothing is sent', async ({ db, apiAs, pageAs, assertNotDemo }) => {
+  test('AC-1, AC-3: the owner adds a person from the team page; nothing is sent', async ({ db, pageAs, assertNotDemo }) => {
     const run = runId();
     teamId = await teamOf(db, run, []);
-    await expectFirstTeam(apiAs, teamId);
     const pat = `e2e.pac129.pat.${run}@ext.e2e.test`;
 
     const page = await pageAs(OWNER);
     await page.goto('/app/team');
     await assertNotDemo(page);
-    await page.getByRole('tab', { name: 'Protected hours' }).click();
+    await page.getByRole('button', { name: 'Protected hours', exact: true }).click();
     await page.getByTestId('team-add-person-open').click();
 
     const dialog = page.getByRole('dialog', { name: 'Add to team without Paceday access' });
@@ -195,12 +189,18 @@ test.describe('PAC-129 — people added to a team without Paceday access', () =>
       expect(r.freebusy_ids!.length).toBeLessThanOrEqual(50);
     }
 
-    // AC-10 on screen: each slot shows the server's counts (SF-054).
+    // AC-10 on screen, for the member M (not an owner).
     const page = await pageAs(m);
     await page.goto('/app/team');
     await assertNotDemo(page);
+    // Owner-only controls are not offered to a member.
+    await page.getByRole('button', { name: 'Protected hours', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Manage members' })).toBeVisible();
+    await expect(page.getByTestId('team-add-person-open')).toHaveCount(0);
+    await expect(page.getByTestId('team-invite-open')).toHaveCount(0);
+    // Each slot shows the server's counts (SF-054).
     const answered = page.waitForResponse((r) => r.url().includes(`/api/teams/${teamId}/availability`));
-    await page.getByRole('tab', { name: 'Find a time' }).click();
+    await page.getByRole('button', { name: 'Find a time', exact: true }).click();
     const shown = await answered;
     expect(shown.status()).toBe(200);
     const first = ((await shown.json()) as { slots: Array<{ free_count: number; unknown_count: number; total_count: number }> }).slots[0];
@@ -224,12 +224,10 @@ test.describe('PAC-129 — people added to a team without Paceday access', () =>
       [teamId, sam, OWNER.id, `e2e-pac129-old-${run}`],
     );
 
-    await expectFirstTeam(apiAs, teamId);
-
     const page = await pageAs(OWNER);
     await page.goto('/app/team');
     await assertNotDemo(page);
-    await page.getByRole('tab', { name: 'Protected hours' }).click();
+    await page.getByRole('button', { name: 'Protected hours', exact: true }).click();
     await page.getByRole('button', { name: 'Manage members' }).click();
     const sheet = page.getByRole('dialog', { name: 'Manage members' });
     const row = sheet.getByTestId(`team-person-${sam}`);
