@@ -276,7 +276,7 @@
     {
       "consumer": "mcp clockwise_apply_compression",
       "breaks": "no",
-      "detail": "still sends empty proposals (SF-063)."
+      "detail": "since PAC-122 batch 7 (SF-063), reads compress's camelCase plan and sends apply snake_case proposals."
     },
     {
       "consumer": "mcp clockwise_parse_command",

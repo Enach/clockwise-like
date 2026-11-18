@@ -45,34 +45,20 @@ func buildServer(c *backendClient) *server.MCPServer {
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_update_event",
-		mcp.WithDescription("Partially update an existing calendar event by ID"),
+		mcp.WithDescription(`Partially update an existing calendar event by ID. Only the fields given change; at least one must be given. Pass description or location as "" to remove it; an empty title, start, end or attendees is ignored.`),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Google Calendar event ID")),
 		mcp.WithString("title", mcp.Description("New title")),
-		mcp.WithString("description", mcp.Description("New description")),
-		mcp.WithString("location", mcp.Description("New location")),
+		mcp.WithString("description", mcp.Description(`New description ("" removes it)`)),
+		mcp.WithString("location", mcp.Description(`New location ("" removes it)`)),
 		mcp.WithString("start", mcp.Description("New start time in RFC3339")),
 		mcp.WithString("end", mcp.Description("New end time in RFC3339")),
 		mcp.WithString("attendees", mcp.Description("Comma-separated attendee emails")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := strArg(req, "id")
-		payload := map[string]any{}
-		if v := strArg(req, "title"); v != "" {
-			payload["title"] = v
-		}
-		if v := strArg(req, "description"); v != "" {
-			payload["description"] = v
-		}
-		if v := strArg(req, "location"); v != "" {
-			payload["location"] = v
-		}
-		if v := strArg(req, "start"); v != "" {
-			payload["start"] = v
-		}
-		if v := strArg(req, "end"); v != "" {
-			payload["end"] = v
-		}
-		if v := strArg(req, "attendees"); v != "" {
-			payload["attendees"] = splitEmails(v)
+		payload := updateEventPayload(req)
+		if len(payload) == 0 {
+			// PAC-122 SF-094: an update that changes nothing is not a success.
+			return mcp.NewToolResultError("Error: nothing to update: give at least one of title, description, location, start, end or attendees"), nil
 		}
 		res, err := c.patch(ctx, "/api/events/"+id, payload)
 		return jsonResult(res, err)
@@ -83,9 +69,8 @@ func buildServer(c *backendClient) *server.MCPServer {
 		mcp.WithString("id", mcp.Required(), mcp.Description("Google Calendar event ID")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := strArg(req, "id")
-		err := c.delete(ctx, "/api/events/"+id)
-		if err != nil {
-			return mcp.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
+		if _, err := c.delete(ctx, "/api/events/"+id); err != nil {
+			return toolError(err), nil
 		}
 		return mcp.NewToolResultText("Event deleted"), nil
 	})
@@ -118,20 +103,27 @@ func buildServer(c *backendClient) *server.MCPServer {
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_list_focus_blocks",
-		mcp.WithDescription("List all currently scheduled focus time blocks"),
+		mcp.WithDescription("List the focus time blocks scheduled in the 7 days from today (server date, today included), not every block"),
 	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		res, err := c.get(ctx, "/api/focus/blocks", nil)
 		return jsonResult(res, err)
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_clear_focus_blocks",
-		mcp.WithDescription("Delete all focus time blocks from the calendar"),
+		mcp.WithDescription("Delete the focus time blocks of the current week (Monday to Sunday, by the server date) from the calendar; blocks in other weeks are kept. Reports how many were deleted."),
 	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		err := c.delete(ctx, "/api/focus/blocks")
+		res, err := c.delete(ctx, "/api/focus/blocks")
 		if err != nil {
-			return mcp.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
+			return toolError(err), nil
 		}
-		return mcp.NewToolResultText("Focus blocks cleared"), nil
+		// PAC-122 SF-064: say which week was cleared and how many blocks.
+		var out struct {
+			Deleted *int `json:"deleted"`
+		}
+		if err := json.Unmarshal(res, &out); err != nil || out.Deleted == nil {
+			return toolError(fmt.Errorf("focus blocks cleared, but the backend did not say how many: %s", res)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("Cleared %d focus block(s) of the current week (Monday to Sunday); other weeks are untouched.", *out.Deleted)), nil
 	})
 
 	// ── Scheduling ────────────────────────────────────────────────────────────
@@ -156,10 +148,26 @@ func buildServer(c *backendClient) *server.MCPServer {
 		if err != nil {
 			return jsonResult(nil, err)
 		}
+		if len(proposals) == 0 {
+			// An empty plan, as an object or an array, moves nothing and
+			// is not sent.
+			return mcp.NewToolResultText("Nothing to apply: the plan has no proposals."), nil
+		}
 		res, err := c.post(ctx, "/api/schedule/compress/apply", map[string]any{
 			"proposals": proposals,
 		})
-		return jsonResult(res, err)
+		if err != nil {
+			return toolError(err), nil
+		}
+		// A 200 that moved nothing and lists failures is not a success.
+		var outcome struct {
+			Applied []json.RawMessage `json:"applied"`
+			Failed  []json.RawMessage `json:"failed"`
+		}
+		if json.Unmarshal(res, &outcome) == nil && len(outcome.Applied) == 0 && len(outcome.Failed) > 0 {
+			return mcp.NewToolResultError("Error: no proposal was applied: " + string(res)), nil
+		}
+		return mcp.NewToolResultText(string(res)), nil
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_parse_command",
@@ -275,25 +283,102 @@ func schedulingRange(preferredDate string) (time.Time, time.Time, error) {
 	return start, start.Add(7 * 24 * time.Hour), nil
 }
 
-func decodeCompressionProposals(raw string) ([]compressionProposal, error) {
-	var direct struct {
-		Proposals []compressionProposal `json:"proposals"`
+// planProposal is one proposal of a plan as the tool receives it. POST
+// /api/schedule/compress encodes engine.MoveProposal in camelCase (eventId,
+// proposedStart, proposedEnd); the snake_case names apply takes are read too
+// (PAC-122 SF-063).
+type planProposal struct {
+	EventID            string `json:"eventId"`
+	ProposedStart      string `json:"proposedStart"`
+	ProposedEnd        string `json:"proposedEnd"`
+	EventIDSnake       string `json:"event_id"`
+	ProposedStartSnake string `json:"proposed_start"`
+	ProposedEndSnake   string `json:"proposed_end"`
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
 	}
-	if err := json.Unmarshal([]byte(raw), &direct); err == nil && direct.Proposals != nil {
-		return direct.Proposals, nil
+	return b
+}
+
+// decodePlan reads the proposals of a plan in one of the shapes the tool
+// takes: an object {"proposals": [...]}, an array of such results (as
+// compress_schedule returns it), or a bare array of proposals. Only an
+// explicitly empty plan ([], or a proposals key that is [] or null) decodes
+// to no proposals; anything else without proposals is an error, never an
+// empty plan (PAC-122 SF-063).
+func decodePlan(raw string) ([]planProposal, error) {
+	var asObject map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &asObject); err == nil {
+		props, ok := asObject["proposals"]
+		if !ok {
+			return nil, fmt.Errorf("plan has no proposals key")
+		}
+		var plan []planProposal
+		if err := json.Unmarshal(props, &plan); err != nil {
+			return nil, fmt.Errorf("plan proposals must be a list: %w", err)
+		}
+		return plan, nil
 	}
-	var results []struct {
-		Proposals []compressionProposal `json:"proposals"`
-	}
-	if err := json.Unmarshal([]byte(raw), &results); err != nil {
+	var elements []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &elements); err != nil {
 		return nil, fmt.Errorf("plan must be compression JSON: %w", err)
 	}
-	var proposals []compressionProposal
-	for _, result := range results {
-		proposals = append(proposals, result.Proposals...)
+	isProposal := func(e map[string]json.RawMessage) bool {
+		_, camel := e["eventId"]
+		_, snake := e["event_id"]
+		return camel || snake
 	}
-	if proposals == nil {
-		return nil, fmt.Errorf("plan does not contain proposals")
+	bare := len(elements) > 0
+	for _, e := range elements {
+		if _, ok := e["proposals"]; ok || !isProposal(e) {
+			bare = false
+			break
+		}
+	}
+	if bare {
+		// A bare list of proposals: each one's times are checked below.
+		var plan []planProposal
+		if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+			return nil, fmt.Errorf("plan proposals must be objects: %w", err)
+		}
+		return plan, nil
+	}
+	var plan []planProposal
+	for i, e := range elements {
+		props, ok := e["proposals"]
+		if !ok {
+			return nil, fmt.Errorf("plan element at index %d has no proposals key", i)
+		}
+		var part []planProposal
+		if err := json.Unmarshal(props, &part); err != nil {
+			return nil, fmt.Errorf("plan element at index %d: proposals must be a list: %w", i, err)
+		}
+		plan = append(plan, part...)
+	}
+	return plan, nil
+}
+
+func decodeCompressionProposals(raw string) ([]compressionProposal, error) {
+	plan, err := decodePlan(raw)
+	if err != nil {
+		return nil, err
+	}
+	proposals := make([]compressionProposal, 0, len(plan))
+	for i, p := range plan {
+		out := compressionProposal{
+			EventID:       firstNonEmpty(p.EventID, p.EventIDSnake),
+			ProposedStart: firstNonEmpty(p.ProposedStart, p.ProposedStartSnake),
+			ProposedEnd:   firstNonEmpty(p.ProposedEnd, p.ProposedEndSnake),
+		}
+		// A proposal read as empty would be sent and fail as ": invalid
+		// time format" behind a 200; refuse it here instead.
+		if out.EventID == "" || out.ProposedStart == "" || out.ProposedEnd == "" {
+			return nil, fmt.Errorf("plan proposal %d has no eventId, proposedStart or proposedEnd", i+1)
+		}
+		proposals = append(proposals, out)
 	}
 	return proposals, nil
 }
@@ -309,11 +394,51 @@ func strArg(req mcp.CallToolRequest, key string) string {
 	return ""
 }
 
+// jsonResult relays a backend body, or err as a tool error (isError), so a
+// client never reads a failed call as a success (PAC-122 SF-061).
 func jsonResult(data []byte, err error) (*mcp.CallToolResult, error) {
 	if err != nil {
-		return mcp.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
+		return toolError(err), nil
 	}
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+func toolError(err error) *mcp.CallToolResult {
+	return mcp.NewToolResultError(fmt.Sprintf("Error: %v", err))
+}
+
+// updateEventPayload is the PATCH body of clockwise_update_event (PAC-122
+// SF-094): a non-empty value is sent; description and location given as ""
+// are sent as "" so they are removed; anything else empty or absent is left
+// out.
+func updateEventPayload(req mcp.CallToolRequest) map[string]any {
+	payload := map[string]any{}
+	for _, f := range []string{"title", "start", "end"} {
+		if v := strArg(req, f); v != "" {
+			payload[f] = v
+		}
+	}
+	for _, f := range []string{"description", "location"} {
+		if v, ok := stringArg(req, f); ok {
+			payload[f] = v
+		}
+	}
+	if v := strArg(req, "attendees"); v != "" {
+		if emails := splitEmails(v); len(emails) > 0 {
+			payload["attendees"] = emails
+		}
+	}
+	return payload
+}
+
+// stringArg is strArg that also says whether the argument was given.
+func stringArg(req mcp.CallToolRequest, key string) (string, bool) {
+	args, ok := req.Params.Arguments.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	v, ok := args[key].(string)
+	return v, ok
 }
 
 // PAC-133 §6: the tool texts are binding (contracts/features/PAC-133.md).
@@ -359,8 +484,16 @@ type suggestions struct {
 // the scheduler still offers it first, the unknown attendees are all
 // accepted, and accept_unknown is "true".
 func createEvent(ctx context.Context, c *backendClient, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	title := strArg(req, "title")
+	title := strings.TrimSpace(strArg(req, "title"))
 	attendees := splitEmails(strArg(req, "attendees"))
+	// PAC-122 SF-026: title and attendees are required by the schema; the
+	// backend does not check them, so nothing is booked without them.
+	if title == "" {
+		return toolError(fmt.Errorf("title is required")), nil
+	}
+	if len(attendees) == 0 {
+		return toolError(fmt.Errorf("attendees is required: give at least one email")), nil
+	}
 	duration := parseDuration(strArg(req, "duration"), 30)
 	suggest := func(rangeStart, rangeEnd time.Time) (suggestions, error) {
 		var out suggestions

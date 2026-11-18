@@ -216,7 +216,8 @@ func TestTools_SendBackendPayloads(t *testing.T) {
 		"title": "Planning", "attendees": "alice@example.com, bob@example.com", "duration": "45",
 	})
 	callTool(t, s, "clockwise_apply_compression", map[string]any{
-		"plan": `[{"proposals":[{"event_id":"evt-1","proposed_start":"2026-05-04T10:00:00Z","proposed_end":"2026-05-04T10:30:00Z"}]}]`,
+		// PAC-122 SF-063: the plan as compress_schedule returns it (camelCase).
+		"plan": `[{"date":"2026-05-04","proposals":[{"eventId":"evt-1","proposedStart":"2026-05-04T10:00:00Z","proposedEnd":"2026-05-04T10:30:00Z"}]}]`,
 	})
 	callTool(t, s, "clockwise_create_event", map[string]any{
 		"title": "Standup", "attendees": "alice@example.com", "preferred_date": "2026-05-04",
@@ -239,6 +240,9 @@ func TestTools_SendBackendPayloads(t *testing.T) {
 	}
 	if paths[2] != "/api/schedule/compress/apply" || len(bodies[2]["proposals"].([]any)) != 1 {
 		t.Fatalf("compression request = %s %+v", paths[2], bodies[2])
+	}
+	if p := bodies[2]["proposals"].([]any)[0].(map[string]any); p["event_id"] != "evt-1" || p["proposed_start"] != "2026-05-04T10:00:00Z" {
+		t.Fatalf("compression proposal = %+v", p)
 	}
 	if paths[3] != "/api/schedule/suggest" || paths[4] != "/api/schedule/create" {
 		t.Fatalf("create flow paths = %v", paths[3:5])
