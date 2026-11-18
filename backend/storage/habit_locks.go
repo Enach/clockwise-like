@@ -72,10 +72,16 @@ func LockHabitReoptimize(ctx context.Context, db *sql.DB, userID uuid.UUID) (rel
 
 // discardConn closes conn without returning its session to the pool: a
 // session that may still hold (or be waiting for) the lock must end.
+// After Raw returns driver.ErrBadConn, database/sql has already closed the
+// connection, so Close's sql.ErrConnDone is expected and not a failure.
 func discardConn(conn *sql.Conn) error {
 	rawErr := conn.Raw(func(any) error { return driver.ErrBadConn })
-	if rawErr != nil && !errors.Is(rawErr, driver.ErrBadConn) {
-		return errors.Join(rawErr, conn.Close())
+	closeErr := conn.Close()
+	if errors.Is(closeErr, sql.ErrConnDone) {
+		closeErr = nil
 	}
-	return conn.Close()
+	if rawErr != nil && !errors.Is(rawErr, driver.ErrBadConn) {
+		return errors.Join(rawErr, closeErr)
+	}
+	return closeErr
 }

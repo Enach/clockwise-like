@@ -4702,7 +4702,11 @@ paths:
 
         replicas (PAC-136): a job started while another runs for the same user (this
 
-        endpoint, habit create or update) waits for it. A day''s calendar read covers
+        endpoint, habit create or update) waits for it; per replica at most one waits,
+
+        and a further request is folded into the waiting job, which reads the latest
+
+        state. A job ends after 10 minutes at most, waits included. A day''s calendar read covers
 
         every page, and a habit occurrence''s calendar event has an id derived from
 

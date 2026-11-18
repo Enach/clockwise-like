@@ -86,6 +86,14 @@ func insertRecapSend(db *sql.DB, r RecapSend) error {
 // sent; it read as "a clear calendar today"). The recap being off, or no
 // Slack connection, is not a failure.
 func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, userName string) {
+	s.runForUserAt(ctx, userID, userName, s.now())
+}
+
+// runForUserAt is RunForUser gated at the instant at: RunAll passes the
+// instant its own gate used, so a user whose send starts late in the run
+// (sends are staggered) is not re-gated past their minute (PAC-136 review
+// L2).
+func (s *DailyRecapService) runForUserAt(ctx context.Context, userID uuid.UUID, userName string, at time.Time) {
 	unit := lifecycle.Unit{Kind: "daily-recap", ID: userID.String()}
 	stop := func(what string, err error) {
 		log.Printf("daily recap user=%s: %s: %v", userID, what, err)
@@ -101,7 +109,7 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 		return
 	}
 
-	now, due, err := recapDue(s.now(), settings.Timezone, settings.RecapSendTime)
+	now, due, err := recapDue(at, settings.Timezone, settings.RecapSendTime)
 	if err != nil {
 		stop("stored send time is not HH:MM", err)
 		return
@@ -210,6 +218,7 @@ func (s *DailyRecapService) RunAll(ctx context.Context) {
 			select {
 			case <-time.After(time.Second):
 			case <-ctx.Done():
+				reportRecapUsersNotStarted(due[i:])
 				return
 			}
 		}
@@ -224,9 +233,22 @@ func (s *DailyRecapService) RunAll(ctx context.Context) {
 		lifecycle.Go(lifecycle.Unit{Kind: "daily-recap", ID: id.String()}, func(work context.Context) {
 			runCtx, cancel := context.WithTimeout(work, recapUserTimeout)
 			defer cancel()
-			s.RunForUser(runCtx, id, name)
+			s.runForUserAt(runCtx, id, name, now)
 		})
 	}
+}
+
+// reportRecapUsersNotStarted reports the due users whose recap the run's
+// deadline ended before it started (PAC-136 review L2: they were dropped
+// silently), by count and ids only.
+func reportRecapUsersNotStarted(users []recapUser) {
+	ids := make([]string, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.id.String())
+	}
+	err := fmt.Errorf("daily recap: run deadline ended before %d due users started: %s", len(ids), strings.Join(ids, ","))
+	log.Print(err)
+	lifecycle.Report(lifecycle.Unit{Kind: "daily-recap", ID: "run"}, err)
 }
 
 type recapUser struct {

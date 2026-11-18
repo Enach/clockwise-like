@@ -9,6 +9,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/lifecycle/lifecycletest"
+	"github.com/Enach/paceday/backend/internal/testdb"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -43,6 +45,9 @@ type pac136Cal struct {
 	updates int
 	deletes int
 	nextID  int
+	// restoreErr, when set, is the update's answer for a deleted event
+	// (Google does not document that an update restores one).
+	restoreErr int
 }
 
 func newPAC136Cal() *pac136Cal {
@@ -91,6 +96,9 @@ func (c *pac136Cal) updateEvent(_ context.Context, eventID string, ev *googlecal
 	_, live := c.live[eventID]
 	if !live && !c.deleted[eventID] {
 		return nil, &googleapi.Error{Code: http.StatusNotFound}
+	}
+	if !live && c.restoreErr != 0 {
+		return nil, &googleapi.Error{Code: c.restoreErr}
 	}
 	delete(c.deleted, eventID)
 	cp := *ev
@@ -164,15 +172,45 @@ func pac136AssertOneEventPerMonday(t *testing.T, cal *pac136Cal, rows map[string
 	}
 }
 
-// Item 1, the lock: a second run for the same user waits, in Postgres, for
-// the first to finish, and the two together leave one event per (habit, day).
-// The first run is held just after it takes the lock; the second must not
-// get past its own lock while the first is held.
+// pac136Replicas opens two pools on one test database: two replicas, each
+// with its own in-process gate.
+func pac136Replicas(t *testing.T) (*sql.DB, *sql.DB) {
+	t.Helper()
+	dsn, cleanup, err := testdb.Create()
+	if err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	var dbs []*sql.DB
+	for i := 0; i < 2; i++ {
+		db, err := storage.Open(dsn)
+		if err != nil {
+			t.Fatalf("open test db: %v", err)
+		}
+		dbs = append(dbs, db)
+	}
+	t.Cleanup(func() {
+		for _, db := range dbs {
+			if err := db.Close(); err != nil {
+				t.Errorf("close: %v", err)
+			}
+		}
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup test database: %v", err)
+		}
+	})
+	return dbs[0], dbs[1]
+}
+
+// Item 1, the lock: a run on another replica for the same user waits, in
+// Postgres, for the first to finish, and the two together leave one event
+// per (habit, day). The first run is held just after it takes the lock; the
+// second must not get past its own lock while the first is held.
 func TestPAC136_ReoptimizeRunsOnePerUser(t *testing.T) {
-	db := openTestDB(t)
+	db, db2 := pac136Replicas(t)
 	user, h := b5Habit(t, db, "pac136-lock@pac136.test")
 	cal := newPAC136Cal()
 	eng := &HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: cal}
+	eng2 := &HabitsEngine{DB: db2, Clock: FixedClock{T: b5Monday}, calOps: cal}
 
 	entered := make(chan struct{})
 	hold := make(chan struct{})
@@ -191,7 +229,7 @@ func TestPAC136_ReoptimizeRunsOnePerUser(t *testing.T) {
 	<-entered
 	second := make(chan struct{})
 	go func() {
-		errs <- eng.ReoptimizeAll(context.Background(), user)
+		errs <- eng2.ReoptimizeAll(context.Background(), user)
 		close(second)
 	}()
 
@@ -237,7 +275,7 @@ func TestPAC136_ReoptimizeRunsOnePerUser(t *testing.T) {
 
 	// The lock is released: nothing is left held or waiting.
 	var held int
-	if err := db.QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = $1`,
+	if err := db.QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
 		uint32(storage.HabitLockClass)).Scan(&held); err != nil || held != 0 {
 		t.Fatalf("%d advisory locks of the class left, %v; want none", held, err)
 	}

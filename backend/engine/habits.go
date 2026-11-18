@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -76,7 +77,26 @@ func (e *HabitsEngine) now() time.Time {
 // reoptimize endpoint each start one, and two that overlapped each placed an
 // event for the same (habit, day). A run waits for the one before it and
 // then reads what that run stored.
+//
+// PAC-136 (review B1): before the lock a run passes the process's gate
+// (habits_gate.go), holding no connection while it waits: one run per user
+// runs and one waits (a further request is dropped: the waiting run reads
+// the latest state), and at most K runs hold connections, so runs can never
+// take the whole pool. A run, waits included, ends after habitRunTimeout,
+// and every read takes its context, so a cancelled run frees its
+// connections.
 func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, habitRunTimeout)
+	defer cancel()
+	leave, run, err := habitGateFor(e.DB).enter(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("habits: user %s: wait for a run slot: %w", userID, err)
+	}
+	if !run {
+		log.Printf("debug: habits: user %s: a reoptimize is already queued; request coalesced into it", userID)
+		return nil
+	}
+	defer leave()
 	release, err := storage.LockHabitReoptimize(ctx, e.DB, userID)
 	if err != nil {
 		return fmt.Errorf("habits: user %s: %w", userID, err)
@@ -94,7 +114,7 @@ func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) (err
 
 // reoptimizeLocked is ReoptimizeAll's run, under the user's lock.
 func (e *HabitsEngine) reoptimizeLocked(ctx context.Context, userID uuid.UUID) error {
-	habits, err := storage.ListActiveHabitsByUser(e.DB, userID)
+	habits, err := storage.ListActiveHabitsByUserCtx(ctx, e.DB, userID)
 	if err != nil {
 		return fmt.Errorf("list habits: %w", err)
 	}
@@ -179,7 +199,7 @@ func (e *HabitsEngine) scheduleDay(
 		if !containsInt(h.DaysOfWeek, weekday) {
 			continue
 		}
-		occ, err := e.existingOccurrence(h.ID, day)
+		occ, err := e.existingOccurrence(ctx, h.ID, day)
 		if err != nil {
 			return fmt.Errorf("habit %s: read occurrence: %w", h.ID, err)
 		}
@@ -234,7 +254,7 @@ func (e *HabitsEngine) scheduleDay(
 	}
 
 	// Focus blocks.
-	focusBlocks, err := storage.ListFocusBlocksForUserWeek(e.DB, userID, day)
+	focusBlocks, err := storage.ListFocusBlocksForUserWeekCtx(ctx, e.DB, userID, day)
 	if err != nil {
 		return fmt.Errorf("read focus blocks: %w", err)
 	}
@@ -358,8 +378,8 @@ func (e *HabitsEngine) scheduleDay(
 	return errors.Join(failed...)
 }
 
-func (e *HabitsEngine) existingOccurrence(habitID uuid.UUID, day time.Time) (*storage.HabitOccurrence, error) {
-	occs, err := storage.ListHabitOccurrences(e.DB, habitID, day, day)
+func (e *HabitsEngine) existingOccurrence(ctx context.Context, habitID uuid.UUID, day time.Time) (*storage.HabitOccurrence, error) {
+	occs, err := storage.ListHabitOccurrencesCtx(ctx, e.DB, habitID, day, day)
 	if err != nil || len(occs) == 0 {
 		return nil, err
 	}
@@ -393,11 +413,7 @@ func (e *HabitsEngine) createHabitEvent(
 	ev.Id = habitEventID(h.ID, day)
 	created, err := calOps.createEvent(ctx, ev)
 	if calendar.IsDuplicate(err) {
-		ev.Status = "confirmed"
-		created, err = calOps.updateEvent(ctx, ev.Id, ev)
-		if err != nil {
-			return "", fmt.Errorf("adopt existing event: %w", err)
-		}
+		created, err = e.adoptHabitEvent(ctx, calOps, h, ev)
 	}
 	if err != nil {
 		return "", err
@@ -406,6 +422,51 @@ func (e *HabitsEngine) createHabitEvent(
 		return "", errors.New("calendar returned no event id")
 	}
 	return created.Id, nil
+}
+
+// adoptHabitEvent answers a 409 duplicate on the (habit, day) id (PAC-136).
+// The existing event is read first: one whose habit marker names another
+// habit is never overwritten. Otherwise it is updated to ev, with status
+// confirmed (restoring it when it was deleted). Google documents the 409 for
+// an id in use, not that a deleted event's id stays taken nor that an update
+// restores it (review M1): when the read shows a foreign event, or the
+// update is refused as not found, gone or forbidden, the event is inserted
+// again under an id Google generates.
+func (e *HabitsEngine) adoptHabitEvent(ctx context.Context, calOps calendarOps, h *storage.Habit, ev *googlecalendar.Event) (*googlecalendar.Event, error) {
+	existing, err := calOps.getEvent(ctx, ev.Id)
+	switch {
+	case err == nil:
+		if existing != nil && existing.ExtendedProperties != nil {
+			if owner := existing.ExtendedProperties.Private[habitEventMarker]; owner != "" && owner != h.ID.String() {
+				return createWithGeneratedID(ctx, calOps, ev)
+			}
+		}
+	case calendar.IsEventGone(err):
+		// A deleted event may not be readable: the update decides.
+	default:
+		return nil, fmt.Errorf("read existing event: %w", err)
+	}
+	adopt := *ev
+	adopt.Status = "confirmed"
+	updated, err := calOps.updateEvent(ctx, adopt.Id, &adopt)
+	if calendar.IsEventGone(err) || calendar.IsForbidden(err) {
+		return createWithGeneratedID(ctx, calOps, ev)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("adopt existing event: %w", err)
+	}
+	return updated, nil
+}
+
+// createWithGeneratedID inserts ev under an id Google chooses.
+func createWithGeneratedID(ctx context.Context, calOps calendarOps, ev *googlecalendar.Event) (*googlecalendar.Event, error) {
+	fresh := *ev
+	fresh.Id = ""
+	created, err := calOps.createEvent(ctx, &fresh)
+	if err != nil {
+		return nil, fmt.Errorf("create under a generated id: %w", err)
+	}
+	return created, nil
 }
 
 // habitEventID is the Google event id of a habit's occurrence on day (its

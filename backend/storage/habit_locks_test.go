@@ -52,7 +52,39 @@ func TestPAC136_HabitReoptimizeLock(t *testing.T) {
 	}
 
 	var held int
-	if err := db.QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = $1`, uint32(HabitLockClass)).Scan(&held); err != nil || held != 0 {
+	if err := db.QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`, uint32(HabitLockClass)).Scan(&held); err != nil || held != 0 {
 		t.Fatalf("%d locks of the class left, %v; want none", held, err)
+	}
+}
+
+// PAC-136 review L1: discarding a connection ends its session (it is not
+// returned to the pool) and is not reported as a failure.
+func TestPAC136_DiscardConnEndsTheSession(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if err := conn.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := discardConn(conn); err != nil {
+		t.Fatalf("discardConn = %v, want nil", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var alive int
+		if err := db.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE pid = $1`, pid).Scan(&alive); err != nil {
+			t.Fatal(err)
+		}
+		if alive == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the discarded session is still open")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
