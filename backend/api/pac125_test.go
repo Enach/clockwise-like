@@ -45,6 +45,7 @@ func TestPAC125_AccessLogCarriesNoEmailOrToken(t *testing.T) {
 	serveAt(r, http.MethodDelete, "/api/manager/team/members/pac125.member%40example.test", "")
 	serveAt(r, http.MethodPatch, "/api/manager/team/members/pac125.member@example.test", "")
 	serveAt(r, http.MethodPost, "/api/teams/invites/PAC125-TOKEN/accept", "")
+	serveAt(r, http.MethodDelete, "/api/teams/00000000-0000-4000-8000-000000000129/people/pac125.member%40example.test", "") // PAC-129
 	serveAt(r, http.MethodGet, "/api/no-such-route/pac125.member@example.test", "")
 	all := strings.Join(l.lines, "\n")
 	for _, s := range []string{"pac125.member", "example.test", "PAC125-TOKEN"} {
@@ -56,6 +57,7 @@ func TestPAC125_AccessLogCarriesNoEmailOrToken(t *testing.T) {
 		"DELETE /api/manager/team/members/{email} ",
 		"PATCH /api/manager/team/members/{email} ",
 		"POST /api/teams/invites/{token}/accept ",
+		"DELETE /api/teams/{id}/people/{email} ",
 		"GET unmatched ",
 	} {
 		if !strings.Contains(all, want) {

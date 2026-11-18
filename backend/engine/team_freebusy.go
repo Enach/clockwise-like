@@ -171,33 +171,11 @@ func (s *FreeBusyService) teamBatch(ctx context.Context, ownerID uuid.UUID, outl
 		return nil, false // cut by the budget: learnt nothing, cache nothing
 	}
 
-	// An own-limit timeout or a provider refusal is cached unknown for 15
-	// minutes (PAC-67, unchanged); a result computed while the owner's
+	// Not cut: PAC-133's one cache-write rule. ctx (the request) is not done
+	// here, so an own-limit timeout or a provider refusal is cached unknown
+	// for 15 minutes (PAC-67, unchanged); a result computed while the owner's
 	// credential is recorded as lost is not (PAC-67 AC-20).
-	cacheable := true
-	if fetched == nil {
-		if lost, err := storage.IsCredentialLost(s.DB, ownerID, credential); err != nil || lost {
-			cacheable = false
-		}
-	}
-	expires := s.now().Add(freeBusyTTL)
-	out := make([]ParticipantBusy, 0, len(emails))
-	for _, email := range emails {
-		entry := fetched[email]
-		coverage := "unknown"
-		if entry.Known {
-			coverage = "known"
-		}
-		slots := entry.Busy
-		if slots == nil {
-			slots = []calendar.TimeSlot{}
-		}
-		if cacheable {
-			s.setCached(freeBusyCacheKey(ownerID, email, start, end), cachedResult{slots: slots, coverage: coverage, expiresAt: expires})
-		}
-		out = append(out, ParticipantBusy{Email: email, Coverage: coverage, Busy: slots})
-	}
-	return out, true
+	return s.settleLookup(ctx, ownerID, credential, fetched, emails, start, end), true
 }
 
 // fetchThrough asks the owner's provider about emails with the owner's

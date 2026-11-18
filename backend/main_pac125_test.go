@@ -60,13 +60,22 @@ func TestPAC125_ServerErrorOnParamRoutesLeaksNoParam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// PAC-129: a team the manager owns, for removeTeamPerson's {email}.
+	team, err := storage.CreateTeam(db, "PAC-125", mgr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.AddTeamMember(db, team.ID, mgr.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
 	r := chi.NewRouter()
 	api.RegisterRoutes(r, db, &oauth2.Config{}, pac125Secret, pac125Origin, pac125Origin)
-	// Both handlers' reads now fail: the member delete and the invite
-	// sweep and lookup answer 500.
+	// Every handler's read now fails: the member delete, the invite sweep and
+	// lookup, and removeTeamPerson's read under the team lock answer 500.
 	for _, q := range []string{
 		`ALTER TABLE manager_team_members RENAME TO manager_team_members_pac125`,
 		`ALTER TABLE team_invites RENAME TO team_invites_pac125`,
+		`ALTER TABLE team_added_members RENAME TO team_added_members_pac125`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -81,6 +90,8 @@ func TestPAC125_ServerErrorOnParamRoutesLeaksNoParam(t *testing.T) {
 			[]string{pac125Email, "pac125.member", "example.test"}},
 		{http.MethodGet, "/api/teams/invites/" + pac125Token, "/api/teams/invites/{token}",
 			[]string{pac125Token}},
+		{http.MethodDelete, "/api/teams/" + team.ID.String() + "/people/pac125.member%40example.test", "/api/teams/{id}/people/{email}",
+			[]string{pac125Email, "pac125.member", "example.test", team.ID.String()}},
 	} {
 		t.Run(c.method, func(t *testing.T) {
 			logs := captureLog(t)

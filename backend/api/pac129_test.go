@@ -272,7 +272,6 @@ type mailRecorder struct {
 
 func recordMail(t *testing.T) *mailRecorder {
 	t.Helper()
-	pac81Group(t)
 	t.Setenv("SMTP_HOST", "smtp.test")
 	t.Setenv("SMTP_FROM", "paceday@test")
 	m := &mailRecorder{}
@@ -283,7 +282,11 @@ func recordMail(t *testing.T) *mailRecorder {
 		m.mu.Unlock()
 		return nil
 	}
+	// Cleanups run last-in first-out: the restore is registered before
+	// pac81Group's drain, so the email units are awaited before sendMail is
+	// put back (no race between a unit's call and the restore).
 	t.Cleanup(func() { sendMail = prev })
+	pac81Group(t)
 	return m
 }
 
@@ -561,6 +564,41 @@ func TestPAC129_AC10_AC11_AC29_FindATimeCountsAndTheOwnersCredential(t *testing.
 	sort.Strings(want)
 	if fmt.Sprint(fb[0].ids) != fmt.Sprint(want) {
 		t.Errorf("ids = %v, want %v", fb[0].ids, want)
+	}
+}
+
+// PAC-133 D-11 for added people (contract §3.5): Google answers Y through
+// O's credential with an error AND a 13:00-14:00 window. Y is unknown, and
+// the reported window still blocks: no offered slot overlaps 13:00-14:00.
+func TestPAC129_D11_UnknownAddedPersonsReportedWindowsBlock(t *testing.T) {
+	g := newPAC129Google(t)
+	f := newP129(t, nil)
+	pac129Token(t, f.o, "tok-O", time.Now().Add(24*time.Hour))
+	pac129Token(t, f.m, "tok-M", time.Now().Add(24*time.Hour))
+	y := p129Addr("y")
+	g.mu.Lock()
+	g.table[y] = `{"busy":[{"start":"2030-01-07T13:00:00Z","end":"2030-01-07T14:00:00Z"}],"errors":[{"domain":"global","reason":"internalError"}]}`
+	g.mu.Unlock()
+	if w := f.add(f.o, y, "Y"); w.Code != http.StatusCreated {
+		t.Fatal(w.Body.String())
+	}
+	slots := f.slots(f.m)
+	if len(slots) == 0 {
+		t.Fatal("no slots")
+	}
+	from, to := pac129Day.Add(13*time.Hour), pac129Day.Add(14*time.Hour)
+	for _, s := range slots {
+		st, _ := time.Parse(time.RFC3339, s["start"].(string))
+		en, _ := time.Parse(time.RFC3339, s["end"].(string))
+		if st.Before(to) && en.After(from) {
+			t.Errorf("slot %v overlaps Y's reported 13:00-14:00", s)
+		}
+		if s["unknown_count"] != 1.0 || s["free_count"] != 2.0 || s["total_count"] != 3.0 {
+			t.Errorf("slot %v: want Y unknown (1 of 3), O and M free", s)
+		}
+	}
+	if fb := g.freeBusyCalls(); len(fb) != 1 || fb[0].bearer != "tok-O" {
+		t.Errorf("free/busy calls %+v, want one with O's token", fb)
 	}
 }
 
@@ -907,14 +945,22 @@ func TestPAC129_AC31_ManagerModeReadOnlyAddedPeople(t *testing.T) {
 		t.Errorf("X in the roster = %v", e)
 	}
 	path := "/api/manager/team/members/" + url.PathEscape(x) + q
-	for _, w := range []*httptest.ResponseRecorder{
-		f.do(f.o, http.MethodPatch, path, `{"cadence":"weekly"}`),
-		f.do(f.o, http.MethodPost, "/api/manager/team/members/"+url.PathEscape(x)+"/schedule"+q, ``),
-	} {
-		if w.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("patch/schedule = %d %s", w.Code, w.Body.String())
+	// P3-m1: the {email} path in another case, or with a byte-order mark at
+	// either end, names the same added person.
+	for _, variant := range []string{x, strings.ToUpper(x), "\uFEFF" + x, x + "\uFEFF"} {
+		seg := url.PathEscape(variant)
+		for _, w := range []*httptest.ResponseRecorder{
+			f.do(f.o, http.MethodPatch, "/api/manager/team/members/"+seg+q, `{"cadence":"weekly"}`),
+			f.do(f.o, http.MethodPost, "/api/manager/team/members/"+seg+"/schedule"+q, ``),
+		} {
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("patch/schedule %q = %d %s", variant, w.Code, w.Body.String())
+			}
+			exactJSONError(t, w, "this person was added to the team without Paceday access; add them with Add person to track 1:1s")
 		}
-		exactJSONError(t, w, "this person was added to the team without Paceday access; add them with Add person to track 1:1s")
+	}
+	if n := f.count(`SELECT count(*) FROM manager_team_members WHERE manager_user_id = $1`, f.o) + f.count(`SELECT count(*) FROM manager_team_member_assignments WHERE manager_user_id = $1`, f.o); n != 0 {
+		t.Errorf("%d roster rows or assignments written by the refused calls", n)
 	}
 	if g, a, _ := f.rosterRows(x); g != 0 || a != 0 {
 		t.Errorf("a roster row (%d) or assignment (%d) was written", g, a)

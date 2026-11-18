@@ -128,11 +128,7 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 	}
 
 	// Separate personal-domain emails (skip) from queryable emails.
-	type pending struct {
-		email    string
-		cacheKey string
-	}
-	var toQuery []pending
+	var queryEmails []string
 	results := make([]ParticipantBusy, 0, len(emails))
 
 	for _, email := range emails {
@@ -147,17 +143,11 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 			results = append(results, ParticipantBusy{Email: email, Coverage: cached.coverage, Busy: cached.slots})
 			continue
 		}
-		toQuery = append(toQuery, pending{email: email, cacheKey: key})
+		queryEmails = append(queryEmails, email)
 	}
 
-	if len(toQuery) == 0 {
+	if len(queryEmails) == 0 {
 		return results, nil
-	}
-
-	// Build email list for the API call.
-	queryEmails := make([]string, len(toQuery))
-	for i, p := range toQuery {
-		queryEmails[i] = p.email
 	}
 
 	// Use a 5s timeout for external calls.
@@ -195,25 +185,36 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 		}
 	}
 
-	// A degraded result computed while the credential is recorded as lost is
-	// not cached: after a reconnect the lookup is asked again with the new
-	// credential instead of serving it (PAC-67 AC-20). Caching after a
-	// temporary failure is unchanged. A lookup cut short by its own request's
-	// deadline (budget expiry, or the client gone) is never cached: it learnt
-	// nothing about the calendars (PAC-133 §4, as PAC-129 §6 rules it).
+	return append(results, s.settleLookup(ctx, requestingUserID, credential, fetched, queryEmails, start, end)...), nil
+}
+
+// settleLookup turns one provider answer for emails, read through
+// credentialOwner's credential, into results, and caches each address's
+// result under the PAC-133 key (credential owner, address, exact range). It is
+// the one cache-write rule of the participant lookup (Query) and the team path
+// (QueryForTeam, PAC-129 §6):
+//   - a lookup cut short by its own request's deadline (budget expiry, or the
+//     client gone: ctx is done) is never cached: it learnt nothing about the
+//     calendars (PAC-133 §4, as PAC-129 §6 rules it);
+//   - a degraded result computed while the credential is recorded as lost is
+//     not cached: after a reconnect the lookup is asked again with the new
+//     credential instead of serving it (PAC-67 AC-20);
+//   - anything else, a temporary failure included, is cached for 15 minutes.
+//
+// The reader answers every address it was asked about; nothing at all (the
+// whole call failed, or no credential) is unknown with no windows. An unknown
+// address keeps the windows reported for it (PAC-133 §2.1 step 5).
+func (s *FreeBusyService) settleLookup(ctx context.Context, credentialOwner uuid.UUID, credential string, fetched map[string]calendar.FreeBusyEntry, emails []string, start, end time.Time) []ParticipantBusy {
 	cacheable := ctx.Err() == nil
 	if cacheable && fetched == nil {
-		if lost, err := storage.IsCredentialLost(s.DB, requestingUserID, credential); err != nil || lost {
+		if lost, err := storage.IsCredentialLost(s.DB, credentialOwner, credential); err != nil || lost {
 			cacheable = false
 		}
 	}
-
 	expires := s.now().Add(freeBusyTTL)
-	for _, p := range toQuery {
-		// The reader answers every address it was asked about; nothing at all
-		// (the whole call failed, or no credential) is unknown with no windows.
-		// An unknown address keeps the windows reported for it (§2.1 step 5).
-		entry := fetched[p.email]
+	out := make([]ParticipantBusy, 0, len(emails))
+	for _, email := range emails {
+		entry := fetched[email]
 		coverage := "unknown"
 		if entry.Known {
 			coverage = "known"
@@ -223,12 +224,11 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 			slots = []calendar.TimeSlot{}
 		}
 		if cacheable {
-			s.setCached(p.cacheKey, cachedResult{slots: slots, coverage: coverage, expiresAt: expires})
+			s.setCached(freeBusyCacheKey(credentialOwner, email, start, end), cachedResult{slots: slots, coverage: coverage, expiresAt: expires})
 		}
-		results = append(results, ParticipantBusy{Email: p.email, Coverage: coverage, Busy: slots})
+		out = append(out, ParticipantBusy{Email: email, Coverage: coverage, Busy: slots})
 	}
-
-	return results, nil
+	return out
 }
 
 func (s *FreeBusyService) cacheMax() int {
