@@ -104,10 +104,12 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 		// PAC-81 AC-A6: a tracked unit, awaited by the drain (own 30 s).
 		// PAC-71: GoFrom keeps the request's values, so the session guard
 		// stays: detection's token load and roster writes are re-checked.
-		lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "manager-detection", ID: userID.String()}, func(work context.Context) {
+		// PAC-122 SF-096: its error is logged and reported, not discarded.
+		lifecycle.GoFromErr(r.Context(), lifecycle.Unit{Kind: "manager-detection", ID: userID.String()}, func(work context.Context) error {
 			ctx, cancel := context.WithTimeout(work, 30*time.Second)
 			defer cancel()
-			_, _ = eng.DetectTeam(ctx, userID)
+			_, err := eng.DetectTeam(ctx, userID)
+			return err
 		})
 	}
 	p, err := storage.GetOrCreateUserProfileCtx(r.Context(), h.db, userID)
@@ -367,7 +369,10 @@ func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	}
 	email := managerEmailParam(r)
 	if teamID == nil {
-		_ = storage.DeleteManagerTeamMemberByEmailCtx(r.Context(), h.db, userID, email)
+		if err := storage.DeleteManagerTeamMemberByEmailCtx(r.Context(), h.db, userID, email); err != nil {
+			writeServerError(w, r, "remove member", err, http.StatusInternalServerError)
+			return
+		}
 	} else {
 		// PAC-71 revoking site: every account carrying the address, at any
 		// standing and in any letter case, loses its formal membership (spec
@@ -379,22 +384,27 @@ func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 		}
 		members := make([]uuid.UUID, 0, len(targets))
 		for _, targetID := range targets {
-			if membership, memberErr := storage.GetTeamMember(h.db, *teamID, targetID); memberErr == nil {
-				if membership.Role == "owner" {
-					writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
-					return
-				}
-				members = append(members, targetID)
+			membership, memberErr := storage.GetTeamMember(h.db, *teamID, targetID)
+			if errors.Is(memberErr, sql.ErrNoRows) {
+				continue // not a member of this team
 			}
+			if memberErr != nil {
+				// PAC-122 SF-001: only "no row" means not a member.
+				writeServerError(w, r, "remove member: membership", memberErr, http.StatusInternalServerError)
+				return
+			}
+			if membership.Role == "owner" {
+				writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
+				return
+			}
+			members = append(members, targetID)
 		}
-		for _, targetID := range members {
-			_ = storage.RemoveTeamMemberCtx(r.Context(), h.db, *teamID, targetID)
+		// PAC-122 SF-001: the memberships, the assignment and the pending
+		// invites go in one transaction, so a failure removes nothing.
+		if err := storage.RemoveManagerTeamMemberFromTeamCtx(r.Context(), h.db, userID, *teamID, email, members); err != nil {
+			writeServerError(w, r, "remove member", err, http.StatusInternalServerError)
+			return
 		}
-		_ = storage.UnassignManagerTeamMemberCtx(r.Context(), h.db, userID, *teamID, email)
-		_ = guarded(r.Context(), h.db, func(q storage.Querier) error {
-			_, err := q.Exec(`DELETE FROM team_invites WHERE team_id=$1 AND lower(invitee_email)=lower($2) AND status='pending'`, *teamID, email)
-			return err
-		})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -18,11 +18,13 @@ import (
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/scheduler"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/getsentry/sentry-go"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 )
 
@@ -48,16 +50,73 @@ func healthMode(getenv func(string) string) int {
 
 // cronJob wraps a cron function as a tracked unit (PAC-81 AC-A6): it is
 // awaited by the drain, its context is cancelled at the end of the drain,
-// and no new run starts once shutdown has begun.
+// and no new run starts once shutdown has begun. A panic is recovered and
+// reported (PAC-122 SF-097): robfig/cron v3's default chain recovers
+// nothing, so without it a panicking job takes the process down.
 func cronJob(name string, fn func(ctx context.Context)) func() {
+	return cronJobErr(name, func(ctx context.Context) error { fn(ctx); return nil })
+}
+
+// cronJobErr is cronJob for a job that returns an error: a non-nil error is
+// logged and reported through the lifecycle hook, tagged cron/<name>
+// (PAC-122 SF-098).
+func cronJobErr(name string, fn func(ctx context.Context) error) func() {
 	return func() {
 		g := lifecycle.Default()
 		if g.ShuttingDown() {
 			return
 		}
-		done := g.Track(lifecycle.Unit{Kind: "cron", ID: name})
+		u := lifecycle.Unit{Kind: "cron", ID: name}
+		done := g.Track(u)
 		defer done()
-		fn(g.Context())
+		defer lifecycle.Recover(u)
+		lifecycle.Fail(u, fn(g.Context()))
+	}
+}
+
+// reportUnitFailure is lifecycle's reporter in the backend (PAC-122 §6):
+// the failure goes to Sentry tagged with the unit's kind and id, which
+// never contain an email address.
+func reportUnitFailure(u lifecycle.Unit, err error) {
+	sentry.WithScope(func(scope *sentry.Scope) {
+		scope.SetTag("unit.kind", u.Kind)
+		if u.ID != "" {
+			scope.SetTag("unit.id", u.ID)
+		}
+		sentry.CaptureException(err)
+	})
+}
+
+// installReporters routes background failures to error monitoring: the
+// lifecycle hook (tracked units, cron jobs, recovered panics).
+func installReporters() {
+	lifecycle.SetReporter(reportUnitFailure)
+}
+
+// teamDetector is the part of the manager engine the weekly detection needs.
+type teamDetector interface {
+	DetectTeam(ctx context.Context, managerID uuid.UUID) (*engine.DetectResult, error)
+}
+
+// managerDetectionRun is one run of the weekly manager detection: every
+// manager's detection, each failure logged and reported on its own
+// (PAC-122 SF-098); a failed listing is the run's error.
+func managerDetectionRun(list func() ([]uuid.UUID, error), eng teamDetector) func(ctx context.Context) error {
+	u := lifecycle.Unit{Kind: "cron", ID: "manager-detection"}
+	return func(work context.Context) error {
+		ctx, cancel := context.WithTimeout(work, 10*time.Minute)
+		defer cancel()
+		ids, err := list()
+		if err != nil {
+			return fmt.Errorf("manager batch: list users: %w", err)
+		}
+		for _, uid := range ids {
+			if _, err := eng.DetectTeam(ctx, uid); err != nil {
+				log.Printf("manager batch: detect %s: %v", uid, err)
+				lifecycle.Report(u, fmt.Errorf("manager batch: detect %s: %w", uid, err))
+			}
+		}
+		return nil
 	}
 }
 
@@ -151,6 +210,7 @@ func run() int {
 	// end of the shutdown sequence (contract §2). Init is non-fatal: an empty
 	// DSN means "monitoring disabled" and the server still boots (AC-A14).
 	initSentry()
+	installReporters()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -227,6 +287,11 @@ func run() int {
 	api.SetSecureCookies(secureCookies)
 	// PAC-81 AC-A15: an http:// public URL with Secure cookies breaks sign-in.
 	for _, n := range config.InsecurePublicURLs(os.Getenv, secureCookies) {
+		log.Printf("WARNING: %s", n)
+	}
+	// PAC-122 SF-066: email off (SMTP_HOST or SMTP_FROM empty), or invite
+	// links defaulting to paceday.app, is said once at startup.
+	for _, n := range outbound.MailNotices(os.Getenv) {
 		log.Printf("WARNING: %s", n)
 	}
 
@@ -316,13 +381,12 @@ func run() int {
 	// pending/tentative incoming invitations outside work or protected lunch.
 	autoDecliner := &engine.AutoDeclineService{DB: db, OAuthConfig: oauthConfig}
 	autoDeclineCron := cron.New()
-	if _, err := autoDeclineCron.AddFunc("@every 15m", cronJob("auto-decline", func(work context.Context) {
+	// RunAll's error joins every user's failure (PAC-122 SF-098); cronJobErr
+	// logs and reports it.
+	if _, err := autoDeclineCron.AddFunc("@every 15m", cronJobErr("auto-decline", func(work context.Context) error {
 		ctx, cancel := context.WithTimeout(work, 5*time.Minute)
 		defer cancel()
-		if err := autoDecliner.RunAll(ctx); err != nil {
-			log.Printf("auto-decline batch: %v", err)
-			sentry.CaptureException(err)
-		}
+		return autoDecliner.RunAll(ctx)
 	})); err != nil {
 		log.Printf("auto-decline cron registration error: %v", err)
 	}
@@ -343,20 +407,8 @@ func run() int {
 	// Manager team detection — runs every Sunday at 03:00 UTC.
 	mgrEng := &engine.ManagerEngine{DB: db, OAuthConfig: oauthConfig}
 	mgrCron := cron.New()
-	if _, err := mgrCron.AddFunc("0 3 * * 0", cronJob("manager-detection", func(work context.Context) {
-		ctx, cancel := context.WithTimeout(work, 10*time.Minute)
-		defer cancel()
-		ids, err := storage.ListManagerUserIDs(db)
-		if err != nil {
-			log.Printf("manager batch: list users error: %v", err)
-			return
-		}
-		for _, uid := range ids {
-			if _, err := mgrEng.DetectTeam(ctx, uid); err != nil {
-				log.Printf("manager batch: detect %s: %v", uid, err)
-			}
-		}
-	})); err != nil {
+	if _, err := mgrCron.AddFunc("0 3 * * 0", cronJobErr("manager-detection",
+		managerDetectionRun(func() ([]uuid.UUID, error) { return storage.ListManagerUserIDs(db) }, mgrEng))); err != nil {
 		log.Printf("manager cron registration error: %v", err)
 	}
 	mgrCron.Start()

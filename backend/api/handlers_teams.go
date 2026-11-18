@@ -238,7 +238,7 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 // signed-in holder of the token may preview the invite, API-089)
 func (h *teamHandlers) getInvite(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
-	_ = storage.ExpireOldInvites(h.db)
+	h.expireOldInvites(r)
 	invite, err := storage.GetTeamInviteByToken(h.db, token)
 	if err == sql.ErrNoRows {
 		writeError(w, "invite not found", http.StatusNotFound)
@@ -299,7 +299,7 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := chi.URLParam(r, "token")
-	_ = storage.ExpireOldInvites(h.db)
+	h.expireOldInvites(r)
 	invite, err := storage.GetTeamInviteByToken(h.db, token)
 	if err == sql.ErrNoRows {
 		writeError(w, "invite not found", http.StatusNotFound)
@@ -649,8 +649,8 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) error {
 	smtpFrom := os.Getenv("SMTP_FROM")
 	baseURL := os.Getenv("BASE_URL")
 
-	if smtpHost == "" || smtpFrom == "" {
-		return nil
+	if !outbound.MailConfigured(os.Getenv) {
+		return outbound.ErrMailNotConfigured // PAC-122 SF-066: skipped, never "sent"
 	}
 	if smtpPort == "" {
 		smtpPort = "587"
@@ -678,10 +678,30 @@ var sendMail = outbound.SendMail
 
 // reportEmailFailure logs a failed email at error level with its record id
 // (never the address) and reports it to error monitoring when configured.
+//
+// An email skipped because SMTP is not configured (PAC-122 SF-066) is logged
+// as a skip with the record id and not reported: email being off is the
+// configuration the startup warning names, not a delivery failure.
 func reportEmailFailure(what, idKind, id string, err error) {
+	if errors.Is(err, outbound.ErrMailNotConfigured) {
+		log.Printf("WARN: %s email for %s %s not sent: %v", what, idKind, id, err)
+		return
+	}
 	msg := outbound.RedactAddresses(err.Error())
 	log.Printf("ERROR: %s email failed for %s %s: %s", what, idKind, id, msg)
 	sentry.CaptureException(fmt.Errorf("%s email failed for %s %s: %s", what, idKind, id, msg))
+}
+
+// expireOldInvites runs the expiry sweep before an invite is read. A failed
+// sweep is logged and reported, never answered: preview and accept decide
+// expiry from expires_at in the read itself (PAC-122 SF-002), so the request
+// goes on.
+func (h *teamHandlers) expireOldInvites(r *http.Request) {
+	if err := storage.ExpireOldInvites(h.db); err != nil {
+		err = fmt.Errorf("invite sweep: %w", err)
+		log.Printf("ERROR %s %s: %v", r.Method, r.URL.Path, err)
+		reportServerError(r, err)
+	}
 }
 
 // holdsConfirmed reports whether userID holds email domain-confirmed (PAC-71

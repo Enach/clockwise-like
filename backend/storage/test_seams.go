@@ -319,3 +319,28 @@ func InstallLinkReadByID(tb TB, fn func(id uuid.UUID) error) (uninstall func()) 
 	tb.Helper()
 	return linkReadByID.install(tb, fn)
 }
+
+// PAC-122 batch 0 seams (docs/factory/silent-failures.md SF-001, SF-002).
+// teamMemberRead fires at the start of GetTeamMember for every caller, and
+// inviteSweep at the start of ExpireOldInvites; a test filters on the ids it
+// owns where it can.
+var (
+	teamMemberRead seam[func(teamID, userID uuid.UUID) error]
+	inviteSweep    seam[func() error]
+)
+
+// InstallTeamMemberRead installs the seam that runs at the start of
+// GetTeamMember; a non-nil error is returned as the read's error without
+// querying.
+func InstallTeamMemberRead(tb TB, fn func(teamID, userID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return teamMemberRead.install(tb, fn)
+}
+
+// InstallInviteSweep installs the seam that runs at the start of
+// ExpireOldInvites; a non-nil error is returned as the sweep's error without
+// writing, so the sweep fails while reads still work.
+func InstallInviteSweep(tb TB, fn func() error) (uninstall func()) {
+	tb.Helper()
+	return inviteSweep.install(tb, fn)
+}

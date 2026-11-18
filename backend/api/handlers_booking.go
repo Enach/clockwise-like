@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
@@ -88,17 +89,24 @@ func linkExhausted(link *storage.SchedulingLink) bool {
 	return link.UsageType == "recurring" && link.MaxUses != nil && link.UsesCount >= *link.MaxUses
 }
 
-func (h *bookingHandlers) publicLink(link *storage.SchedulingLink, loc *time.Location) publicLinkDTO {
+// publicLink builds PublicLinkInfo. The roster is read strictly (the PAC-25
+// pattern, PAC-122 SF-027): a failed read of the accepted hosts or of a
+// host's user record is the error, never `hosts: []`, a skipped host or a
+// coverage of {0,0}. The caller answers it with the documented 500.
+func (h *bookingHandlers) publicLink(link *storage.SchedulingLink, loc *time.Location) (publicLinkDTO, error) {
 	dto := publicLinkDTO{Slug: link.Slug, Title: link.Title, Durations: link.DurationOptions, Hosts: []publicHostDTO{}, MinNoticeMinutes: link.MinNoticeMinutes, UsageType: link.UsageType,
 		TimeZone: loc.String(), BookingHorizonDays: horizonDays(link)}
 	if dto.UsageType == "" {
 		dto.UsageType = "reusable"
 	}
-	hosts, _ := storage.GetAcceptedHosts(h.db, link.ID)
+	hosts, err := storage.GetAcceptedHosts(h.db, link.ID)
+	if err != nil {
+		return dto, err
+	}
 	for _, host := range hosts {
-		user, err := storage.GetUserByID(h.db, host.UserID)
-		if err != nil || user == nil {
-			continue
+		user, err := hostUser(h.db, host)
+		if err != nil {
+			return dto, err
 		}
 		dto.Hosts = append(dto.Hosts, publicHostDTO{Email: user.Email, Name: user.Name, AvatarURL: user.AvatarURL})
 		dto.Coverage.Total++
@@ -106,17 +114,40 @@ func (h *bookingHandlers) publicLink(link *storage.SchedulingLink, loc *time.Loc
 			dto.Coverage.Checked++
 		}
 	}
-	return dto
+	return dto, nil
 }
 
-func (h *bookingHandlers) confirmation(db storage.DBTX, link *storage.SchedulingLink, booking *storage.Booking) bookingConfirmationDTO {
-	dto := bookingConfirmationDTO{ID: booking.ID.String(), LinkSlug: link.Slug, Title: link.Title, Start: booking.StartTime.UTC().Format(time.RFC3339), End: booking.EndTime.UTC().Format(time.RFC3339), DurationMinutes: int(booking.EndTime.Sub(booking.StartTime).Minutes()), Hosts: []publicHostDTO{}, BookerName: booking.BookerName, BookerEmail: booking.BookerEmail, Notes: booking.Notes}
-	for _, host := range func() []*storage.LinkHost { hosts, _ := storage.GetAcceptedHosts(db, link.ID); return hosts }() {
-		if user, err := storage.GetUserByID(db, host.UserID); err == nil && user != nil {
-			dto.Hosts = append(dto.Hosts, publicHostDTO{Email: user.Email, Name: user.Name, AvatarURL: user.AvatarURL})
-		}
+// hostUser reads an accepted host's user record for a public answer. A
+// missing record is an error like a failed read: host rows cascade with
+// their user, so a host without one is never a legitimate empty answer.
+func hostUser(db storage.DBTX, host *storage.LinkHost) (*storage.User, error) {
+	user, err := storage.GetUserByID(db, host.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("host %s user record: %w", host.UserID, err)
 	}
-	return dto
+	if user == nil {
+		return nil, fmt.Errorf("host %s user record missing", host.UserID)
+	}
+	return user, nil
+}
+
+// confirmation builds PublicBookingConfirmation with the link's current
+// accepted hosts. The roster is read strictly (PAC-122 SF-028): a failed
+// read is the error, never a confirmation that lists nobody.
+func (h *bookingHandlers) confirmation(db storage.DBTX, link *storage.SchedulingLink, booking *storage.Booking) (bookingConfirmationDTO, error) {
+	dto := bookingConfirmationDTO{ID: booking.ID.String(), LinkSlug: link.Slug, Title: link.Title, Start: booking.StartTime.UTC().Format(time.RFC3339), End: booking.EndTime.UTC().Format(time.RFC3339), DurationMinutes: int(booking.EndTime.Sub(booking.StartTime).Minutes()), Hosts: []publicHostDTO{}, BookerName: booking.BookerName, BookerEmail: booking.BookerEmail, Notes: booking.Notes}
+	hosts, err := storage.GetAcceptedHosts(db, link.ID)
+	if err != nil {
+		return dto, err
+	}
+	for _, host := range hosts {
+		user, err := hostUser(db, host)
+		if err != nil {
+			return dto, err
+		}
+		dto.Hosts = append(dto.Hosts, publicHostDTO{Email: user.Email, Name: user.Name, AvatarURL: user.AvatarURL})
+	}
+	return dto, nil
 }
 
 // GET /api/book/{slug}
@@ -141,8 +172,13 @@ func (h *bookingHandlers) getLinkInfo(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, "link zone", err, http.StatusInternalServerError)
 		return
 	}
+	info, err := h.publicLink(link, loc)
+	if err != nil {
+		writeServerError(w, r, "public link roster", err, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(h.publicLink(link, loc))
+	_ = json.NewEncoder(w).Encode(info)
 }
 
 func durationAllowed(link *storage.SchedulingLink, duration int) bool {
@@ -551,12 +587,20 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 }
 
 // writeBooked writes the 201 of a saved or replayed booking, built from the
-// stored row with the link's current title and hosts.
+// stored row with the link's current title and hosts. A failed read of those
+// hosts is the documented 500 (PAC-122 SF-028), never a 201 listing nobody:
+// for a fresh save the booking exists (the 500 does not prove otherwise, and
+// a keyed retry gets the replay); for a replay nothing was written.
 func (h *bookingHandlers) writeBooked(w http.ResponseWriter, r *http.Request, link *storage.SchedulingLink, booking *storage.Booking) {
 	saved := storage.Bind(context.WithoutCancel(r.Context()), h.db)
+	dto, err := h.confirmation(saved, link, booking)
+	if err != nil {
+		writeServerError(w, r, "booking confirmation roster", fmt.Errorf("booking %s: %w", booking.ID, err), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(h.confirmation(saved, link, booking))
+	_ = json.NewEncoder(w).Encode(dto)
 }
 
 // The PAC-82 bodies: the key's 400 and the key-reused 409.

@@ -222,7 +222,11 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 	}
 	result := &DetectResult{ScannedAt: e.now().UTC(), Candidates: []DetectedCandidate{}}
 
+	// Team members are named by position in errors, never by address: an
+	// error here is logged and reported (PAC-122).
+	n := 0
 	for _, c := range byEmail {
+		n++
 		if len(c.occurrences) == 0 {
 			continue
 		}
@@ -263,18 +267,18 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		if lookupErr == sql.ErrNoRows {
 			result.MembersAdded++
 		} else if lookupErr != nil {
-			return nil, fmt.Errorf("lookup detected member %s: %w", c.email, lookupErr)
+			return nil, fmt.Errorf("lookup detected member #%d: %w", n, lookupErr)
 		} else if existing != nil {
 			result.MembersUpdated++
 		}
 		if err := storage.UpsertManagerTeamMemberCtx(ctx, e.DB, m); err != nil {
-			return nil, fmt.Errorf("persist detected member %s: %w", c.email, err)
+			return nil, fmt.Errorf("persist detected member #%d: %w", n, err)
 		}
 
 		// Record occurrences
 		for _, occ := range c.occurrences {
 			if err := storage.UpsertOneOnOneOccurrenceCtx(ctx, e.DB, managerID, c.email, occ.eventID, occ.occurredAt); err != nil {
-				return nil, fmt.Errorf("persist occurrence for %s: %w", c.email, err)
+				return nil, fmt.Errorf("persist occurrence for detected member #%d: %w", n, err)
 			}
 		}
 	}

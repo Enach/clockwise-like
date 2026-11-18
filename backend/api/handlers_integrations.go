@@ -89,7 +89,12 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 
 func (h *integrationsHandlers) slackDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
+	// PAC-122 SF-003: a failed delete leaves the token stored, so it is the
+	// documented 500, never "disconnected".
+	if err := storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack"); err != nil {
+		writeServerError(w, r, "slack disconnect", err, http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -227,7 +232,12 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 
 func (h *integrationsHandlers) notionDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion")
+	// PAC-122 SF-003: a failed delete leaves the token stored, so it is the
+	// documented 500, never "disconnected".
+	if err := storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion"); err != nil {
+		writeServerError(w, r, "notion disconnect", err, http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
