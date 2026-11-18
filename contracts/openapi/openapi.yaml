@@ -3264,7 +3264,9 @@ paths:
         '500':
           description: 'Storage failure. Body: {"error":"internal error"}. Includes a failed read of the
             link owner''s settings, needed for `time_zone` (PAC-72 revision 3.1): never answered with
-            the UTC fallback.'
+            the UTC fallback. Includes a failed read of the link''s accepted hosts or of a host''s user
+            record (PAC-122 SF-027): never a 200 with `hosts` emptied, a host left out or `coverage.total`
+            undercounted.'
           content:
             application/json:
               schema:
@@ -3520,13 +3522,17 @@ paths:
             read is not a 500 (it is busy: the 409, D-6). The detail is written to the server log and
             Sentry only (PAC-21). A 500 from this operation does NOT prove that no booking was saved:
             when the insert was sent and its result is lost (for example the database connection drops),
-            the outcome is unknown and the answer is this 500 (PAC-81 contract revision 2). Only the 503
-            proves that nothing was saved. Also this 500, with `{"error":"internal error"}` and nothing
-            written: the save waited 10 seconds for a delete, pause or edit of the same link, or a co-host
-            invitation on it, still in progress (PAC-101, PAC-120), or for another booking''s save on
-            a common host or the same use-limited link (PAC-82); the client cannot tell this case from
-            the others. A 500 answered to a request carrying an `Idempotency-Key` may be retried with
-            the same key and the same details: if the first request was saved, the retry is its replay.'
+            the outcome is unknown and the answer is this 500 (PAC-81 contract revision 2). Also this
+            500, with `{"error":"internal error"}`: the booking was saved (or is a replay) but the link''s
+            accepted hosts, or a host''s user record, could not be read to build the 201 (PAC-122 SF-028);
+            the 201 never lists fewer hosts than the link has. The booking stands and its calendar events
+            and email are completed as for a 201. Only the 503 proves that nothing was saved. Also this
+            500, with `{"error":"internal error"}` and nothing written: the save waited 10 seconds for
+            a delete, pause or edit of the same link, or a co-host invitation on it, still in progress
+            (PAC-101, PAC-120), or for another booking''s save on a common host or the same use-limited
+            link (PAC-82); the client cannot tell this case from the others. A 500 answered to a request
+            carrying an `Idempotency-Key` may be retried with the same key and the same details: if the
+            first request was saved, the retry is its replay.'
           content:
             application/json:
               schema:
@@ -3535,9 +3541,10 @@ paths:
           description: 'The request budget ran out BEFORE the booking insert was sent (PAC-81, spec AC-A2,
             AC-A19; contract revision 2). From the moment the insert is sent this request is never answered
             with this 503: the server waits for the insert''s own result (bounded by the insert''s own
-            duration, not by the budget) and answers 201 if the row was saved, or the 500 if the insert
-            failed. So this 503 proves that no booking was saved for this request (no calendar event,
-            no email), and a client may retry it. Shared body `{"error":"request timed out"}`.'
+            duration, not by the budget) and answers 201 if the row was saved (or the 500 when the hosts
+            for the answer cannot then be read, PAC-122 SF-028), or the 500 if the insert failed. So this
+            503 proves that no booking was saved for this request (no calendar event, no email), and a
+            client may retry it. Shared body `{"error":"request timed out"}`.'
           content:
             application/json:
               schema:
@@ -5882,19 +5889,19 @@ paths:
         path (no `team_id`) is unchanged.
 
         PAC-129 (spec §3.8, D-5, D-8, AC-16b, AC-30, AC-37; contract PAC-129 §4): with `team_id` the whole
-        decision moves inside ONE transaction, in this order: the PAC-71 re-check (a stale session is
-        the 401 and nothing is written); the team row locked FOR NO KEY UPDATE (the PAC-25 lock; no row
-        is the 403); the owner check (not an owner is the 403); the carrier lookup and the membership
-        reads (an owner among the carriers is the 422, nothing removed); then, in addition to today''s
-        deletes, the team''s ADDED entry for the address and EVERY team_invites row of the team for the
-        address, whatever its status (before PAC-129 only `pending` rows). Acceptance and the team removal
-        take the same lock first, so an acceptance that committed before this removal is removed by it,
-        and one that waits for it finds no invitation (404). The manager''s global roster row and its
-        1:1 history are kept; only this team''s assignment goes, as before. Cached manager figures (team_analytics_cache)
-        are the manager''s data and are kept. The answer is still 204 whatever was found. A storage error
-        in the owner check inside the transaction is still the 403 (SF-074 is fixed for PAC-129''s new
-        operations only, spec OQ-12). Without `team_id` (the global delete) nothing about team membership
-        changes: a person added to a team stays on it.
+        decision moves inside ONE storage-owned transaction, in this order: the PAC-71 re-check (a stale
+        session is the 401 and nothing is written); the team row locked FOR NO KEY UPDATE (the PAC-25
+        lock; no row is the 403); the owner check (not an owner is the 403); the carrier lookup and the
+        membership reads (an owner among the carriers is the 422, nothing removed); then, in addition
+        to today''s deletes, the team''s ADDED entry for the address and EVERY team_invites row of the
+        team for the address, whatever its status (before PAC-129 only `pending` rows). Acceptance and
+        the team removal take the same lock first, so an acceptance that committed before this removal
+        is removed by it, and one that waits for it finds no invitation (404). The manager''s global roster
+        row and its 1:1 history are kept; only this team''s assignment goes, as before. Cached manager
+        figures (team_analytics_cache) are the manager''s data and are kept. The answer is still 204 whatever
+        was found. A storage error in the owner check inside the transaction is still the 403 (SF-074
+        is fixed for PAC-129''s new operations only, spec OQ-12). Without `team_id` (the global delete)
+        nothing about team membership changes: a person added to a team stays on it.
 
         '
       parameters:
@@ -7739,11 +7746,13 @@ paths:
             insert left the link created). PAC-119: also "internal error" when the key could not be read
             or stored, or when a keyed create waited more than 10 seconds for a concurrent create with
             the same key. No key is stored in either case, so a later retry with the key is resolved by
-            the operation''s rules. "internal error" also stays the answer to a keyless create whose generated
-            slug was taken by a concurrent create. That is a pre-existing defect, out of scope (spec §5).
-            It applies to a keyed create too, when the key is not stored after it is resolved again, that
-            is when the concurrent create was another account''s or used another key. A keyed create racing
-            a create with its own key is answered by the key''s rules instead.'
+            the operation''s rules. PAC-126: a generated slug taken by a concurrent create is not a 500.
+            The create is rolled back and retried under a newly generated slug, at most 3 inserts in all;
+            a keyed create first resolves its key again, so a create racing one with its own key is answered
+            by the key''s rules. "internal error" stays the answer when the third insert also loses its
+            generated slug, and when an explicit slug that passed the pre-check is taken by a concurrent
+            create before the insert (with a key, once the key is resolved again and nothing is stored
+            under it).'
           content:
             application/json:
               schema:
@@ -7766,7 +7775,9 @@ paths:
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: 'Body: {"error":"internal error"}. Includes a failed read of an owner''s settings,
-            needed for each link''s `time_zone` (PAC-72 revision 3.1), never the UTC fallback.'
+            needed for each link''s `time_zone` (PAC-72 revision 3.1), never the UTC fallback. Includes
+            a failed roster read of any listed link (its host rows or a host''s user record; PAC-122 SF-029,
+            the PAC-25 C-2 rule): never a 200 with a link''s `hosts` emptied or a host''s email dropped.'
           content:
             application/json:
               schema:
@@ -7857,9 +7868,11 @@ paths:
       tags:
       - scheduling-links
       summary: Pending co-host invitations addressed to the caller.
-      description: Invites whose link or owner can no longer be loaded are silently dropped from the list,
-        and so are invites to a deleted link (PAC-40 AC-5). Invites to a paused link (`active=false`)
-        are still listed (PAC-30 D-5). Returns `[]` (never null) when there are none.
+      description: Invites to a deleted link are omitted (PAC-40 AC-5), and so are invites whose link
+        or owner no longer exists. A storage error while reading an invite's link or its owner is the
+        500, never a shorter list (PAC-122 SF-030; before it such an invite was silently dropped). Invites
+        to a paused link (`active=false`) are still listed (PAC-30 D-5). Returns `[]` (never null) when
+        there are none.
       responses:
         '200':
           description: Pending invites.
@@ -7996,7 +8009,8 @@ paths:
       summary: Alias of GET /api/scheduling-links/host-invites (identical handler).
       description: routes.go:157-158 registers `slh.listHostInvites` at BOTH `/host-invites` and `/invites`.
         Byte-for-byte identical behaviour and response; neither is deprecated in code. The frontend only
-        ever calls `/host-invites`. Invites to a deleted link are omitted, as there (PAC-40).
+        ever calls `/host-invites`. Invites to a deleted link are omitted, and a failed read of an invite's
+        link or owner is the 500, as there (PAC-40, PAC-122 SF-030).
       responses:
         '200':
           description: Pending invites (same payload as listSchedulingLinkHostInvites).
@@ -8049,9 +8063,10 @@ paths:
         PAC-112 (spec D-3, §6): this is the ONLY read from which a client may take a link''s co-host list
         as the baseline for a co-host edit (the list sent in `co_host_emails` is the complete list, so
         a baseline missing someone removes them). The answers of `listSchedulingLinks`, `createSchedulingLink`
-        and `updateSchedulingLink` build the roster without this guarantee and must not be used as a baseline.
-        The strictness above (500, never a degraded roster) is therefore load-bearing and must not be
-        relaxed; it is pinned by TestPAC25GetLinkRosterFailureIs500.'
+        and `updateSchedulingLink` must not be used as a baseline: create and PATCH build the roster without
+        this guarantee, and the list, although it reads the roster strictly since PAC-122 (SF-029: a failed
+        roster read is its 500), is not the baseline read either. The strictness above (500, never a degraded
+        roster) is therefore load-bearing and must not be relaxed; it is pinned by TestPAC25GetLinkRosterFailureIs500.'
       responses:
         '200':
           description: 'The link, with hosts. Returned only to the owner (`is_owner: true`) or an accepted
@@ -9034,9 +9049,9 @@ paths:
         different email address", and nothing changes. The session''s email claim is not consulted.
 
         PAC-129 (spec §3.7, §3.8, §3.10, D-4, D-8, AC-19, AC-19b, AC-22, AC-25, AC-30; contract PAC-129
-        §3.4, §4): after the checks above, the write is ONE transaction: the PAC-71 re-check (a stale
-        session is the 401, nothing written); the invitation''s team row locked FOR NO KEY UPDATE (the
-        PAC-25 lock); the invitation read again under the lock. No row (the person was removed meanwhile,
+        §3.4, §4): after the checks above, the write is ONE storage-owned transaction: the PAC-71 re-check
+        (a stale session is the 401, nothing written); the invitation''s team row locked FOR NO KEY UPDATE
+        (the PAC-25 lock); the invitation read again under the lock. No row (the person was removed meanwhile,
         or the team deleted) is the 404 "invite not found"; a status that is no longer pending, or an
         expiry not after the database''s now(), is the 410 "invite is <status>". Then exactly one of:
         (a) the caller is already a member: the invitation is marked accepted, 204; (b) the address is
@@ -9110,8 +9125,9 @@ paths:
 
         `people` (PAC-129, spec §3.2, AC-1, AC-2): every member of both kinds, in this order: the Paceday
         members in `members` order, then the added people by the time they were added. Every member sees
-        it, as today''s `members`. An added person''s entry never carries an account identifier, whether
-        or not an account holds the address (spec D-3).
+        it, as today''s `members`, except that `invitation` is null for a caller who is not an owner (contract
+        1.1, m-6). An added person''s entry never carries an account identifier, whether or not an account
+        holds the address (spec D-3).
 
         PAC-129 (SF-039, AC-6): a failed member read (either kind) is the 500, never a team with an empty
         list.
@@ -9225,9 +9241,10 @@ paths:
         or an added person whose availability is unknown: never zero), or `withheld` (an ADDED person''s
         row seen by a caller who is not an owner of the team: name, email and kind only). An added person''s
         row is availability-only: meeting_minutes from the owner''s free/busy over the week (Monday 00:00
-        to the next Monday 00:00 UTC), read and batched exactly as getTeamAvailability reads it; focus_minutes
-        and focus_score are always null. Their figures are read only when the caller is an owner, and
-        are never stored (beyond the 15-minute free/busy cache). Averages divide by the number of Paceday
+        to the next Monday 00:00 UTC), read, batched and cached exactly as getTeamAvailability reads it
+        (its "Caching" paragraph: a budget-cut batch is never cached and is the 503); focus_minutes and
+        focus_score are always null. Their figures are read only when the caller is an owner, and are
+        never stored (beyond the 15-minute free/busy cache). Averages divide by the number of Paceday
         members whose figures are `measured` (by 1 when none), integer division; added people never count.
         A failed analytics_weeks read is `no_data` for that row, never zero.
 
@@ -9300,20 +9317,32 @@ paths:
         request spends the owner''s provider quota, and the provider''s audit log attributes the read
         to the owner''s account and Paceday''s OAuth client; Paceday''s activity log does not record it.
 
-        Coverage is decided per address: a person whose calendar the provider reports as unreadable (PAC-133),
-        whose address is at a personal-mail domain, or whose batch failed on its own time limit is unknown;
-        unknown is never free. A busy added person blocks a slot exactly as a busy Paceday member; an
-        unknown one does not block. A Paceday member whose calendar could not be read is counted unknown
-        and, as before, does not block. Each slot carries free_count, unknown_count and total_count.
+        Coverage is decided per address: a person whose calendar the provider reports as unreadable (PAC-133
+        AC-1/AC-5 for Google, AC-4/AC-6 for Microsoft), whose address is at a personal-mail domain, or
+        whose batch failed on its own time limit is unknown; unknown is never free. A busy added person
+        blocks a slot exactly as a busy Paceday member. Blocking follows PAC-133 D-11 (contract 1.1, M-4):
+        busy windows the provider REPORTED for an address block a slot even when that address is unknown;
+        only an unknown person with no reported windows does not block. A Paceday member whose calendar
+        could not be read is counted unknown and, as before, does not block. Each slot carries free_count,
+        unknown_count and total_count; a person who is unknown is counted unknown even when their reported
+        windows blocked other slots, and no offered slot overlaps any reported window.
 
         Batching (spec §3.5, D-11): the added people are requested from the owner''s provider in batches
         of at most 50 addresses (Google `freebusy.query`) or 20 (Microsoft Graph `getSchedule`), at most
         3 batches at a time, each on its own 5 s time limit (shortened to the budget left minus the PAC-81
         stop margin). A batch that fails or hits its own limit makes only its own addresses unknown. A
         batch the budget prevents from starting, or cuts short, is the 503 below, as for a member read.
-        With the team cap of 50 the worst case is 3 Microsoft batches in one round. Results go through
-        the existing 15-minute free/busy cache, keyed by the owner (PAC-133 owns the key); nothing else
-        about an added person is stored.
+        With the team cap of 50 the worst case is 3 Microsoft batches in one round.
+
+        Caching (contract 1.1, M-3; PAC-133 §5 hands this decision to PAC-129): results go through the
+        existing process-wide 15-minute free/busy cache (the one FreeBusyService of the engine built once
+        in newTeamHandlers), keyed by the credential owner, the address and the range (PAC-133 owns the
+        key). A batch that the request budget prevents from starting, or cuts short, writes NOTHING to
+        the cache, so a retry asks the provider again instead of answering 200 with those people unknown.
+        A batch that fails on its own 5 s limit, or that the provider refuses, is cached as unknown for
+        15 minutes: today''s behaviour (PAC-67, TestPAC67_TemporaryFailureLookupIsStillCached, unchanged).
+        A result computed while the owner''s credential is recorded as lost is not cached (PAC-67 AC-20).
+        Nothing else about an added person is stored.
 
         Inference (spec §3.4, accepted by the owner): a member learns, at 15-minute granularity inside
         09:00-18:00 UTC on `date`, the union of the busy times of everyone counted and, for each offered
@@ -9373,11 +9402,11 @@ paths:
         only.
       description: 'PAC-129 (spec §3.7, §3.10, D-4, D-8, D-12, AC-18, AC-20, AC-23, AC-25; contract PAC-129
         §3.3, §4). The address is normalised (trimmed, lowercased, validated) as before. The write is
-        ONE transaction: the PAC-71 re-check (stale session: 401, nothing written); the team row locked
-        FOR NO KEY UPDATE (no row: 403); the owner check (not an owner: 403; a storage error there is
-        still the 403, SF-074 left open on this existing operation, spec OQ-12). Then, judged under the
-        lock, with "pending" meaning stored status `pending` AND expires_at after the database''s now()
-        (spec D-12):
+        ONE storage-owned transaction: the PAC-71 re-check (stale session: 401, nothing written); the
+        team row locked FOR NO KEY UPDATE (no row: 403); the owner check (not an owner: 403; a storage
+        error there is still the 403, SF-074 left open on this existing operation, spec OQ-12). Then,
+        judged under the lock, with "pending" meaning stored status `pending` AND expires_at after the
+        database''s now() (spec D-12):
 
         1. the address is held by a Paceday member of the team (compared on the account''s single address,
         lowercased): 200, outcome `already_member`, no invitation, no email;
@@ -9386,15 +9415,17 @@ paths:
         kinds, owner included: the 422 TeamMemberLimitError, nothing written;
 
         3. the address is not on the team: it is ADDED (an added person, named by `name`, trimmed, or
-        "" when absent);
+        "" when absent, `added_by` the caller). If it already is an added person whose adder is no longer
+        an owner of the team (or whose account is gone), `added_by` becomes the caller, exactly as in
+        addTeamPerson (contract 1.1, m-9); nothing else of the entry changes;
 
         4. a pending invitation for the address exists on the team: 200, outcome `already_pending`, carrying
         that invitation (its token included); no second invitation, no second email (SF-012, API-090);
 
         5. otherwise every stored-`pending` row for the address on the team whose expiry has passed (a
         lapsed invitation) is set to `expired`, and a new invitation is created (7 days) and committed;
-        its email is then sent as before (a tracked unit; skipped silently without SMTP): 201, outcome
-        `invited`.
+        its email is then sent as before (a tracked unit; without SMTP the skip is logged with the invite
+        id, PAC-122 SF-066): 201, outcome `added_and_invited` when step 3 added the person, else `invited`.
 
         At most one invitation per team and address is ever stored `pending` (migration 041''s partial
         unique index). Before PAC-129 every call inserted a new invitation and sent a new email, the name
@@ -9413,10 +9444,13 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '201':
-          description: 'A new invitation was created (outcome `invited`); its raw `token` is included
-            so the owner can share the link out of band. `person` is the address''s entry on the team
-            after this call (an added person, with this invitation). Email delivery is fire-and-forget
-            and silently skipped when SMTP_HOST/SMTP_FROM are unset; the answer never claims delivery.
+          description: 'A new invitation was created (outcome `added_and_invited`: the address was not
+            on the team and is now an added person; or `invited`: it already was an added person); its
+            raw `token` is included so the owner can share the link out of band. expires_at is now + 7
+            days. `person` is the address''s entry on the team after this call (an added person, with
+            this invitation). Email delivery is fire-and-forget and skipped when SMTP_HOST/SMTP_FROM are
+            unset; the skip is logged with the invite id, and the server warns at startup that email is
+            off (PAC-122 SF-066). The answer is the same either way and never claims delivery.
 
             '
           content:
@@ -9424,10 +9458,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/TeamInviteResult'
         '200':
-          description: 'Success-shaped, nothing sent. Outcome `already_pending`: `invitation` is the existing
-            pending invitation (token included) and `person` the entry (added now by step 3 if the address
-            was not on the team). Outcome `already_member`: `invitation` is null and `person` is the Paceday
-            member''s entry; nothing written.
+          description: 'Success-shaped, nothing sent, no invitation created. Outcome `already_pending`:
+            `invitation` is the existing pending invitation (token included) and `person` the entry (added
+            now by step 3 if the address was not on the team). Outcome `already_member`: `invitation`
+            is null and `person` is the Paceday member''s entry; nothing written.
 
             '
           content:
@@ -9685,19 +9719,20 @@ paths:
         holds the address. Their free/busy is read through the calendar credential of the owner who added
         them, for any member''s Find a time (spec §3.4).
 
-        Order: 401 (requireAuth); 400 "invalid team id"; 400 "invalid body" (the body does not decode);
-        400 "email is required" (blank after trimming); 422 "email must be a valid email address"; then
-        ONE transaction: the PAC-71 re-check (stale session: 401, nothing written); the team row locked
-        FOR NO KEY UPDATE (no row: 403); the owner check (not a member or not an owner: 403; a storage
-        error: the 500, SF-074 fixed for this new operation, spec OQ-12); the caller''s own address: 422
-        `you cannot add your own address`; the address of a Paceday member of the team: 422 `this address
-        belongs to a Paceday member of this team`; an existing added entry for the address: 200 with that
-        entry, unchanged (the stored name is kept) except that when the owner who added it is no longer
-        an owner of the team (or their account is gone) the caller becomes the owner whose credential
-        reads it (spec OQ-1); 50 or more members of both kinds, owner included: 422 `this team has reached
-        its limit of 50 members; remove someone before adding another`; otherwise the entry is stored
-        (address lowercased, name trimmed) and the answer is 201. Teams already over 50 at deploy keep
-        their members and get the 422 until they are below 50.
+        Order: 401 (requireAuth); 400 "invalid team id"; 400 "invalid body" (the body does not decode,
+        or `email` is not a JSON string); 400 "email is required" (blank after trimming); 422 "email must
+        be a valid email address" (refused by the normaliser described on AddTeamPersonRequest.email);
+        then ONE storage-owned transaction: the PAC-71 re-check (stale session: 401, nothing written);
+        the team row locked FOR NO KEY UPDATE (no row: 403); the owner check (not a member or not an owner:
+        403; a storage error: the 500, SF-074 fixed for this new operation, spec OQ-12); the caller''s
+        own address: 422 `you cannot add your own address`; the address of a Paceday member of the team:
+        422 `this address belongs to a Paceday member of this team`; an existing added entry for the address:
+        200 with that entry, unchanged (the stored name is kept) except that when the owner who added
+        it is no longer an owner of the team (or their account is gone) the caller becomes the owner whose
+        credential reads it (spec OQ-1); 50 or more members of both kinds, owner included: 422 `this team
+        has reached its limit of 50 members; remove someone before adding another`; otherwise the entry
+        is stored (address lowercased, name trimmed) and the answer is 201. Teams already over 50 at deploy
+        keep their members and get the 422 until they are below 50.
 
         '
       requestBody:
@@ -9757,17 +9792,17 @@ paths:
         removing themselves.
       description: 'PAC-129 (spec §3.8, D-5, D-8, AC-15, AC-25, AC-30, AC-37; contract PAC-129 §3.2, §4).
         New. The person is named by address within the team. Order: 401; 400 "invalid team id"; 400 "invalid
-        email" (the path does not normalise to a valid address); then ONE transaction: the PAC-71 re-check
-        (stale session: 401, nothing written); the team row locked FOR NO KEY UPDATE (no row: 403); the
-        caller''s membership (not a member: 403; a storage error: the 500); unless the address is the
-        caller''s own, the caller must be an owner (403); then, read under the lock: the Paceday members
-        whose account address is the address, the added entry for it, and every invitation of the team
-        for it, whatever its status. None of these: 404 `person not found`, nothing written. A Paceday
-        member there who is an owner, with no other owner remaining: 422 "the team owner cannot be removed"
-        (PAC-25 rule), nothing written. Otherwise all of them are deleted: memberships, the added entry,
-        every invitation of the team for the address (pending, accepted, declined, expired), so no old
-        link can bring the person back; 204. Nothing of the person is stored elsewhere on the team path
-        (added people''s figures are never stored).
+        email" (the path does not normalise to a valid address); then ONE storage-owned transaction: the
+        PAC-71 re-check (stale session: 401, nothing written); the team row locked FOR NO KEY UPDATE (no
+        row: 403); the caller''s membership (not a member: 403; a storage error: the 500); unless the
+        address is the caller''s own, the caller must be an owner (403); then, read under the lock: the
+        Paceday members whose account address is the address, the added entry for it, and every invitation
+        of the team for it, whatever its status. None of these: 404 `person not found`, nothing written.
+        A Paceday member there who is an owner, with no other owner remaining: 422 "the team owner cannot
+        be removed" (PAC-25 rule), nothing written. Otherwise all of them are deleted: memberships, the
+        added entry, every invitation of the team for the address (pending, accepted, declined, expired),
+        so no old link can bring the person back; 204. Nothing of the person is stored elsewhere on the
+        team path (added people''s figures are never stored).
 
         The acceptance takes the same lock first: removal first, the acceptance finds no invitation (404,
         nothing written); acceptance first, this removal deletes the membership the acceptance created.
@@ -10149,9 +10184,15 @@ components:
       properties:
         email:
           type: string
-          format: email
-          description: 'Trimmed, lowercased and validated with net/mail.ParseAddress (the same rule as
-            inviteTeamMember). Stored lowercase.
+          description: 'PAC-129 contract 1.1 (challenge B-1): a plain string, deliberately WITHOUT `format:
+            email`, so the generated decoder accepts any JSON string and the server''s own normaliser
+            is the only validator, the same as inviteTeamMember''s (normalizeManagerEmail): leading and
+            trailing whitespace trimmed (strings.TrimSpace, Unicode White_Space, which covers ECMAScript
+            WhiteSpace and LineTerminator except U+FEFF), lowercased, then net/mail.ParseAddress, whose
+            parsed address must equal the normalised input. Blank after trimming: 400 "email is required".
+            Refused by the normaliser: 422 "email must be a valid email address". Stored normalised. A
+            body that is not JSON, or an `email` that is not a JSON string, is the wrapper''s 400 "invalid
+            body".
 
             '
         name:
@@ -14194,13 +14235,14 @@ components:
     PublicLinkCoverage:
       type: object
       description: 'How many accepted hosts had a STORED Google calendar token when the page was rendered.
-        `total` counts accepted hosts whose user record resolved; `checked` counts those among them for
-        whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested
-        to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded
-        (PAC-67), still counts as checked, while the host''s calendar cannot be read, so that host is
-        busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed
-        without that host''s calendar); a host with no Google token row at all (for example one on Outlook)
-        is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor
+        `total` counts every accepted host (a host whose user record cannot be read is the operation''s
+        500, never left out; PAC-122 SF-027); `checked` counts those among them for whom a Google token
+        row loads, whether or not that token still works. Nothing is renewed or tested to compute it.
+        A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67),
+        still counts as checked, while the host''s calendar cannot be read, so that host is busy and no
+        slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without
+        that host''s calendar); a host with no Google token row at all (for example one on Outlook) is
+        not counted as checked. This is deliberate: counting only usable tokens would tell every visitor
         with the link that a host''s connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this
         description said "a usable OAuth token", which was not what the server counted (factory section
         7.2). Always present, even as {0,0}.'
@@ -15080,9 +15122,11 @@ components:
       type: object
       description: 'PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200):
         every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus
-        the optional `co_host_changes`. The roster in `hosts` is built like the list''s, not like `getSchedulingLink`''s,
-        and is never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither
-        the property map nor the required list can drift.'
+        the optional `co_host_changes`. The roster in `hosts` is built without the strict read''s guarantee
+        (a failed roster read can empty it or blank a host''s email; PAC-122 SF-029 leaves this open),
+        unlike `getSchedulingLink`''s and, since PAC-122, the list''s, and is never a co-host baseline
+        (spec D-3). `required` is shared through a second anchor, so neither the property map nor the
+        required list can drift.'
       required: *id001
       additionalProperties: false
       properties:
@@ -16574,7 +16618,7 @@ components:
       properties:
         email:
           type: string
-          format: email
+          description: As TeamPerson.email (no `format`, contract 1.1 B-1).
         name:
           type: string
         kind:
@@ -16703,8 +16747,15 @@ components:
       additionalProperties: false
     TeamInviteOutcome:
       type: string
-      description: PAC-129. What inviteTeamMember did (its steps 1, 4 and 5).
+      description: 'PAC-129. What inviteTeamMember did. `added_and_invited` (201): the address was not
+        on the team; it is now an added person and a new invitation was created. `invited` (201): the
+        address already was an added person; a new invitation was created. `already_pending` (200): a
+        pending invitation existed; no new invitation (the person may have been added by this call, step
+        3). `already_member` (200): a Paceday member holds the address; nothing written.
+
+        '
       enum:
+      - added_and_invited
       - invited
       - already_pending
       - already_member
@@ -16768,7 +16819,8 @@ components:
     TeamInviteResult:
       type: object
       description: 'PAC-129. The 201 and 200 of inviteTeamMember. `invitation` is null exactly when outcome
-        is `already_member`. Replaces the bare TeamInvite of the 201 (consumers: contract PAC-129 §8).
+        is `already_member`. The caller is always an owner, so `person.invitation` is shown. Replaces
+        the bare TeamInvite of the 201 (consumers: contract PAC-129 §8).
 
         '
       properties:
@@ -16854,8 +16906,12 @@ components:
       properties:
         email:
           type: string
-          format: email
-          description: Lowercase. For a Paceday member, the account's address.
+          description: 'Lowercase. For a Paceday member, the account''s address. No `format: email` (contract
+            1.1, B-1): an address the server''s normaliser accepts (for example `pat@localhost`) must
+            encode, so the generated encoder may not apply a stricter pattern than the one that admitted
+            it.
+
+            '
         name:
           type: string
           description: 'Paceday member: the account''s name ("" when it has none). Added person: the name
@@ -16877,7 +16933,9 @@ components:
           - type: 'null'
         invitation:
           description: 'For kind `added`, the pending invitation for the address, or null when there is
-            none. Always null for kind `paceday`.
+            none. Always null for kind `paceday`. Contract 1.1 (challenge m-6): shown ONLY to an owner
+            of the team; for any other member it is always null, so who was invited and when it lapses
+            stay visible only to owners, as before PAC-129.
 
             '
           oneOf:

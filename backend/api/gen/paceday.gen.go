@@ -751,9 +751,10 @@ const (
 
 // Defines values for TeamInviteOutcome.
 const (
-	AlreadyMember  TeamInviteOutcome = "already_member"
-	AlreadyPending TeamInviteOutcome = "already_pending"
-	Invited        TeamInviteOutcome = "invited"
+	AddedAndInvited TeamInviteOutcome = "added_and_invited"
+	AlreadyMember   TeamInviteOutcome = "already_member"
+	AlreadyPending  TeamInviteOutcome = "already_pending"
+	Invited         TeamInviteOutcome = "invited"
 )
 
 // Defines values for TeamMemberRole.
@@ -1034,8 +1035,8 @@ type AddTeamPersonErrorError string
 
 // AddTeamPersonRequest PAC-129. Unknown keys are ignored (the generated decoder does not refuse them).
 type AddTeamPersonRequest struct {
-	// Email Trimmed, lowercased and validated with net/mail.ParseAddress (the same rule as inviteTeamMember). Stored lowercase.
-	Email openapi_types.Email `json:"email"`
+	// Email PAC-129 contract 1.1 (challenge B-1): a plain string, deliberately WITHOUT `format: email`, so the generated decoder accepts any JSON string and the server's own normaliser is the only validator, the same as inviteTeamMember's (normalizeManagerEmail): leading and trailing whitespace trimmed (strings.TrimSpace, Unicode White_Space, which covers ECMAScript WhiteSpace and LineTerminator except U+FEFF), lowercased, then net/mail.ParseAddress, whose parsed address must equal the normalised input. Blank after trimming: 400 "email is required". Refused by the normaliser: 422 "email must be a valid email address". Stored normalised. A body that is not JSON, or an `email` that is not a JSON string, is the wrapper's 400 "invalid body".
+	Email string `json:"email"`
 
 	// Name Optional display name, trimmed; absent or blank stores "".
 	Name                 *string                `json:"name,omitempty"`
@@ -3147,7 +3148,7 @@ type PublicHost struct {
 	Name *string `json:"name,omitempty"`
 }
 
-// PublicLinkCoverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the host's calendar cannot be read, so that host is busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without that host's calendar); a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
+// PublicLinkCoverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts every accepted host (a host whose user record cannot be read is the operation's 500, never left out; PAC-122 SF-027); `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the host's calendar cannot be read, so that host is busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without that host's calendar); a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 type PublicLinkCoverage struct {
 	Checked int `json:"checked"`
 	Total   int `json:"total"`
@@ -3158,7 +3159,7 @@ type PublicLinkInfo struct {
 	// BookingHorizonDays The link's booking horizon (PAC-72 revision 2, owner decision D-1): today (in `time_zone`) and the next `booking_horizon_days` - 1 days can be listed and booked; later dates offer no slot.
 	BookingHorizonDays int `json:"booking_horizon_days"`
 
-	// Coverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the host's calendar cannot be read, so that host is busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without that host's calendar); a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
+	// Coverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts every accepted host (a host whose user record cannot be read is the operation's 500, never left out; PAC-122 SF-027); `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the host's calendar cannot be read, so that host is busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without that host's calendar); a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 	Coverage PublicLinkCoverage `json:"coverage"`
 
 	// Durations Allowed meeting lengths in minutes, straight from the link's duration_options column.
@@ -3562,7 +3563,7 @@ type SchedulingLinkRemovedHost struct {
 // SchedulingLinkRemovedHostStatus The status the host had when removed.
 type SchedulingLinkRemovedHostStatus string
 
-// SchedulingLinkSaved PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200): every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus the optional `co_host_changes`. The roster in `hosts` is built like the list's, not like `getSchedulingLink`'s, and is never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither the property map nor the required list can drift.
+// SchedulingLinkSaved PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200): every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus the optional `co_host_changes`. The roster in `hosts` is built without the strict read's guarantee (a failed roster read can empty it or blank a host's email; PAC-122 SF-029 leaves this open), unlike `getSchedulingLink`'s and, since PAC-122, the list's, and is never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither the property map nor the required list can drift.
 type SchedulingLinkSaved struct {
 	// Active false means paused: the owner switched the link off and can switch it back on with PATCH. A deleted link is never returned, so this field never describes one (PAC-40).
 	Active bool `json:"active"`
@@ -4627,7 +4628,8 @@ type TeamAnalyticsFigures string
 
 // TeamAnalyticsPerson PAC-129. One member's row. Every figure is null unless `figures` is `measured`; for kind `added`, focus_minutes and focus_score are always null (availability only).
 type TeamAnalyticsPerson struct {
-	Email openapi_types.Email `json:"email"`
+	// Email As TeamPerson.email (no `format`, contract 1.1 B-1).
+	Email string `json:"email"`
 
 	// Figures PAC-129. `measured`: the figures are present. `no_data`: nothing was measured (show "no data", never zero). `withheld`: an added person's figures, hidden from a caller who is not an owner.
 	Figures      TeamAnalyticsFigures `json:"figures"`
@@ -4684,7 +4686,7 @@ type TeamInvite struct {
 // TeamInviteStatus defines model for TeamInvite.Status.
 type TeamInviteStatus string
 
-// TeamInviteOutcome PAC-129. What inviteTeamMember did (its steps 1, 4 and 5).
+// TeamInviteOutcome PAC-129. What inviteTeamMember did. `added_and_invited` (201): the address was not on the team; it is now an added person and a new invitation was created. `invited` (201): the address already was an added person; a new invitation was created. `already_pending` (200): a pending invitation existed; no new invitation (the person may have been added by this call, step 3). `already_member` (200): a Paceday member holds the address; nothing written.
 type TeamInviteOutcome string
 
 // TeamInvitePreview A narrow projection of a pending invite, NOT a TeamInvite (no id, token, status, invitedBy or createdAt). The three original keys are camelCase and stay so for existing readers; the three keys added by PAC-34 are snake_case, the spelling the PAC-34 acceptance criteria name and the web normalizer reads (see contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and expires_at come from the invite row itself, so they are always present. The team and inviter rows are read separately and a failed read is not an error: teamName and inviterName become "" and inviter_email becomes null.
@@ -4708,11 +4710,11 @@ type TeamInvitePreview struct {
 	TeamId openapi_types.UUID `json:"team_id"`
 }
 
-// TeamInviteResult PAC-129. The 201 and 200 of inviteTeamMember. `invitation` is null exactly when outcome is `already_member`. Replaces the bare TeamInvite of the 201 (consumers: contract PAC-129 §8).
+// TeamInviteResult PAC-129. The 201 and 200 of inviteTeamMember. `invitation` is null exactly when outcome is `already_member`. The caller is always an owner, so `person.invitation` is shown. Replaces the bare TeamInvite of the 201 (consumers: contract PAC-129 §8).
 type TeamInviteResult struct {
 	Invitation *TeamInvite `json:"invitation"`
 
-	// Outcome PAC-129. What inviteTeamMember did (its steps 1, 4 and 5).
+	// Outcome PAC-129. What inviteTeamMember did. `added_and_invited` (201): the address was not on the team; it is now an added person and a new invitation was created. `invited` (201): the address already was an added person; a new invitation was created. `already_pending` (200): a pending invitation existed; no new invitation (the person may have been added by this call, step 3). `already_member` (200): a Paceday member holds the address; nothing written.
 	Outcome TeamInviteOutcome `json:"outcome"`
 
 	// Person PAC-129. One member of the team, of either kind, as every member sees it. No timestamp: two adds of different addresses answer bodies that differ only in `email` and `name` (AC-2).
@@ -4752,10 +4754,10 @@ type TeamNameRequest struct {
 
 // TeamPerson PAC-129. One member of the team, of either kind, as every member sees it. No timestamp: two adds of different addresses answer bodies that differ only in `email` and `name` (AC-2).
 type TeamPerson struct {
-	// Email Lowercase. For a Paceday member, the account's address.
-	Email openapi_types.Email `json:"email"`
+	// Email Lowercase. For a Paceday member, the account's address. No `format: email` (contract 1.1, B-1): an address the server's normaliser accepts (for example `pat@localhost`) must encode, so the generated encoder may not apply a stricter pattern than the one that admitted it.
+	Email string `json:"email"`
 
-	// Invitation For kind `added`, the pending invitation for the address, or null when there is none. Always null for kind `paceday`.
+	// Invitation For kind `added`, the pending invitation for the address, or null when there is none. Always null for kind `paceday`. Contract 1.1 (challenge m-6): shown ONLY to an owner of the team; for any other member it is always null, so who was invited and when it lapses stay visible only to owners, as before PAC-129.
 	Invitation *TeamPersonInvitation `json:"invitation"`
 
 	// Kind PAC-129 (spec §3.2). `paceday`: joined by accepting an invitation (a team_members row). `added`: added without Paceday access (no account link, whatever account holds the address). The kind depends only on whether the person accepted an invitation.

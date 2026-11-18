@@ -321,7 +321,7 @@ paths:
         is still 204 (spec §6). The global path (no `team_id`) is unchanged.
 
         PAC-129 (spec §3.8, D-5, D-8, AC-16b, AC-30, AC-37; contract PAC-129 §4): with
-        `team_id` the whole decision moves inside ONE transaction, in this order: the
+        `team_id` the whole decision moves inside ONE storage-owned transaction, in this order: the
         PAC-71 re-check (a stale session is the 401 and nothing is written); the team row
         locked FOR NO KEY UPDATE (the PAC-25 lock; no row is the 403); the owner check
         (not an owner is the 403); the carrier lookup and the membership reads (an owner
@@ -687,7 +687,8 @@ paths:
         The session's email claim is not consulted.
 
         PAC-129 (spec §3.7, §3.8, §3.10, D-4, D-8, AC-19, AC-19b, AC-22, AC-25, AC-30;
-        contract PAC-129 §3.4, §4): after the checks above, the write is ONE transaction:
+        contract PAC-129 §3.4, §4): after the checks above, the write is ONE storage-owned
+        transaction:
         the PAC-71 re-check (a stale session is the 401, nothing written); the invitation's
         team row locked FOR NO KEY UPDATE (the PAC-25 lock); the invitation read again
         under the lock. No row (the person was removed meanwhile, or the team deleted) is
@@ -760,7 +761,8 @@ paths:
 
         `people` (PAC-129, spec §3.2, AC-1, AC-2): every member of both kinds, in this
         order: the Paceday members in `members` order, then the added people by the time
-        they were added. Every member sees it, as today's `members`. An added person's
+        they were added. Every member sees it, as today's `members`, except that
+        `invitation` is null for a caller who is not an owner (contract 1.1, m-6). An added person's
         entry never carries an account identifier, whether or not an account holds the
         address (spec D-3).
 
@@ -858,7 +860,7 @@ paths:
       description: >
         PAC-129 (spec §3.7, §3.10, D-4, D-8, D-12, AC-18, AC-20, AC-23, AC-25; contract
         PAC-129 §3.3, §4). The address is normalised (trimmed, lowercased, validated) as
-        before. The write is ONE transaction: the PAC-71 re-check (stale session: 401,
+        before. The write is ONE storage-owned transaction: the PAC-71 re-check (stale session: 401,
         nothing written); the team row locked FOR NO KEY UPDATE (no row: 403); the owner
         check (not an owner: 403; a storage error there is still the 403, SF-074 left
         open on this existing operation, spec OQ-12). Then, judged under the lock, with
@@ -874,7 +876,10 @@ paths:
         written;
 
         3. the address is not on the team: it is ADDED (an added person, named by `name`,
-        trimmed, or "" when absent);
+        trimmed, or "" when absent, `added_by` the caller). If it already is an added
+        person whose adder is no longer an owner of the team (or whose account is gone),
+        `added_by` becomes the caller, exactly as in addTeamPerson (contract 1.1, m-9);
+        nothing else of the entry changes;
 
         4. a pending invitation for the address exists on the team: 200, outcome
         `already_pending`, carrying that invitation (its token included); no second
@@ -883,7 +888,8 @@ paths:
         5. otherwise every stored-`pending` row for the address on the team whose expiry
         has passed (a lapsed invitation) is set to `expired`, and a new invitation is
         created (7 days) and committed; its email is then sent as before (a tracked unit;
-        skipped silently without SMTP): 201, outcome `invited`.
+        without SMTP the skip is logged with the invite id, PAC-122 SF-066): 201, outcome
+        `added_and_invited` when step 3 added the person, else `invited`.
 
         At most one invitation per team and address is ever stored `pending`
         (migration 041's partial unique index). Before PAC-129 every call inserted a new
@@ -901,17 +907,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "201":
           description: >
-            A new invitation was created (outcome `invited`); its raw `token` is included
-            so the owner can share the link out of band. `person` is the address's entry
-            on the team after this call (an added person, with this invitation). Email
-            delivery is fire-and-forget and silently skipped when SMTP_HOST/SMTP_FROM are
-            unset; the answer never claims delivery.
+            A new invitation was created (outcome `added_and_invited`: the address was not on
+            the team and is now an added person; or `invited`: it already was an added
+            person); its raw `token` is included so the owner can share the link
+            out of band. expires_at is now + 7 days. `person` is the address's entry on the
+            team after this call (an added person, with this invitation). Email delivery is
+            fire-and-forget and skipped when SMTP_HOST/SMTP_FROM are unset; the skip is
+            logged with the invite id, and the server warns at startup that email is off
+            (PAC-122 SF-066). The answer is the same either way and never claims delivery.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TeamInviteResult" }
         "200":
           description: >
-            Success-shaped, nothing sent. Outcome `already_pending`: `invitation` is the
+            Success-shaped, nothing sent, no invitation created. Outcome `already_pending`: `invitation` is the
             existing pending invitation (token included) and `person` the entry (added now
             by step 3 if the address was not on the team). Outcome `already_member`:
             `invitation` is null and `person` is the Paceday member's entry; nothing
@@ -955,8 +964,9 @@ paths:
         Find a time (spec §3.4).
 
         Order: 401 (requireAuth); 400 "invalid team id"; 400 "invalid body" (the body does
-        not decode); 400 "email is required" (blank after trimming); 422 "email must be a
-        valid email address"; then ONE transaction: the PAC-71 re-check (stale session:
+        not decode, or `email` is not a JSON string); 400 "email is required" (blank after
+        trimming); 422 "email must be a valid email address" (refused by the normaliser
+        described on AddTeamPersonRequest.email); then ONE storage-owned transaction: the PAC-71 re-check (stale session:
         401, nothing written); the team row locked FOR NO KEY UPDATE (no row: 403); the
         owner check (not a member or not an owner: 403; a storage error: the 500, SF-074
         fixed for this new operation, spec OQ-12); the caller's own address: 422
@@ -1021,8 +1031,8 @@ paths:
         PAC-129 (spec §3.8, D-5, D-8, AC-15, AC-25, AC-30, AC-37; contract PAC-129 §3.2,
         §4). New. The person is named by address within the team. Order: 401; 400
         "invalid team id"; 400 "invalid email" (the path does not normalise to a valid
-        address); then ONE transaction: the PAC-71 re-check (stale session: 401, nothing
-        written); the team row locked FOR NO KEY UPDATE (no row: 403); the caller's
+        address); then ONE storage-owned transaction: the PAC-71 re-check (stale session:
+        401, nothing written); the team row locked FOR NO KEY UPDATE (no row: 403); the caller's
         membership (not a member: 403; a storage error: the 500); unless the address is
         the caller's own, the caller must be an owner (403); then, read under the lock:
         the Paceday members whose account address is the address, the added entry for it,
@@ -1300,11 +1310,16 @@ paths:
         does not record it.
 
         Coverage is decided per address: a person whose calendar the provider reports as
-        unreadable (PAC-133), whose address is at a personal-mail domain, or whose batch
+        unreadable (PAC-133 AC-1/AC-5 for Google, AC-4/AC-6 for Microsoft), whose address is at a personal-mail domain, or whose batch
         failed on its own time limit is unknown; unknown is never free. A busy added person
-        blocks a slot exactly as a busy Paceday member; an unknown one does not block. A
-        Paceday member whose calendar could not be read is counted unknown and, as before,
-        does not block. Each slot carries free_count, unknown_count and total_count.
+        blocks a slot exactly as a busy Paceday member. Blocking follows PAC-133 D-11
+        (contract 1.1, M-4): busy windows the provider REPORTED for an address block a
+        slot even when that address is unknown; only an unknown person with no reported
+        windows does not block. A Paceday member whose calendar could not be read is
+        counted unknown and, as before, does not block. Each slot carries free_count,
+        unknown_count and total_count; a person who is unknown is counted unknown even
+        when their reported windows blocked other slots, and no offered slot overlaps
+        any reported window.
 
         Batching (spec §3.5, D-11): the added people are requested from the owner's
         provider in batches of at most 50 addresses (Google `freebusy.query`) or 20
@@ -1313,8 +1328,19 @@ paths:
         batch that fails or hits its own limit makes only its own addresses unknown. A
         batch the budget prevents from starting, or cuts short, is the 503 below, as for a
         member read. With the team cap of 50 the worst case is 3 Microsoft batches in one
-        round. Results go through the existing 15-minute free/busy cache, keyed by the
-        owner (PAC-133 owns the key); nothing else about an added person is stored.
+        round.
+
+        Caching (contract 1.1, M-3; PAC-133 §5 hands this decision to PAC-129): results go
+        through the existing process-wide 15-minute free/busy cache (the one
+        FreeBusyService of the engine built once in newTeamHandlers), keyed by the
+        credential owner, the address and the range (PAC-133 owns the key). A batch that
+        the request budget prevents from starting, or cuts short, writes NOTHING to the
+        cache, so a retry asks the provider again instead of answering 200 with those
+        people unknown. A batch that fails on its own 5 s limit, or that the provider
+        refuses, is cached as unknown for 15 minutes: today's behaviour (PAC-67,
+        TestPAC67_TemporaryFailureLookupIsStillCached, unchanged). A result computed while
+        the owner's credential is recorded as lost is not cached (PAC-67 AC-20). Nothing
+        else about an added person is stored.
 
         Inference (spec §3.4, accepted by the owner): a member learns, at 15-minute
         granularity inside 09:00-18:00 UTC on `date`, the union of the busy times of
@@ -1372,8 +1398,9 @@ paths:
         added person whose availability is unknown: never zero), or `withheld` (an ADDED
         person's row seen by a caller who is not an owner of the team: name, email and
         kind only). An added person's row is availability-only: meeting_minutes from the
-        owner's free/busy over the week (Monday 00:00 to the next Monday 00:00 UTC), read
-        and batched exactly as getTeamAvailability reads it; focus_minutes and focus_score
+        owner's free/busy over the week (Monday 00:00 to the next Monday 00:00 UTC), read,
+        batched and cached exactly as getTeamAvailability reads it (its "Caching"
+        paragraph: a budget-cut batch is never cached and is the 503); focus_minutes and focus_score
         are always null. Their figures are read only when the caller is an owner, and are
         never stored (beyond the 15-minute free/busy cache). Averages divide by the number
         of Paceday members whose figures are `measured` (by 1 when none), integer
@@ -1979,10 +2006,17 @@ components:
       properties:
         email:
           type: string
-          format: email
           description: >
-            Trimmed, lowercased and validated with net/mail.ParseAddress (the same rule as
-            inviteTeamMember). Stored lowercase.
+            PAC-129 contract 1.1 (challenge B-1): a plain string, deliberately WITHOUT
+            `format: email`, so the generated decoder accepts any JSON string and the
+            server's own normaliser is the only validator, the same as inviteTeamMember's
+            (normalizeManagerEmail): leading and trailing whitespace trimmed
+            (strings.TrimSpace, Unicode White_Space, which covers ECMAScript WhiteSpace and
+            LineTerminator except U+FEFF), lowercased, then net/mail.ParseAddress, whose
+            parsed address must equal the normalised input. Blank after trimming: 400
+            "email is required". Refused by the normaliser: 422 "email must be a valid
+            email address". Stored normalised. A body that is not JSON, or an `email`
+            that is not a JSON string, is the wrapper's 400 "invalid body".
         name:
           type: string
           description: Optional display name, trimmed; absent or blank stores "".
@@ -2093,8 +2127,11 @@ components:
       properties:
         email:
           type: string
-          format: email
-          description: Lowercase. For a Paceday member, the account's address.
+          description: >
+            Lowercase. For a Paceday member, the account's address. No `format: email`
+            (contract 1.1, B-1): an address the server's normaliser accepts (for example
+            `pat@localhost`) must encode, so the generated encoder may not apply a
+            stricter pattern than the one that admitted it.
         name:
           type: string
           description: >
@@ -2113,7 +2150,9 @@ components:
         invitation:
           description: >
             For kind `added`, the pending invitation for the address, or null when there is
-            none. Always null for kind `paceday`.
+            none. Always null for kind `paceday`. Contract 1.1 (challenge m-6): shown ONLY
+            to an owner of the team; for any other member it is always null, so who was
+            invited and when it lapses stay visible only to owners, as before PAC-129.
           oneOf:
             - $ref: "#/components/schemas/TeamPersonInvitation"
             - type: "null"
@@ -2122,14 +2161,21 @@ components:
 
     TeamInviteOutcome:
       type: string
-      description: PAC-129. What inviteTeamMember did (its steps 1, 4 and 5).
-      enum: [invited, already_pending, already_member]
+      description: >
+        PAC-129. What inviteTeamMember did. `added_and_invited` (201): the address was not
+        on the team; it is now an added person and a new invitation was created.
+        `invited` (201): the address already was an added person; a new invitation was
+        created. `already_pending` (200): a pending invitation existed; no new invitation
+        (the person may have been added by this call, step 3). `already_member` (200): a
+        Paceday member holds the address; nothing written.
+      enum: [added_and_invited, invited, already_pending, already_member]
 
     TeamInviteResult:
       type: object
       description: >
         PAC-129. The 201 and 200 of inviteTeamMember. `invitation` is null exactly when
-        outcome is `already_member`. Replaces the bare TeamInvite of the 201 (consumers:
+        outcome is `already_member`. The caller is always an owner, so
+        `person.invitation` is shown. Replaces the bare TeamInvite of the 201 (consumers:
         contract PAC-129 §8).
       properties:
         outcome: { $ref: "#/components/schemas/TeamInviteOutcome" }
@@ -2422,7 +2468,9 @@ components:
         for kind `added`, focus_minutes and focus_score are always null (availability
         only).
       properties:
-        email: { type: string, format: email }
+        email:
+          type: string
+          description: As TeamPerson.email (no `format`, contract 1.1 B-1).
         name: { type: string }
         kind: { $ref: "#/components/schemas/TeamPersonKind" }
         userId:
