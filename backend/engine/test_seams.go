@@ -85,3 +85,13 @@ func InstallHabitRunLocked(tb TB, fn func(userID uuid.UUID)) (uninstall func()) 
 	tb.Helper()
 	return habitRunLocked.install(tb, fn)
 }
+
+// PAC-136 review N2: habitGateLeaving fires while a habit run leaves the
+// gate, between its two steps (pending decremented, user token released).
+var habitGateLeaving seam[func(userID uuid.UUID)]
+
+// InstallHabitGateLeaving installs the habit-gate-leaving seam.
+func InstallHabitGateLeaving(tb TB, fn func(userID uuid.UUID)) (uninstall func()) {
+	tb.Helper()
+	return habitGateLeaving.install(tb, fn)
+}

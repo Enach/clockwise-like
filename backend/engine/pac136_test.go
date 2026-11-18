@@ -46,12 +46,17 @@ type pac136Cal struct {
 	deletes int
 	nextID  int
 	// restoreErr, when set, is the update's answer for a deleted event
-	// (Google does not document that an update restores one).
-	restoreErr int
+	// (Google does not document that an update restores one); updateErr is
+	// its answer for a live one.
+	restoreErr *googleapi.Error
+	updateErr  *googleapi.Error
+	// tombs are the deleted events, which a read returns as cancelled, as
+	// Google does.
+	tombs map[string]*googlecalendar.Event
 }
 
 func newPAC136Cal() *pac136Cal {
-	return &pac136Cal{live: map[string]*googlecalendar.Event{}, deleted: map[string]bool{}}
+	return &pac136Cal{live: map[string]*googlecalendar.Event{}, deleted: map[string]bool{}, tombs: map[string]*googlecalendar.Event{}}
 }
 
 func (c *pac136Cal) calendarID() string { return "primary" }
@@ -97,8 +102,11 @@ func (c *pac136Cal) updateEvent(_ context.Context, eventID string, ev *googlecal
 	if !live && !c.deleted[eventID] {
 		return nil, &googleapi.Error{Code: http.StatusNotFound}
 	}
-	if !live && c.restoreErr != 0 {
-		return nil, &googleapi.Error{Code: c.restoreErr}
+	if !live && c.restoreErr != nil {
+		return nil, c.restoreErr
+	}
+	if live && c.updateErr != nil {
+		return nil, c.updateErr
 	}
 	delete(c.deleted, eventID)
 	cp := *ev
@@ -115,6 +123,9 @@ func (c *pac136Cal) deleteEvent(_ context.Context, eventID string) error {
 	if _, ok := c.live[eventID]; !ok {
 		return &googleapi.Error{Code: http.StatusGone}
 	}
+	tomb := *c.live[eventID]
+	tomb.Status = "cancelled"
+	c.tombs[eventID] = &tomb
 	delete(c.live, eventID)
 	c.deleted[eventID] = true
 	return nil
@@ -125,6 +136,10 @@ func (c *pac136Cal) getEvent(_ context.Context, eventID string) (*googlecalendar
 	defer c.mu.Unlock()
 	if ev, ok := c.live[eventID]; ok {
 		cp := *ev
+		return &cp, nil
+	}
+	if tomb, ok := c.tombs[eventID]; ok && c.deleted[eventID] {
+		cp := *tomb
 		return &cp, nil
 	}
 	return nil, &googleapi.Error{Code: http.StatusNotFound}

@@ -34,12 +34,24 @@ func TestPAC136_IsDuplicate(t *testing.T) {
 	}
 }
 
-// PAC-136 review M1: IsForbidden is a 403, also when wrapped.
-func TestPAC136_IsForbidden(t *testing.T) {
-	if !IsForbidden(fmt.Errorf("update: %w", &googleapi.Error{Code: http.StatusForbidden})) {
-		t.Error("a wrapped 403 is not forbidden")
+// PAC-136 review N1: IsPermissionDenied is a 403 for a permission reason,
+// also when wrapped; a rate-limit or quota 403, a bare 403 or a 404 is not.
+func TestPAC136_IsPermissionDenied(t *testing.T) {
+	forbidden := func(reason string) error {
+		return &googleapi.Error{Code: http.StatusForbidden, Errors: []googleapi.ErrorItem{{Reason: reason}}}
 	}
-	if IsForbidden(&googleapi.Error{Code: http.StatusNotFound}) || IsForbidden(errors.New("x")) || IsForbidden(nil) {
-		t.Error("a non-403 is forbidden")
+	for _, reason := range []string{"forbidden", "forbiddenForNonOrganizer", "requiredAccessLevel"} {
+		if !IsPermissionDenied(fmt.Errorf("update: %w", forbidden(reason))) {
+			t.Errorf("403 %s is not a permission denial", reason)
+		}
+	}
+	for _, reason := range []string{"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", ""} {
+		if IsPermissionDenied(forbidden(reason)) {
+			t.Errorf("403 %q is a permission denial", reason)
+		}
+	}
+	if IsPermissionDenied(&googleapi.Error{Code: http.StatusNotFound, Errors: []googleapi.ErrorItem{{Reason: "forbidden"}}}) ||
+		IsPermissionDenied(errors.New("x")) || IsPermissionDenied(nil) {
+		t.Error("a non-403 is a permission denial")
 	}
 }

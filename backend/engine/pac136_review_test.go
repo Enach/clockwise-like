@@ -18,6 +18,7 @@ import (
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	googlecalendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // B1, in-process: while a user's run is held, a second request for that
@@ -169,21 +170,27 @@ func TestPAC136_HabitRunSlots(t *testing.T) {
 	}
 }
 
-// M1: when Google refuses to restore the deleted (habit, day) event (404,
-// 410 or 403 on the update), the habit is created under a generated id and
-// that id is stored.
+// M1/N1: when Google refuses to restore the deleted (habit, day) event as
+// gone or for a permission reason (404, 410, 403 forbidden), the habit is
+// created under a generated id and that id is stored.
 func TestPAC136_UnrestorableEventFallsBackToGeneratedID(t *testing.T) {
-	for _, code := range []int{http.StatusNotFound, http.StatusGone, http.StatusForbidden} {
-		t.Run(fmt.Sprint(code), func(t *testing.T) {
+	cases := map[string]*googleapi.Error{
+		"404":                          {Code: http.StatusNotFound},
+		"410":                          {Code: http.StatusGone},
+		"403 forbidden":                pac136Err(http.StatusForbidden, "forbidden"),
+		"403 forbiddenForNonOrganizer": pac136Err(http.StatusForbidden, "forbiddenForNonOrganizer"),
+	}
+	for name, refusal := range cases {
+		t.Run(name, func(t *testing.T) {
 			db := openTestDB(t)
-			user, h := b5Habit(t, db, fmt.Sprintf("pac136-norestore-%d@pac136.test", code))
+			user, h := b5Habit(t, db, "pac136-norestore@pac136.test")
 			cal := newPAC136Cal()
 			eng := &HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: cal}
 			if err := eng.ReoptimizeAll(context.Background(), user); err != nil {
 				t.Fatal(err)
 			}
 			cal.mu.Lock()
-			cal.restoreErr = code
+			cal.restoreErr = refusal
 			cal.live["meeting"] = b5Event("meeting", time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC), true)
 			cal.mu.Unlock()
 			if err := eng.ReoptimizeAll(context.Background(), user); err != nil {
@@ -202,6 +209,155 @@ func TestPAC136_UnrestorableEventFallsBackToGeneratedID(t *testing.T) {
 				t.Fatalf("Monday row %+v, want the generated id stored", got)
 			}
 		})
+	}
+}
+
+func pac136Err(code int, reason string) *googleapi.Error {
+	return &googleapi.Error{Code: code, Errors: []googleapi.ErrorItem{{Reason: reason}}}
+}
+
+// N1: a live event of ours under the (habit, day) id (a crash left it with
+// no row) whose adopt update fails, for any reason (a rate-limit or quota
+// 403, a permission 403, a 5xx), is the run's error, with no second event
+// under a generated id (one was created, and ours stayed on the calendar for
+// good). The next run adopts it.
+func TestPAC136_LiveAdoptFailureIsAnError(t *testing.T) {
+	failures := map[string]*googleapi.Error{
+		"rateLimitExceeded":     pac136Err(http.StatusForbidden, "rateLimitExceeded"),
+		"userRateLimitExceeded": pac136Err(http.StatusForbidden, "userRateLimitExceeded"),
+		"quotaExceeded":         pac136Err(http.StatusForbidden, "quotaExceeded"),
+		"forbidden":             pac136Err(http.StatusForbidden, "forbidden"),
+		"500":                   {Code: http.StatusInternalServerError},
+	}
+	for name, failure := range failures {
+		t.Run(name, func(t *testing.T) {
+			db := openTestDB(t)
+			user, h := b5Habit(t, db, "pac136-transient@pac136.test")
+			cal := newPAC136Cal()
+			monday := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+			left := b5Event(habitEventID(h.ID, monday), time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC), false)
+			left.ExtendedProperties = &googlecalendar.EventExtendedProperties{Private: map[string]string{habitEventMarker: h.ID.String()}}
+			cal.live[left.Id] = left
+			cal.updateErr = failure
+			err := (&HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: cal}).ReoptimizeAll(context.Background(), user)
+			if err == nil || !strings.Contains(err.Error(), "adopt existing event") {
+				t.Fatalf("ReoptimizeAll = %v, want the failed adopt", err)
+			}
+			evs := cal.onDay("2026-11-02")
+			if len(evs) != 1 || evs[0].Id != left.Id {
+				t.Fatalf("Monday events %+v, want only the one left behind", evs)
+			}
+			if got := b5Occurrences(t, db, h.ID)["2026-11-02"]; got != nil && got.Status == "scheduled" {
+				t.Fatalf("Monday row %+v, want none scheduled", got)
+			}
+
+			cal.mu.Lock()
+			cal.updateErr = nil
+			cal.mu.Unlock()
+			if err := (&HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: cal}).ReoptimizeAll(context.Background(), user); err != nil {
+				t.Fatalf("retry = %v", err)
+			}
+			pac136AssertOneEventPerMonday(t, cal, b5Occurrences(t, db, h.ID))
+		})
+	}
+}
+
+// N1: a cancelled event whose restore hits a rate-limit 403 is an error too
+// (only a permission reason falls back).
+func TestPAC136_RateLimitedRestoreIsAnError(t *testing.T) {
+	db := openTestDB(t)
+	user, h := b5Habit(t, db, "pac136-ratelimited-restore@pac136.test")
+	cal := newPAC136Cal()
+	eng := &HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: cal}
+	if err := eng.ReoptimizeAll(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	cal.mu.Lock()
+	cal.restoreErr = pac136Err(http.StatusForbidden, "rateLimitExceeded")
+	cal.live["meeting"] = b5Event("meeting", time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC), true)
+	cal.mu.Unlock()
+	if err := eng.ReoptimizeAll(context.Background(), user); err == nil || !strings.Contains(err.Error(), "adopt existing event") {
+		t.Fatalf("second run = %v, want the failed restore", err)
+	}
+	for _, ev := range cal.onDay("2026-11-02") {
+		if strings.HasPrefix(ev.Id, "random") {
+			t.Fatalf("event %s created under a generated id on a rate limit", ev.Id)
+		}
+	}
+	if got := b5Occurrences(t, db, h.ID)["2026-11-02"]; got == nil || got.Status != "displaced" {
+		t.Fatalf("Monday row %+v, want displaced (retried next run)", got)
+	}
+}
+
+// N2: a request that arrives while a run leaves the gate, once the queued
+// run can take the token, is not folded into that run (it may already have
+// read); it queues behind it.
+func TestPAC136_RequestDuringLeaveIsNotFolded(t *testing.T) {
+	db := openTestDB(t)
+	user, _ := b5Habit(t, db, "pac136-leave@pac136.test")
+	cal := newPAC136Cal()
+	eng := &HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: cal}
+	entered := make(chan struct{})
+	hold := make(chan struct{})
+	var once sync.Once
+	InstallHabitRunLocked(t, func(uuid.UUID) {
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			close(entered)
+			<-hold
+		}
+	})
+	leaving := make(chan struct{})
+	release := make(chan struct{})
+	var leaveOnce sync.Once
+	InstallHabitGateLeaving(t, func(uuid.UUID) {
+		first := false
+		leaveOnce.Do(func() { first = true })
+		if first {
+			close(leaving)
+			<-release
+		}
+	})
+	errs := make(chan error, 2)
+	go func() { errs <- eng.ReoptimizeAll(context.Background(), user) }()
+	<-entered
+	go func() { errs <- eng.ReoptimizeAll(context.Background(), user) }()
+	g := habitGateFor(db)
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		g.mu.Lock()
+		pending := 0
+		if turn := g.users[user]; turn != nil {
+			pending = turn.pending
+		}
+		g.mu.Unlock()
+		if pending == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(hold)
+			t.Fatalf("the second request never queued (pending %d)", pending)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(hold)
+	<-leaving // the first run is between its two leaving steps
+	third := make(chan error, 1)
+	go func() { third <- eng.ReoptimizeAll(context.Background(), user) }()
+	select {
+	case err := <-third:
+		close(release)
+		t.Fatalf("a request during the leave was folded (= %v); want it queued", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}
+	if err := <-third; err != nil {
+		t.Fatalf("third run: %v", err)
 	}
 }
 

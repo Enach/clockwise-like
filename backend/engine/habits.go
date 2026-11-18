@@ -425,31 +425,38 @@ func (e *HabitsEngine) createHabitEvent(
 }
 
 // adoptHabitEvent answers a 409 duplicate on the (habit, day) id (PAC-136).
-// The existing event is read first: one whose habit marker names another
-// habit is never overwritten. Otherwise it is updated to ev, with status
-// confirmed (restoring it when it was deleted). Google documents the 409 for
-// an id in use, not that a deleted event's id stays taken nor that an update
-// restores it (review M1): when the read shows a foreign event, or the
-// update is refused as not found, gone or forbidden, the event is inserted
-// again under an id Google generates.
+// The existing event is read first:
+//   - one whose habit marker names another habit is never overwritten: the
+//     habit is inserted under an id Google generates;
+//   - one the read shows gone (404/410) cannot be adopted: same fallback;
+//   - otherwise it is updated to ev with status confirmed, which restores
+//     a cancelled (deleted) one.
+//
+// Google documents the 409 for an id in use, not that a deleted event's id
+// stays taken nor that an update restores it (review M1), so a cancelled
+// event whose restore is refused as gone or for a real permission reason
+// also falls back. Any other failure of the update (a rate limit or quota
+// 403, a 5xx), and any failure on a live event, is the error: falling back
+// there left our live event beside a new one (review N1), and the next run
+// retries.
 func (e *HabitsEngine) adoptHabitEvent(ctx context.Context, calOps calendarOps, h *storage.Habit, ev *googlecalendar.Event) (*googlecalendar.Event, error) {
 	existing, err := calOps.getEvent(ctx, ev.Id)
-	switch {
-	case err == nil:
-		if existing != nil && existing.ExtendedProperties != nil {
-			if owner := existing.ExtendedProperties.Private[habitEventMarker]; owner != "" && owner != h.ID.String() {
-				return createWithGeneratedID(ctx, calOps, ev)
-			}
-		}
-	case calendar.IsEventGone(err):
-		// A deleted event may not be readable: the update decides.
-	default:
+	if calendar.IsEventGone(err) {
+		return createWithGeneratedID(ctx, calOps, ev)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("read existing event: %w", err)
 	}
+	if existing != nil && existing.ExtendedProperties != nil {
+		if owner := existing.ExtendedProperties.Private[habitEventMarker]; owner != "" && owner != h.ID.String() {
+			return createWithGeneratedID(ctx, calOps, ev)
+		}
+	}
+	cancelled := existing != nil && existing.Status == "cancelled"
 	adopt := *ev
 	adopt.Status = "confirmed"
 	updated, err := calOps.updateEvent(ctx, adopt.Id, &adopt)
-	if calendar.IsEventGone(err) || calendar.IsForbidden(err) {
+	if err != nil && cancelled && (calendar.IsEventGone(err) || calendar.IsPermissionDenied(err)) {
 		return createWithGeneratedID(ctx, calOps, ev)
 	}
 	if err != nil {

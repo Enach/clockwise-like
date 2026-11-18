@@ -140,10 +140,29 @@ func IsDuplicate(err error) bool {
 	return false
 }
 
-// IsForbidden reports whether err is Google's 403.
-func IsForbidden(err error) bool {
+// permissionReasons are the 403 reasons that mean the caller may not make
+// the change. Google also answers rate limits and quota with 403
+// (rateLimitExceeded, userRateLimitExceeded, quotaExceeded): those are
+// transient and are not among them (PAC-136 review N1).
+var permissionReasons = map[string]bool{
+	"forbidden":                true,
+	"forbiddenForNonOrganizer": true,
+	"requiredAccessLevel":      true,
+}
+
+// IsPermissionDenied reports whether err is Google's 403 for a permission
+// reason, never for a rate limit or quota.
+func IsPermissionDenied(err error) bool {
 	var gerr *googleapi.Error
-	return errors.As(err, &gerr) && gerr.Code == http.StatusForbidden
+	if !errors.As(err, &gerr) || gerr.Code != http.StatusForbidden {
+		return false
+	}
+	for _, item := range gerr.Errors {
+		if permissionReasons[item.Reason] {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *CalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*googlecalendar.Event, error) {

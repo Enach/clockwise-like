@@ -109,17 +109,26 @@ func (g *habitGate) enter(ctx context.Context, userID uuid.UUID) (leave func(), 
 		done()
 		return nil, false, ctx.Err()
 	}
+	// Leaving, pending is decremented before the token is released (review
+	// N2): a request that arrives between the two then counts only the run
+	// waiting for the token, so it queues behind it. In the other order it
+	// still counted the leaving run, saw two, and was folded into the
+	// waiting run, which might already hold the token and have read the
+	// state the request changed.
 	select {
 	case g.slots <- struct{}{}:
 	case <-ctx.Done():
-		<-turn.token
 		done()
+		<-turn.token
 		return nil, false, ctx.Err()
 	}
 	return func() {
 		<-g.slots
-		<-turn.token
 		done()
+		if hook, ok := habitGateLeaving.get(); ok {
+			hook(userID)
+		}
+		<-turn.token
 	}, true, nil
 }
 
