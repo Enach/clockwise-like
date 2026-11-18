@@ -129,7 +129,12 @@ paths:
       description: >
         Deletes the caller's focus blocks for the Monday-anchored week containing
         `week`, from the caller's calendar and from storage. Other users' blocks
-        are not touched and not counted.
+        are not touched and not counted. A block's stored row is deleted only
+        once its calendar event is gone (deleted now, or already absent: Google's
+        404/410). When an event delete fails, that block's row stays and the
+        call is the 500, so a retry deletes it (PAC-122 SF-018: before, the row
+        was deleted anyway and a retry answered `{"deleted":0}` with the event
+        still on the calendar).
       parameters:
         - name: week
           in: query
@@ -549,6 +554,17 @@ paths:
         carries neither `range_start` nor `range_end`, never
         `0001-01-01T00:00:00Z`.
 
+        **Attendee and range failures are reported (PAC-122; SF-037 second and
+        third clauses).** When the attendee extraction (the first LLM call)
+        fails or does not answer JSON, the parse goes on and the answer is
+        still 200 with `intent` and the other parsed members, and `error` set
+        to a fixed sentence (see NLPParseResult.error) - unless an error is
+        already set, which is kept unchanged. A `range_start` or `range_end`
+        that is not a `YYYY-MM-DD` date gives `intent` `unknown` with an error
+        (the model's own, or a fixed sentence). No provider text reaches the
+        answer; the extraction's (redacted) failure goes to the server log
+        with the user id only.
+
         **Suggestion failures are reported (PAC-133 §3.5 item 7; SF-037 first
         clause, backend half).** For a `schedule_meeting` intent with a range,
         the parser asks for meeting suggestions (the engine behind
@@ -556,9 +572,14 @@ paths:
         calendar being unknown, or no Google calendar connected), the answer is
         still 200 with `intent` and the other parsed members as before, no
         `suggested_slots`, and `error` set to a fixed sentence (see
-        NLPParseResult.error) - unless the LLM's answer already set `error`, in
-        which case that error is kept unchanged. A successful step sets no
-        error. The parse does not list unknown attendees (PAC-133 §5).
+        NLPParseResult.error) - unless `error` is already set, in which case it
+        is kept unchanged. A successful step sets no error. The parse does not
+        list unknown attendees (PAC-133 §5).
+
+        **Precedence.** An error already set is never replaced, so the first
+        one set wins: the model's own error, then the attendee-extraction
+        sentence (set right after the model's answer), then the
+        suggestion-failure sentence (set last).
       requestBody:
         required: true
         content:
@@ -2624,16 +2645,27 @@ components:
             LLM call fails or returns invalid JSON, when the destination is
             refused, and when AI is not configured (then equal to
             `not_configured.message`). Also set by the model's own answer, with
-            any intent. PAC-133 (SF-037 first clause): with intent
-            `schedule_meeting`, when the suggestion step failed and no error was
-            already set, exactly `No Google calendar is connected, so Paceday
-            cannot suggest meeting times.` (the caller has no stored Google
-            credential) or `Paceday could not suggest meeting times for this
-            request. Try again later.` (any other failure), and
-            `suggested_slots` is absent. Precedence: an error already set is
-            never replaced. A client shows this error in place of a generic "no
-            slots" message (PAC-133 AC-43: the web Dashboard does so for any
-            error, including one the model set when the suggestion step
+            any intent. Precedence: an error already set is never replaced, so
+            the first one set wins: the model's own, then the PAC-122
+            attendee-extraction sentence, then the PAC-133 suggestion-failure
+            sentence. PAC-122 (SF-037 second clause): when the attendee
+            extraction (the first LLM call) failed or did not answer JSON and no
+            error was already set, exactly `Paceday could not identify the
+            attendees in this request. Check the attendees before booking.`, with
+            `intent` and the other members as parsed (before, the failure was
+            ignored). PAC-122 (SF-037 third clause): when `range_start` or
+            `range_end` in the model's answer is not a `YYYY-MM-DD` date,
+            `intent` is `unknown` and `error` is the model's own error if it set
+            one, else `LLM returned an invalid date range` (before, the range was
+            dropped and no slot was searched). PAC-133 (SF-037 first clause):
+            with intent `schedule_meeting`, when the suggestion step failed and
+            no error was already set, exactly `No Google calendar is connected,
+            so Paceday cannot suggest meeting times.` (the caller has no stored
+            Google credential) or `Paceday could not suggest meeting times for
+            this request. Try again later.` (any other failure), and
+            `suggested_slots` is absent. A client shows this error in place of a
+            generic "no slots" message (PAC-133 AC-43: the web Dashboard does so
+            for any error, including one the model set when the suggestion step
             returned no slot or never ran).
         not_configured:
           $ref: '#/components/schemas/AINotConfigured'
