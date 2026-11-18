@@ -32,13 +32,19 @@ func SaveFocusBlock(db Querier, userID uuid.UUID, googleEventID, date string, st
 // the user whose calendar holds them. Blocks saved before owners were recorded (user_id NULL) belong to
 // nobody and are not returned.
 func ListFocusBlocksForUserWeek(db DBTX, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
+	return ListFocusBlocksForUserWeekCtx(context.Background(), db, userID, weekStart)
+}
+
+// ListFocusBlocksForUserWeekCtx is ListFocusBlocksForUserWeek bounded by ctx
+// (PAC-136).
+func ListFocusBlocksForUserWeekCtx(ctx context.Context, db DBTX, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
 	if hook, ok := focusBlocksRead.get(); ok {
 		if err := hook(userID); err != nil {
 			return nil, err
 		}
 	}
 	weekEnd := weekStart.AddDate(0, 0, 7)
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, google_event_id, start_time, end_time, date, created_at
 		FROM focus_blocks WHERE user_id = $1 AND date >= $2 AND date < $3
 		ORDER BY start_time`,

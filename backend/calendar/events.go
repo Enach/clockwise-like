@@ -29,6 +29,11 @@ func (c *CalendarClient) ListEvents(ctx context.Context, calendarID string, time
 // page token past this is treated as unreadable rather than looped on.
 const maxEventPages = 100
 
+// maxEventsPerPage is the page size ListEventsComplete asks for: Google's
+// largest (its default is 250), so a full day or week is rarely more than
+// one request (PAC-136).
+const maxEventsPerPage = 2500
+
 // ErrEventPagesExceeded is ListEventsComplete's answer when the provider's
 // pages do not end within maxEventPages.
 var ErrEventPagesExceeded = errors.New("calendar: event list did not end within the page limit")
@@ -49,7 +54,8 @@ func (c *CalendarClient) ListEventsComplete(ctx context.Context, calendarID stri
 			TimeMin(timeMin.Format(time.RFC3339)).
 			TimeMax(timeMax.Format(time.RFC3339)).
 			SingleEvents(true).
-			OrderBy("startTime")
+			OrderBy("startTime").
+			MaxResults(maxEventsPerPage)
 		if token != "" {
 			call = call.PageToken(token)
 		}
@@ -116,6 +122,47 @@ func IsEventGone(err error) bool {
 		return false
 	}
 	return gerr.Code == http.StatusNotFound || gerr.Code == http.StatusGone
+}
+
+// IsDuplicate reports whether err is Google refusing an insert because an
+// event with the requested id already exists on the calendar: a 409 with
+// the reason "duplicate" (PAC-136). Another 409 is not.
+func IsDuplicate(err error) bool {
+	var gerr *googleapi.Error
+	if !errors.As(err, &gerr) || gerr.Code != http.StatusConflict {
+		return false
+	}
+	for _, item := range gerr.Errors {
+		if item.Reason == "duplicate" {
+			return true
+		}
+	}
+	return false
+}
+
+// permissionReasons are the 403 reasons that mean the caller may not make
+// the change. Google also answers rate limits and quota with 403
+// (rateLimitExceeded, userRateLimitExceeded, quotaExceeded): those are
+// transient and are not among them (PAC-136 review N1).
+var permissionReasons = map[string]bool{
+	"forbidden":                true,
+	"forbiddenForNonOrganizer": true,
+	"requiredAccessLevel":      true,
+}
+
+// IsPermissionDenied reports whether err is Google's 403 for a permission
+// reason, never for a rate limit or quota.
+func IsPermissionDenied(err error) bool {
+	var gerr *googleapi.Error
+	if !errors.As(err, &gerr) || gerr.Code != http.StatusForbidden {
+		return false
+	}
+	for _, item := range gerr.Errors {
+		if permissionReasons[item.Reason] {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *CalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*googlecalendar.Event, error) {

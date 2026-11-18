@@ -69,6 +69,10 @@ type Store struct {
 	nextSeq   int64
 	tokens    map[string]Credential
 	calendars map[string][]*googlecalendar.Event
+	// deleted holds the ids of deleted events, per calendar: as on the real
+	// service, a deleted event's id stays taken (an insert with it is a 409
+	// duplicate) and an update restores the event.
+	deleted   map[string]map[string]bool
 	meta      map[string]calendarMeta
 	log       []LogEntry
 	redirects map[string]armedRedirect // by label
@@ -87,6 +91,7 @@ func (s *Store) Reset() {
 	defer s.mu.Unlock()
 	s.tokens = map[string]Credential{}
 	s.calendars = map[string][]*googlecalendar.Event{}
+	s.deleted = map[string]map[string]bool{}
 	s.meta = map[string]calendarMeta{}
 	s.log = nil
 	s.redirects = map[string]armedRedirect{}
@@ -189,6 +194,7 @@ func (s *Store) ClearCalendar(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.calendars, calKey(id))
+	delete(s.deleted, calKey(id))
 	delete(s.meta, calKey(id))
 }
 
@@ -199,10 +205,40 @@ func (s *Store) newEventID() string {
 }
 
 // Insert stores a copy of ev on a calendar and returns it with the fields the
-// real service fills in. A caller-supplied id is kept, as Google does.
+// real service fills in. A caller-supplied id is kept, as Google does. It is
+// the fixture's seeding path and never refuses; InsertNew is the API's.
 func (s *Store) Insert(calendarID string, ev *googlecalendar.Event) *googlecalendar.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.insertLocked(calendarID, ev)
+}
+
+// InsertNew is events.insert: like Insert, but a caller-supplied id that is
+// already taken on the calendar, by a live or a deleted event, is refused
+// (false), as the real service answers 409 duplicate (PAC-136).
+func (s *Store) InsertNew(calendarID string, ev *googlecalendar.Event) (*googlecalendar.Event, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ev.Id != "" && s.takenLocked(calendarID, ev.Id) {
+		return nil, false
+	}
+	return s.insertLocked(calendarID, ev), true
+}
+
+func (s *Store) takenLocked(calendarID, eventID string) bool {
+	key := calKey(calendarID)
+	if s.deleted[key][eventID] {
+		return true
+	}
+	for _, e := range s.calendars[key] {
+		if e.Id == eventID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) insertLocked(calendarID string, ev *googlecalendar.Event) *googlecalendar.Event {
 	cp := *ev
 	if cp.Id == "" {
 		cp.Id = s.newEventID()
@@ -261,6 +297,17 @@ func (s *Store) Update(calendarID, eventID string, ev *googlecalendar.Event) (*g
 			return &out, true
 		}
 	}
+	// An update of a deleted event restores it, as on the real service.
+	key := calKey(calendarID)
+	if s.deleted[key][eventID] {
+		delete(s.deleted[key], eventID)
+		cp := *ev
+		cp.Id = eventID
+		if cp.Status == "" || cp.Status == "cancelled" {
+			cp.Status = "confirmed"
+		}
+		return s.insertLocked(calendarID, &cp), true
+	}
 	return nil, false
 }
 
@@ -273,6 +320,10 @@ func (s *Store) Delete(calendarID, eventID string) bool {
 	for i, e := range list {
 		if e.Id == eventID {
 			s.calendars[key] = append(list[:i:i], list[i+1:]...)
+			if s.deleted[key] == nil {
+				s.deleted[key] = map[string]bool{}
+			}
+			s.deleted[key][eventID] = true
 			return true
 		}
 	}

@@ -2,9 +2,13 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base32"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
@@ -67,8 +71,50 @@ func (e *HabitsEngine) now() time.Time {
 // settings or the user's calendar credential fails the whole run before
 // anything is written. A user with no connected calendar is not a failure:
 // occurrences are stored without a calendar event, as before.
-func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) error {
-	habits, err := storage.ListActiveHabitsByUser(e.DB, userID)
+//
+// PAC-136: one run per user at a time, across replicas (a Postgres advisory
+// lock, storage.LockHabitReoptimize): habit create, update and the
+// reoptimize endpoint each start one, and two that overlapped each placed an
+// event for the same (habit, day). A run waits for the one before it and
+// then reads what that run stored.
+//
+// PAC-136 (review B1): before the lock a run passes the process's gate
+// (habits_gate.go), holding no connection while it waits: one run per user
+// runs and one waits (a further request is dropped: the waiting run reads
+// the latest state), and at most K runs hold connections, so runs can never
+// take the whole pool. A run, waits included, ends after habitRunTimeout,
+// and every read takes its context, so a cancelled run frees its
+// connections.
+func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, habitRunTimeout)
+	defer cancel()
+	leave, run, err := habitGateFor(e.DB).enter(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("habits: user %s: wait for a run slot: %w", userID, err)
+	}
+	if !run {
+		log.Printf("debug: habits: user %s: a reoptimize is already queued; request coalesced into it", userID)
+		return nil
+	}
+	defer leave()
+	release, err := storage.LockHabitReoptimize(ctx, e.DB, userID)
+	if err != nil {
+		return fmt.Errorf("habits: user %s: %w", userID, err)
+	}
+	defer func() {
+		if relErr := release(); relErr != nil {
+			err = errors.Join(err, fmt.Errorf("habits: user %s: %w", userID, relErr))
+		}
+	}()
+	if hook, ok := habitRunLocked.get(); ok {
+		hook(userID)
+	}
+	return e.reoptimizeLocked(ctx, userID)
+}
+
+// reoptimizeLocked is ReoptimizeAll's run, under the user's lock.
+func (e *HabitsEngine) reoptimizeLocked(ctx context.Context, userID uuid.UUID) error {
+	habits, err := storage.ListActiveHabitsByUserCtx(ctx, e.DB, userID)
 	if err != nil {
 		return fmt.Errorf("list habits: %w", err)
 	}
@@ -153,7 +199,7 @@ func (e *HabitsEngine) scheduleDay(
 		if !containsInt(h.DaysOfWeek, weekday) {
 			continue
 		}
-		occ, err := e.existingOccurrence(h.ID, day)
+		occ, err := e.existingOccurrence(ctx, h.ID, day)
 		if err != nil {
 			return fmt.Errorf("habit %s: read occurrence: %w", h.ID, err)
 		}
@@ -208,7 +254,7 @@ func (e *HabitsEngine) scheduleDay(
 	}
 
 	// Focus blocks.
-	focusBlocks, err := storage.ListFocusBlocksForUserWeek(e.DB, userID, day)
+	focusBlocks, err := storage.ListFocusBlocksForUserWeekCtx(ctx, e.DB, userID, day)
 	if err != nil {
 		return fmt.Errorf("read focus blocks: %w", err)
 	}
@@ -292,7 +338,7 @@ func (e *HabitsEngine) scheduleDay(
 
 		calEventID := ""
 		if calOps != nil {
-			id, err := e.createHabitEvent(ctx, calOps, h, slot.start, slot.end)
+			id, err := e.createHabitEvent(ctx, calOps, h, day, slot.start, slot.end)
 			if err != nil {
 				// SF-015: never "scheduled" without its event. A row that
 				// existed no longer has one (deleted above): displaced.
@@ -332,8 +378,8 @@ func (e *HabitsEngine) scheduleDay(
 	return errors.Join(failed...)
 }
 
-func (e *HabitsEngine) existingOccurrence(habitID uuid.UUID, day time.Time) (*storage.HabitOccurrence, error) {
-	occs, err := storage.ListHabitOccurrences(e.DB, habitID, day, day)
+func (e *HabitsEngine) existingOccurrence(ctx context.Context, habitID uuid.UUID, day time.Time) (*storage.HabitOccurrence, error) {
+	occs, err := storage.ListHabitOccurrencesCtx(ctx, e.DB, habitID, day, day)
 	if err != nil || len(occs) == 0 {
 		return nil, err
 	}
@@ -344,7 +390,7 @@ func (e *HabitsEngine) createHabitEvent(
 	ctx context.Context,
 	calOps calendarOps,
 	h *storage.Habit,
-	start, end time.Time,
+	day, start, end time.Time,
 ) (string, error) {
 	ev := &googlecalendar.Event{
 		Summary:      h.Title,
@@ -359,7 +405,16 @@ func (e *HabitsEngine) createHabitEvent(
 			Private: map[string]string{habitEventMarker: h.ID.String()},
 		},
 	}
+	// PAC-136: the id is chosen here, from (habit, day), so a create that
+	// already happened (a run that crashed before storing it, or whose
+	// store failed and whose clean-up delete left the id taken) is found
+	// again rather than duplicated: Google answers 409 and that event is
+	// adopted, updated to this slot (and restored if it was deleted).
+	ev.Id = habitEventID(h.ID, day)
 	created, err := calOps.createEvent(ctx, ev)
+	if calendar.IsDuplicate(err) {
+		created, err = e.adoptHabitEvent(ctx, calOps, h, ev)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -367,6 +422,67 @@ func (e *HabitsEngine) createHabitEvent(
 		return "", errors.New("calendar returned no event id")
 	}
 	return created.Id, nil
+}
+
+// adoptHabitEvent answers a 409 duplicate on the (habit, day) id (PAC-136).
+// The existing event is read first:
+//   - one whose habit marker names another habit is never overwritten: the
+//     habit is inserted under an id Google generates;
+//   - one the read shows gone (404/410) cannot be adopted: same fallback;
+//   - otherwise it is updated to ev with status confirmed, which restores
+//     a cancelled (deleted) one.
+//
+// Google documents the 409 for an id in use, not that a deleted event's id
+// stays taken nor that an update restores it (review M1), so a cancelled
+// event whose restore is refused as gone or for a real permission reason
+// also falls back. Any other failure of the update (a rate limit or quota
+// 403, a 5xx), and any failure on a live event, is the error: falling back
+// there left our live event beside a new one (review N1), and the next run
+// retries.
+func (e *HabitsEngine) adoptHabitEvent(ctx context.Context, calOps calendarOps, h *storage.Habit, ev *googlecalendar.Event) (*googlecalendar.Event, error) {
+	existing, err := calOps.getEvent(ctx, ev.Id)
+	if calendar.IsEventGone(err) {
+		return createWithGeneratedID(ctx, calOps, ev)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read existing event: %w", err)
+	}
+	if existing != nil && existing.ExtendedProperties != nil {
+		if owner := existing.ExtendedProperties.Private[habitEventMarker]; owner != "" && owner != h.ID.String() {
+			return createWithGeneratedID(ctx, calOps, ev)
+		}
+	}
+	cancelled := existing != nil && existing.Status == "cancelled"
+	adopt := *ev
+	adopt.Status = "confirmed"
+	updated, err := calOps.updateEvent(ctx, adopt.Id, &adopt)
+	if err != nil && cancelled && (calendar.IsEventGone(err) || calendar.IsPermissionDenied(err)) {
+		return createWithGeneratedID(ctx, calOps, ev)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("adopt existing event: %w", err)
+	}
+	return updated, nil
+}
+
+// createWithGeneratedID inserts ev under an id Google chooses.
+func createWithGeneratedID(ctx context.Context, calOps calendarOps, ev *googlecalendar.Event) (*googlecalendar.Event, error) {
+	fresh := *ev
+	fresh.Id = ""
+	created, err := calOps.createEvent(ctx, &fresh)
+	if err != nil {
+		return nil, fmt.Errorf("create under a generated id: %w", err)
+	}
+	return created, nil
+}
+
+// habitEventID is the Google event id of a habit's occurrence on day (its
+// date in the user's zone, as the occurrence row stores it): base32hex (lowercase, unpadded) of a SHA-256 over
+// the habit id and the date. Google ids are 5-1024 characters of [a-v0-9];
+// this is 52.
+func habitEventID(habitID uuid.UUID, day time.Time) string {
+	sum := sha256.Sum256([]byte("paceday-habit:" + habitID.String() + ":" + day.Format("2006-01-02")))
+	return strings.ToLower(base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))
 }
 
 // habitEventMarker is the private extended property a habit event carries:

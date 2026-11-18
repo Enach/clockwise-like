@@ -67,8 +67,12 @@ type realOps struct{ c *calendar.CalendarClient }
 
 func (r realOps) calendarID() string { return r.c.CalendarID }
 
+// listEvents reads every page of the window (PAC-136): a first-page read
+// missed a habit's own event on a later page, so the habit was deleted and
+// re-created on every run. A page that fails is the error, never a partial
+// list.
 func (r realOps) listEvents(ctx context.Context, tMin, tMax time.Time) ([]*googlecalendar.Event, error) {
-	return r.c.ListEvents(ctx, r.c.CalendarID, tMin, tMax)
+	return r.c.ListEventsComplete(ctx, r.c.CalendarID, tMin, tMax)
 }
 
 func (r realOps) createEvent(ctx context.Context, event *googlecalendar.Event) (*googlecalendar.Event, error) {
