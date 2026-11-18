@@ -15,9 +15,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
 )
+
+// noSlack points every Slack Web API call at a stub that fails the test on
+// any request, so a send path under test never reaches slack.com (PAC-141
+// review).
+func noSlack(t *testing.T) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Slack was called: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	engine.InstallSlackAPIBase(t, srv.URL)
+}
 
 // failUserRead makes GetUserByID fail with err for user only (the test
 // database is shared).
@@ -72,6 +87,7 @@ func TestPAC141_RecapTestSendUserReadErrorIs500(t *testing.T) {
 		t.Fatal(err)
 	}
 	failUserRead(t, user, errors.New("pac141: user read failed"))
+	noSlack(t)
 	reported, _ := captureServerErrors(t)
 
 	h := &dailyRecapHandlers{db: db}
@@ -156,5 +172,38 @@ func TestPAC141_InvitePreviewMissingRowsAreEmpty(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("preview %s lacks %s", body, want)
 		}
+	}
+}
+
+// SF-111 (handler): a failed read of the caller's focus blocks is the
+// suggest operation's documented 500, never slots over focus time.
+func TestPAC141_SuggestHandlerFocusReadErrorIs500(t *testing.T) {
+	newPAC133Google(t, func(ids []string) string {
+		return calendarsBody(map[string]string{"primary": freeEntry}, "")(ids)
+	})
+	user := userWithGoogleToken(t, "pac141-suggest-"+uuid.NewString()+"@example.com")
+	db := openTestDB(t)
+	h := &scheduleHandlers{eng: &mockCompressor{}, smart: &engine.SmartScheduler{DB: db, OAuthConfig: &oauth2.Config{}}, db: db}
+	call := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.suggestMeeting(w, withUser(httptest.NewRequest(http.MethodPost, "/api/schedule/suggest", strings.NewReader(
+			`{"duration_minutes":30,"range_start":"2030-01-07T09:00:00Z","range_end":"2030-01-07T17:00:00Z","title":"x"}`)), user))
+		return w
+	}
+	if w := call(); w.Code != http.StatusOK {
+		t.Fatalf("setup: status = %d %s", w.Code, w.Body.String())
+	}
+
+	storage.InstallFocusBlocksRead(t, func(id uuid.UUID) error {
+		if id == user {
+			return errors.New("pac141: focus read failed")
+		}
+		return nil
+	})
+	reported, _ := captureServerErrors(t)
+	w := call()
+	assertBody(t, w, http.StatusInternalServerError, `{"error":"internal error"}`)
+	if len(*reported) == 0 {
+		t.Fatal("the failure was not reported")
 	}
 }
