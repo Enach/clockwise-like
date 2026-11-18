@@ -26,7 +26,9 @@ const backendModule = "github.com/Enach/paceday/backend"
 // The list is enforced, not trusted: auditSeams (seams.go) fails the run when a
 // backend interface outside storage and calendar has an error-returning method
 // that an implementation answers with a targeted call, and it is in neither
-// this map nor notSeams.
+// this map nor notSeams; and when a concrete type behind a listed seam
+// interface is not listed itself (a call on the concrete type, `t, _ :=
+// g.load(ctx)`, hides the same failure).
 var seams = map[string]string{
 	backendModule + "/engine.calendarOps":        "calendar-ops",
 	backendModule + "/engine.realOps":            "calendar-ops",
@@ -40,6 +42,9 @@ var seams = map[string]string{
 	backendModule + "/nlp.AISource":              "storage-seam",
 	backendModule + "/nlp.DBSource":              "storage-seam",
 	backendModule + "/auth.credentialStore":      "storage-seam",
+	backendModule + "/auth.googleStore":          "storage-seam",
+	backendModule + "/auth.microsoftStore":       "storage-seam",
+	backendModule + "/auth.zoomStore":            "storage-seam",
 }
 
 // Finding is one blank-assigned error from a targeted call.

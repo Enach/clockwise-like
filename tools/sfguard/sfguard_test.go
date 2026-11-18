@@ -32,6 +32,7 @@ var fixtureKeys = map[string]int{
 	"api/seams.go seamCalls api.ConferenceEventClient.GetEvent": 1,
 	"api/seams.go seamCalls api.dbOrgAIStore.read":              1,
 	"auth/credential.go renew auth.credentialStore.load":        1,
+	"auth/credential.go renew auth.googleStore.load":            1,
 	// A generic storage call, and the sql.Tx and sql.Conn handles.
 	"api/seams.go handles storage.Find":         1,
 	"api/seams.go handles sql.Tx.Exec":          1,
@@ -63,8 +64,12 @@ func TestSeamAuditRefusesAnUnlistedSeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(problems) != 1 || !strings.HasPrefix(problems[0], "api.widgetStore: implemented by api.dbWidgetStore.get calls storage.GetWidget") {
-		t.Fatalf("want exactly the unlisted widgetStore seam (not `pure`), got %q", problems)
+	// The unlisted concrete type behind a listed seam, then the unlisted seam
+	// interface; `pure` (an implementation calling nothing targeted) is neither.
+	if len(problems) != 2 ||
+		!strings.HasPrefix(problems[0], "auth.otherStore implements the listed seam auth.credentialStore: otherStore.load calls storage.GetWidget") ||
+		!strings.HasPrefix(problems[1], "api.widgetStore: implemented by api.dbWidgetStore.get calls storage.GetWidget") {
+		t.Fatalf("want the unlisted otherStore implementation and the unlisted widgetStore seam, got %q", problems)
 	}
 }
 

@@ -75,6 +75,8 @@ expect "baseline entry citing PAC-0 fails" 1 "$TMP/pac0" "no PAC issue"
 # "Code generated ... DO NOT EDIT" after the package clause exempts nothing.
 grep -v 'orgAIStore.read' "$TMP/full" > "$TMP/minus-seam"
 expect "new discard through a store seam fails" 1 "$TMP/minus-seam" "^NEW .*api.orgAIStore.read \(storage-seam\)"
+grep -v 'googleStore.load' "$TMP/full" > "$TMP/minus-concrete"
+expect "new discard on a concrete auth store fails" 1 "$TMP/minus-concrete" "^NEW .*auth.googleStore.load \(storage-seam\)"
 grep -v 'storage.Find' "$TMP/full" > "$TMP/minus-generic"
 expect "new generic storage discard fails" 1 "$TMP/minus-generic" "^NEW .*storage.Find"
 grep -v 'notGenerated' "$TMP/full" > "$TMP/minus-midgen"
@@ -85,8 +87,11 @@ runs=$((runs + 1))
 out=$("$BIN" -root "$HERE/testdata/seamfixture" -baseline "$TMP/empty" . 2>&1); code=$?
 if [ "$code" = 1 ] && grep -q '^SEAM  api.widgetStore' <<<"$out" && ! grep -q 'pure' <<<"$out"; then
   echo "ok   unlisted seam fails -> exit 1"
-else fails=$((fails + 1)); echo "FAIL unlisted seam: exit $code"; printf '     %s
-' "$out" | head; fi
+else fails=$((fails + 1)); echo "FAIL unlisted seam: exit $code"; printf '     %s\n' "$out" | head; fi
+runs=$((runs + 1))
+if [ "$code" = 1 ] && grep -q '^SEAM  auth.otherStore implements the listed seam auth.credentialStore' <<<"$out"; then
+  echo "ok   unlisted concrete store behind a listed seam fails -> exit 1"
+else fails=$((fails + 1)); echo "FAIL unlisted concrete store: exit $code"; printf '     %s\n' "$out" | head; fi
 
 echo "$((runs - fails))/$runs passed"
 [ "$fails" -eq 0 ]

@@ -97,6 +97,10 @@ func auditSeams(pkgs []*packages.Package) (found map[string]string, problems []s
 	}
 
 	found = map[string]string{}
+	// unlistedImpls: concrete types behind a listed seam that are not listed
+	// themselves. A call on the concrete type (`t, _ := g.load(ctx)`) hides
+	// the same failure as the call through the interface.
+	unlistedImpls := map[string]string{}
 	for _, in := range ifaces {
 		for _, t := range concrete {
 			var impl types.Type = t
@@ -106,12 +110,28 @@ func auditSeams(pkgs []*packages.Package) (found map[string]string, problems []s
 					continue
 				}
 			}
-			if ev := seamEvidence(in.t, in.pkg, impl, decls, infoOf); ev != "" {
-				if _, seen := found[in.key]; !seen {
-					found[in.key] = fmt.Sprintf("%s.%s", t.Obj().Pkg().Name(), t.Obj().Name()) + ev
-				}
+			ev := seamEvidence(in.t, in.pkg, impl, decls, infoOf)
+			if ev == "" {
+				continue
+			}
+			if _, seen := found[in.key]; !seen {
+				found[in.key] = fmt.Sprintf("%s.%s", t.Obj().Pkg().Name(), t.Obj().Name()) + ev
+			}
+			tp := t.Obj().Pkg().Path()
+			tkey := tp + "." + t.Obj().Name()
+			declaredInTarget := tp == backendModule+"/storage" || tp == backendModule+"/calendar"
+			if seams[in.key] != "" && !declaredInTarget && seams[tkey] == "" {
+				unlistedImpls[tkey] = short(in.key) + ": " + t.Obj().Name() + ev
 			}
 		}
+	}
+	implKeys := make([]string, 0, len(unlistedImpls))
+	for k := range unlistedImpls {
+		implKeys = append(implKeys, k)
+	}
+	sort.Strings(implKeys)
+	for _, k := range implKeys {
+		problems = append(problems, fmt.Sprintf("%s implements the listed seam %s — list it in seams (analyzer.go) too", short(k), unlistedImpls[k]))
 	}
 	keys := make([]string, 0, len(found))
 	for k := range found {

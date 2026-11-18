@@ -419,7 +419,8 @@ code under `backend/` and `mcp/`.
     (`calendarOps`/`realOps`, `outlookFreeBusy`, `googleFreeBusy`),
     `api.ConferenceEventClient`, and the store interfaces `api.orgAIStore`,
     `api.ssoStore`, `auth.credentialStore` and `nlp.AISource`, with their
-    production types;
+    production types (`realOps`, `dbOrgAIStore`, `dbSSOStore`, `DBSource`,
+    and `auth.googleStore`, `microsoftStore` and `zoomStore`);
   - a `database/sql` handle method on `*sql.DB`, `*sql.Tx`, `*sql.Conn`,
     `*sql.Stmt`, `*sql.Row` or `*sql.Rows` (the
     `_ = h.db.QueryRow(...).Scan(...)` shape).
@@ -435,7 +436,11 @@ code under `backend/` and `mcp/`.
   conditions: an implementation answers one of its error-returning methods
   with a targeted call, or with a method declared in `storage` or `calendar`;
   and the interface is neither in `seams` nor in `notSeams` (with a reason).
-  The audit looks one level deep, at the implementing method's own body. Today
+  It also fails when a concrete type implements a listed seam with a targeted
+  call but is not listed itself, because `t, _ := g.load(ctx)` on the
+  concrete store hides the same failure. Types declared in `storage` and
+  `calendar` are exempt, since they are already targeted. The audit looks one
+  level deep, at the implementing method's own body. Today
   it matches 18 interfaces:
   - 8 guarded seams;
   - 10 engine or service operations listed in `notSeams`: `BookingFlow`,
