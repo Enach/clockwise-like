@@ -166,6 +166,9 @@ func (e *HabitsEngine) scheduleDay(
 	}
 
 	var calBusy []interval
+	// onCalendar is every event id the day's calendar read returned: a
+	// scheduled occurrence whose event is not among them is re-placed.
+	onCalendar := map[string]struct{}{}
 	if calOps != nil {
 		listed, err := calOps.listEvents(ctx, dayStart, dayEnd)
 		if err != nil {
@@ -173,7 +176,8 @@ func (e *HabitsEngine) scheduleDay(
 		}
 		events := make([]*googlecalendar.Event, 0, len(listed))
 		for _, ev := range listed {
-			if _, own := ownEvents[ev.Id]; own {
+			onCalendar[ev.Id] = struct{}{}
+			if _, own := ownEvents[ev.Id]; own || isHabitEvent(ev) {
 				continue
 			}
 			events = append(events, ev)
@@ -239,10 +243,16 @@ func (e *HabitsEngine) scheduleDay(
 			continue
 		}
 
-		// If already scheduled, verify it still fits.
+		// If already scheduled, verify it still fits. With a connected
+		// calendar it also needs its event on the calendar: a row with no
+		// event id, or one whose event the day's read did not return (a
+		// store that failed after its old event was deleted, PAC-122 SF-014
+		// review M1), is re-placed rather than kept.
 		if prev != nil && prev.Status == "scheduled" {
 			iv := interval{start: prev.StartTime, end: prev.EndTime}
-			if !overlapsMerged(iv, mergeIntervals(placedBusy)) {
+			_, present := onCalendar[prev.CalendarEventID]
+			hasEvent := calOps == nil || (prev.CalendarEventID != "" && present)
+			if hasEvent && !overlapsMerged(iv, mergeIntervals(placedBusy)) {
 				placedBusy = append(placedBusy, iv)
 				continue
 			}
@@ -342,6 +352,12 @@ func (e *HabitsEngine) createHabitEvent(
 		Start:        &googlecalendar.EventDateTime{DateTime: start.Format(time.RFC3339)},
 		End:          &googlecalendar.EventDateTime{DateTime: end.Format(time.RFC3339)},
 		ColorId:      habitColorID(h.Color),
+		// PAC-122 SF-014: the event says which habit it belongs to, so a
+		// later run never counts it as a meeting even when no row points
+		// at it.
+		ExtendedProperties: &googlecalendar.EventExtendedProperties{
+			Private: map[string]string{habitEventMarker: h.ID.String()},
+		},
 	}
 	created, err := calOps.createEvent(ctx, ev)
 	if err != nil {
@@ -351,6 +367,16 @@ func (e *HabitsEngine) createHabitEvent(
 		return "", errors.New("calendar returned no event id")
 	}
 	return created.Id, nil
+}
+
+// habitEventMarker is the private extended property a habit event carries:
+// the id of its habit (PAC-122 SF-014).
+const habitEventMarker = "paceday_habit_id"
+
+// isHabitEvent reports whether ev is a habit event Paceday created (one
+// created before the marker existed is not recognised: PAC-137).
+func isHabitEvent(ev *googlecalendar.Event) bool {
+	return ev.ExtendedProperties != nil && ev.ExtendedProperties.Private[habitEventMarker] != ""
 }
 
 // findFirstSlot returns the first 15-min-aligned slot within [windowStart, windowEnd]

@@ -392,3 +392,187 @@ func TestPAC122_SF082_StoppedRecapIsReported(t *testing.T) {
 		}
 	})
 }
+
+// b5FailWrites makes every habit_occurrences write fail (reads still work);
+// the returned function lifts it.
+func b5FailWrites(t *testing.T, db *sql.DB) (lift func()) {
+	t.Helper()
+	if _, err := db.Exec(`CREATE FUNCTION pac122_b5_refuse_w() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'pac122 b5 refused'; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER pac122_b5_refuse_w BEFORE INSERT OR UPDATE ON habit_occurrences
+		FOR EACH ROW EXECUTE FUNCTION pac122_b5_refuse_w()`); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if _, err := db.Exec(`DROP TRIGGER pac122_b5_refuse_w ON habit_occurrences`); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// SF-014 (review M1): when the old event was deleted but the new row could
+// not be stored, the row still says scheduled with the deleted event. A
+// later run sees the event is not on the calendar and re-places it (it kept
+// the row, so the habit was no longer on the calendar).
+func TestPAC122_SF014_ScheduledRowWithoutItsEventIsRepaired(t *testing.T) {
+	db := openTestDB(t)
+	user, h := b5Habit(t, db, "sf014-repair@pac122.test")
+	seven := time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC)
+	b5Store(t, db, h.ID, "2026-11-02", seven, "evt-old")
+	lift := b5FailWrites(t, db)
+	run1 := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{b5Event("meeting", seven, true)}}
+	if err := (&HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: run1}).ReoptimizeAll(context.Background(), user); err == nil {
+		t.Fatal("run 1 succeeded with every write refused")
+	}
+	if len(run1.deletedEvts) == 0 || run1.deletedEvts[0] != "evt-old" {
+		t.Fatalf("run 1 deleted %q, want evt-old first", run1.deletedEvts)
+	}
+	if got := b5Occurrences(t, db, h.ID)["2026-11-02"]; got == nil || got.CalendarEventID != "evt-old" || got.Status != "scheduled" {
+		t.Fatalf("setup: after run 1 the row is %+v, want still scheduled with evt-old", got)
+	}
+	lift()
+
+	run2 := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{}}
+	if err := (&HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: run2}).ReoptimizeAll(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	got := b5Occurrences(t, db, h.ID)["2026-11-02"]
+	var monday *googlecalendar.Event
+	for _, ev := range run2.createdEvts {
+		if strings.HasPrefix(ev.Start.DateTime, "2026-11-02") {
+			monday = ev
+		}
+	}
+	if monday == nil || got == nil || got.Status != "scheduled" || got.CalendarEventID != monday.Id {
+		t.Fatalf("run 2: row %+v, Monday event %+v; want the row scheduled with a new event", got, monday)
+	}
+}
+
+// SF-014 (review M1): a legacy scheduled row with no event id is re-placed
+// with an event once a calendar is connected.
+func TestPAC122_SF014_ScheduledRowWithNoEventIDGetsOne(t *testing.T) {
+	db := openTestDB(t)
+	user, h := b5Habit(t, db, "sf014-noid@pac122.test")
+	seven := time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC)
+	b5Store(t, db, h.ID, "2026-11-02", seven, "")
+	mock := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{}}
+	if err := (&HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: mock}).ReoptimizeAll(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	if got := b5Occurrences(t, db, h.ID)["2026-11-02"]; got == nil || got.Status != "scheduled" || got.CalendarEventID == "" {
+		t.Fatalf("row %+v, want scheduled with an event", got)
+	}
+	if len(mock.deletedEvts) != 0 {
+		t.Fatalf("deleted %q, want nothing (there was no event)", mock.deletedEvts)
+	}
+}
+
+// SF-014 (review minor 6): a displaced row that kept its event id (its
+// delete failed earlier) has that event deleted and is re-placed by a later
+// run.
+func TestPAC122_SF014_DisplacedRowWithItsEventIsRetried(t *testing.T) {
+	db := openTestDB(t)
+	user, h := b5Habit(t, db, "sf014-retry@pac122.test")
+	seven := time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC)
+	if _, err := storage.UpsertHabitOccurrence(db, &storage.HabitOccurrence{HabitID: h.ID, ScheduledDate: time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC),
+		StartTime: seven, EndTime: seven.Add(30 * time.Minute), Status: "displaced", CalendarEventID: "evt-kept"}); err != nil {
+		t.Fatal(err)
+	}
+	mock := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{b5Event("evt-kept", seven, false)}}
+	if err := (&HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: mock}).ReoptimizeAll(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	if len(mock.deletedEvts) != 1 || mock.deletedEvts[0] != "evt-kept" {
+		t.Fatalf("deleted %q, want evt-kept", mock.deletedEvts)
+	}
+	got := b5Occurrences(t, db, h.ID)["2026-11-02"]
+	if got == nil || got.Status != "scheduled" || got.CalendarEventID == "" || got.CalendarEventID == "evt-kept" {
+		t.Fatalf("row %+v, want scheduled with a new event", got)
+	}
+}
+
+// SF-014 (review M2): a habit event carries its habit id, and an event with
+// that marker is never a meeting, even when no row points at it.
+func TestPAC122_SF014_HabitEventsAreMarkedAndNeverMeetings(t *testing.T) {
+	db := openTestDB(t)
+	user, h := b5Habit(t, db, "sf014-marker@pac122.test")
+	seven := time.Date(2026, 11, 2, 7, 0, 0, 0, time.UTC)
+	orphan := b5Event("evt-orphan", seven, false)
+	orphan.ExtendedProperties = &googlecalendar.EventExtendedProperties{Private: map[string]string{habitEventMarker: h.ID.String()}}
+	mock := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{orphan}}
+	if err := (&HabitsEngine{DB: db, Clock: FixedClock{T: b5Monday}, calOps: mock}).ReoptimizeAll(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	if len(mock.createdEvts) == 0 {
+		t.Fatal("no event created")
+	}
+	for _, ev := range mock.createdEvts {
+		if ev.ExtendedProperties == nil || ev.ExtendedProperties.Private[habitEventMarker] != h.ID.String() {
+			t.Fatalf("created event %+v carries no habit marker", ev)
+		}
+	}
+	if got := b5Occurrences(t, db, h.ID)["2026-11-02"]; got == nil || !got.StartTime.Equal(seven) {
+		t.Fatalf("Monday row %+v, want 07:00 (the marked event is not busy)", got)
+	}
+}
+
+// SF-046 (review minor): the recap day is the calendar day in the recap
+// zone, 25h on a DST fall-back day and 23h on a spring-forward day, for both
+// focus blocks and meetings (it was local midnight + 24h).
+func TestPAC122_SF046_RecapDayFollowsDST(t *testing.T) {
+	db := openTestDB(t)
+	user, _ := b5Habit(t, db, "sf046-dst@pac122.test")
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &DailyRecapService{DB: db}
+	settings, err := storage.GetOrCreateSettingsByUser(db, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := func(day time.Time) string {
+		t.Helper()
+		blocks, err := svc.BuildMessage(context.Background(), user, "D", day.Add(8*time.Hour), settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, _ := blocks[2]["text"].(slackBlock)
+		s, _ := text["text"].(string)
+		return s
+	}
+
+	// Fall back: 2026-10-25 has 25 hours; 23:30 is still that day.
+	fallBack := time.Date(2026, 10, 25, 0, 0, 0, 0, paris)
+	late := time.Date(2026, 10, 25, 23, 30, 0, 0, paris)
+	if err := storage.SaveFocusBlock(db, user, "evt-late", "2026-10-25", late, late.Add(20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO meeting_briefs (calendar_event_id, user_id, generated_at) VALUES ('brief-late', $1, $2)`, user, late); err != nil {
+		t.Fatal(err)
+	}
+	if blocks, err := svc.fetchFocusBlocks(user, fallBack, paris); err != nil || len(blocks) != 1 {
+		t.Fatalf("fall-back day focus blocks = %+v, %v; want the 23:30 block", blocks, err)
+	}
+	if s := summary(fallBack); !strings.Contains(s, "*1 meeting*") {
+		t.Fatalf("fall-back day summary %q, want the 23:30 meeting", s)
+	}
+
+	// Spring forward: 2026-03-29 has 23 hours; 00:30 the next day is not it.
+	springForward := time.Date(2026, 3, 29, 0, 0, 0, 0, paris)
+	early := time.Date(2026, 3, 30, 0, 30, 0, 0, paris)
+	if err := storage.SaveFocusBlock(db, user, "evt-early", "2026-03-30", early, early.Add(20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO meeting_briefs (calendar_event_id, user_id, generated_at) VALUES ('brief-early', $1, $2)`, user, early); err != nil {
+		t.Fatal(err)
+	}
+	if blocks, err := svc.fetchFocusBlocks(user, springForward, paris); err != nil || len(blocks) != 0 {
+		t.Fatalf("spring-forward day focus blocks = %+v, %v; want none", blocks, err)
+	}
+	if s := summary(springForward); !strings.Contains(s, "clear calendar") {
+		t.Fatalf("spring-forward day summary %q, want no meeting", s)
+	}
+}

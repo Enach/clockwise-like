@@ -260,7 +260,7 @@ func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, 
 
 	// Fetch today's data
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	todayEnd := todayStart.Add(24 * time.Hour)
+	todayEnd := todayStart.AddDate(0, 0, 1) // the calendar day: 23h or 25h on a DST change
 
 	meetings, err := s.fetchMeetings(ctx, userID, todayStart, todayEnd)
 	if err != nil {
@@ -465,16 +465,17 @@ func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, s
 	return meetings, rows.Err()
 }
 
-// fetchFocusBlocks returns the blocks starting in [day, day+24h). day is the
-// recap's local midnight (SF-046: the day was cut with date_trunc in the
-// database session's zone, not the recap's).
+// fetchFocusBlocks returns the blocks starting in [day, next local midnight).
+// day is the recap's local midnight (SF-046: the day was cut with date_trunc
+// in the database session's zone, not the recap's); the end is the next
+// calendar day, not day+24h, so a DST change neither drops nor adds an hour.
 func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time, loc *time.Location) ([]recapFocusBlock, error) {
 	rows, err := s.DB.Query(`
 		SELECT start_time, end_time
 		FROM focus_blocks
 		WHERE user_id = $1
 		  AND start_time >= $2 AND start_time < $3
-		ORDER BY start_time`, userID, day, day.Add(24*time.Hour))
+		ORDER BY start_time`, userID, day, day.AddDate(0, 0, 1))
 	if err != nil {
 		return nil, err
 	}
