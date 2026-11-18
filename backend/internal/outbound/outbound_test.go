@@ -158,3 +158,21 @@ func TestRedactAddresses(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// PAC-125: an address percent-encoded (a URL path or query quoting it) is
+// redacted too, whatever surrounds it in the word.
+func TestRedactAddressesPercentEncoded(t *testing.T) {
+	for _, in := range []string{
+		"DELETE /api/manager/team/members/alex%40example.test: boom",
+		"GET https://x.test/?email=alex%40example.test failed",
+		`Post "https://h.test/a%40b": EOF`,
+	} {
+		got := RedactAddresses(in)
+		if strings.Contains(got, "%40") || strings.Contains(got, "alex") || !strings.Contains(got, "<address>") {
+			t.Errorf("RedactAddresses(%q) = %q", in, got)
+		}
+	}
+	if got := RedactAddresses("progress 40% done"); got != "progress 40% done" {
+		t.Errorf("a word without an address was changed: %q", got)
+	}
+}

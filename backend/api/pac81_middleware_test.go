@@ -114,6 +114,7 @@ func (w *replaceWriter) WriteHeader(int) { w.ResponseWriter.WriteHeader(http.Sta
 
 func TestPAC81_AccessLogOneLineStatusPathClient(t *testing.T) {
 	l := captureAccessLog(t)
+	pac125Router(t) // the access log names route patterns (PAC-125)
 	h := loggingMiddleware(replacingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})))
@@ -136,6 +137,7 @@ func TestPAC81_AccessLogOneLineStatusPathClient(t *testing.T) {
 
 func TestPAC81_AccessLogTrustedProxyClient(t *testing.T) {
 	l := captureAccessLog(t)
+	pac125Router(t) // the access log names route patterns (PAC-125)
 	prev := trustedProxies
 	trustedProxies = parseTrustedProxies("10.0.0.0/8")
 	defer func() { trustedProxies = prev }()

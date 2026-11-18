@@ -120,7 +120,7 @@ func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User, gen i
 // account it concerns go to the server log only; auth_token is neither set
 // nor expired, so a session the browser holds is kept.
 func (h *authHandlers) signInRefused(w http.ResponseWriter, r *http.Request, err error) {
-	log.Printf("pac71: %s %s: %v", r.Method, r.URL.Path, err)
+	log.Printf("pac71: %s %s: %v", r.Method, requestRoute(r), err)
 	http.Redirect(w, r, h.frontendURL+signInRefusedPath, http.StatusFound)
 }
 

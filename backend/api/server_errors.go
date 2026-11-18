@@ -36,15 +36,16 @@ func genericServerMessage(code int) string {
 
 // logServerError records a server-side failure — op plus the raw Go, driver or
 // provider error — in the server log and in Sentry. The log line names method
-// and path but never the query string, which on OAuth callbacks carries the
-// authorization code. A nil err is reported as op alone.
+// and route pattern, never the path or the query string: a path parameter can
+// carry an email address or an invite token (PAC-125), and on OAuth callbacks
+// the query carries the authorization code. A nil err is reported as op alone.
 func logServerError(r *http.Request, op string, err error, code int) {
 	if err == nil {
 		err = errors.New(op)
 	} else {
 		err = fmt.Errorf("%s: %w", op, err)
 	}
-	log.Printf("ERROR %s %s -> %d: %v", r.Method, r.URL.Path, code, err)
+	log.Printf("ERROR %s %s -> %d: %v", r.Method, requestRoute(r), code, err)
 	reportServerError(r, err)
 }
 
