@@ -443,7 +443,10 @@ func toCoHostChangesDTO(c *storage.CoHostChanges) *coHostChangesDTO {
 
 // writeSavedLink answers a create (201) or PATCH (200) with SchedulingLinkSaved.
 // The roster is built non-strictly, as before PAC-112; co_host_changes was
-// computed inside the write and is never degraded.
+// computed inside the write and is never degraded. A strict read here would
+// answer 500 after the write committed, against the contract's "every 500
+// leaves nothing behind" (create) and "leaves the link exactly as it was"
+// (PATCH): PAC-122 SF-029 stops there for a contract decision.
 func (h *schedulingLinkHandlers) writeSavedLink(w http.ResponseWriter, code int, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, changes *storage.CoHostChanges) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -626,7 +629,14 @@ func (h *schedulingLinkHandlers) listLinks(w http.ResponseWriter, r *http.Reques
 			}
 			zones[link.OwnerUserID] = loc
 		}
-		dto := toSchedulingLinkDTO(h.db, link, loc, userID, true)
+		// PAC-122 SF-029: the roster is read strictly, as on the single
+		// read (PAC-25 C-2): a failed read fails the list, never a link
+		// with its hosts emptied or a host's email blanked.
+		dto, err := buildSchedulingLinkDTO(h.db, link, loc, userID, true, true)
+		if err != nil {
+			writeServerError(w, r, "list links roster", err, http.StatusInternalServerError)
+			return
+		}
 		if dto.IsOwner {
 			owned = append(owned, dto)
 		} else {
@@ -975,15 +985,26 @@ func (h *schedulingLinkHandlers) listHostInvites(w http.ResponseWriter, r *http.
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// PAC-122 SF-030: only a link or owner that no longer exists drops an
+	// invite (a deleted link, PAC-40; an owner whose account is gone). A
+	// failed read is the 500, never a silently shorter list.
 	out := make([]hostInviteDTO, 0, len(invites))
 	for _, invite := range invites {
 		link, e := storage.GetSchedulingLinkByID(h.db, invite.LinkID)
-		if e != nil || link == nil {
+		if e != nil {
+			writeServerError(w, r, "host invites link read", e, http.StatusInternalServerError)
+			return
+		}
+		if link == nil {
 			continue
 		}
 		owner, e := storage.GetUserByID(h.db, link.OwnerUserID)
-		if e != nil || owner == nil {
+		if errors.Is(e, sql.ErrNoRows) || (e == nil && owner == nil) {
 			continue
+		}
+		if e != nil {
+			writeServerError(w, r, "host invites owner read", e, http.StatusInternalServerError)
+			return
 		}
 		out = append(out, hostInviteDTO{LinkID: link.ID.String(), LinkTitle: link.Title, OwnerName: owner.Name, OwnerEmail: owner.Email, InvitedAt: invite.InvitedAt.UTC().Format("2006-01-02T15:04:05.000Z07:00")})
 	}

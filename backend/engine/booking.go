@@ -714,8 +714,12 @@ func (e *BookingEngine) completeBooking(ctx context.Context, link *storage.Sched
 		if err != nil {
 			return err
 		}
-		// An answer that arrived is always recorded.
-		_ = storage.SaveBookingEvent(storage.Bind(context.WithoutCancel(callCtx), e.DB), booking.ID, he.userID, created.Id)
+		// An answer that arrived is always recorded. A failed save is
+		// logged and reported with the ids (PAC-122 SF-067): the event
+		// exists on the host's calendar but booking_events does not say so.
+		if err := storage.SaveBookingEvent(storage.Bind(context.WithoutCancel(callCtx), e.DB), booking.ID, he.userID, created.Id); err != nil {
+			reportBookingEventSaveFailure(booking.ID, he.userID, err)
+		}
 		prog.markHost(he.userID)
 		return nil
 	})
@@ -729,6 +733,12 @@ func (e *BookingEngine) completeBooking(ctx context.Context, link *storage.Sched
 	// id and reported, never retried (D-15).
 	// PAC-88: in the link's zone read now, then UTC (owner OQ-4).
 	err := e.sendBookingEmail(db, link, booking, strings.Join(hostNames, " and "))
+	if errors.Is(err, outbound.ErrMailNotConfigured) {
+		// PAC-122 SF-066: a skip, logged with the booking id; email being
+		// off is a configuration the startup warning names, not a failure.
+		log.Printf("WARN: booking confirmation email for booking %s not sent: %v", booking.ID, err)
+		return
+	}
 	if err != nil {
 		msg := outbound.RedactAddresses(err.Error())
 		log.Printf("ERROR: booking confirmation email failed for booking %s: %s", booking.ID, msg)
@@ -819,8 +829,8 @@ func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, sta
 	smtpPass := os.Getenv("SMTP_PASS")
 	smtpFrom := os.Getenv("SMTP_FROM")
 
-	if smtpHost == "" || smtpFrom == "" {
-		return nil // email not configured
+	if !outbound.MailConfigured(os.Getenv) {
+		return outbound.ErrMailNotConfigured // PAC-122 SF-066: skipped, never "sent"
 	}
 	if smtpPort == "" {
 		smtpPort = "587"
@@ -882,3 +892,17 @@ func generateICS(title, bookerName, bookerEmail, hostNames string, start, end ti
 		"END:VCALENDAR",
 	}, "\r\n")
 }
+
+// reportBookingEventSaveFailure logs and reports a host event that was
+// created on the host's calendar but whose booking_events row could not be
+// saved (PAC-122 SF-067). Ids only, never an address.
+func reportBookingEventSaveFailure(bookingID, hostID uuid.UUID, err error) {
+	err = fmt.Errorf("booking %s: host %s calendar event created but not recorded: %s",
+		bookingID, hostID, outbound.RedactAddresses(err.Error()))
+	log.Printf("ERROR: %v", err)
+	captureBookingFailure(err)
+}
+
+// captureBookingFailure is the Sentry report of a booking-completion failure
+// (a test seam: production sends it to Sentry).
+var captureBookingFailure = func(err error) { sentry.CaptureException(err) }
