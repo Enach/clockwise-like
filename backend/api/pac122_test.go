@@ -53,7 +53,9 @@ func TestPAC122_HabitReoptimizeErrorReported(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d (behaviour changed)", w.Code)
 	}
-	got := rec.Matching("habit-reoptimize", "list habits")
+	// PAC-136: the run's first database step is now the user's lock, so a
+	// closed database fails there (it failed at the habit list).
+	got := rec.Matching("habit-reoptimize", "habit lock")
 	if len(got) != 1 || got[0].Unit.ID != user.String() {
 		t.Fatalf("reports %+v", rec.All())
 	}

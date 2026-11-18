@@ -70,7 +70,13 @@ func ListHabitsByUser(db DBTX, userID uuid.UUID) ([]*Habit, error) {
 }
 
 func ListActiveHabitsByUser(db DBTX, userID uuid.UUID) ([]*Habit, error) {
-	rows, err := db.QueryContext(context.Background(), `
+	return ListActiveHabitsByUserCtx(context.Background(), db, userID)
+}
+
+// ListActiveHabitsByUserCtx is ListActiveHabitsByUser bounded by ctx
+// (PAC-136: a cancelled habit run frees its connection).
+func ListActiveHabitsByUserCtx(ctx context.Context, db DBTX, userID uuid.UUID) ([]*Habit, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, user_id, title, duration_minutes, days_of_week, window_start, window_end, priority, color, active, created_at
 		FROM habits WHERE user_id = $1 AND active = true ORDER BY priority DESC, created_at ASC
 	`, userID)
@@ -162,7 +168,12 @@ func UpsertHabitOccurrence(db Querier, o *HabitOccurrence) (*HabitOccurrence, er
 }
 
 func ListHabitOccurrences(db DBTX, habitID uuid.UUID, from, to time.Time) ([]*HabitOccurrence, error) {
-	rows, err := db.QueryContext(context.Background(), `
+	return ListHabitOccurrencesCtx(context.Background(), db, habitID, from, to)
+}
+
+// ListHabitOccurrencesCtx is ListHabitOccurrences bounded by ctx (PAC-136).
+func ListHabitOccurrencesCtx(ctx context.Context, db DBTX, habitID uuid.UUID, from, to time.Time) ([]*HabitOccurrence, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, habit_id, scheduled_date, start_time, end_time, status, calendar_event_id, created_at
 		FROM habit_occurrences
 		WHERE habit_id = $1 AND scheduled_date >= $2 AND scheduled_date <= $3

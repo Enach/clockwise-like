@@ -2,6 +2,8 @@ package engine
 
 import (
 	"sync/atomic"
+
+	"github.com/google/uuid"
 )
 
 // The engine package's deterministic test seams, on the PAC-80 pattern of
@@ -71,4 +73,25 @@ func managerStepErr(step, memberEmail string, err error) error {
 		}
 	}
 	return err
+}
+
+// PAC-136: habitRunLocked fires once a habit reoptimize run holds its user's
+// lock, before it reads anything. A test blocks in it to hold the lock while
+// a second run starts.
+var habitRunLocked seam[func(userID uuid.UUID)]
+
+// InstallHabitRunLocked installs the habit-run-locked seam.
+func InstallHabitRunLocked(tb TB, fn func(userID uuid.UUID)) (uninstall func()) {
+	tb.Helper()
+	return habitRunLocked.install(tb, fn)
+}
+
+// PAC-136 review N2: habitGateLeaving fires while a habit run leaves the
+// gate, between its two steps (pending decremented, user token released).
+var habitGateLeaving seam[func(userID uuid.UUID)]
+
+// InstallHabitGateLeaving installs the habit-gate-leaving seam.
+func InstallHabitGateLeaving(tb TB, fn func(userID uuid.UUID)) (uninstall func()) {
+	tb.Helper()
+	return habitGateLeaving.install(tb, fn)
 }

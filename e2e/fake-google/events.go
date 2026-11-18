@@ -42,7 +42,8 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request, c *call) {
 	})
 }
 
-// insertEvent serves POST /calendars/{id}/events.
+// insertEvent serves POST /calendars/{id}/events. A caller-supplied id that
+// is taken (by a live or a deleted event) is a 409 duplicate.
 func (s *Server) insertEvent(w http.ResponseWriter, r *http.Request, c *call) {
 	var ev googlecalendar.Event
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
@@ -54,7 +55,13 @@ func (s *Server) insertEvent(w http.ResponseWriter, r *http.Request, c *call) {
 		return
 	}
 	c.entry.Summary = ev.Summary
-	writeJSON(w, http.StatusOK, s.store.Insert(c.calendarID, &ev))
+	created, ok := s.store.InsertNew(c.calendarID, &ev)
+	if !ok {
+		// The real service's answer to an id already in use (PAC-136).
+		writeGoogleError(w, http.StatusConflict, "ALREADY_EXISTS", "duplicate", "The requested identifier already exists.")
+		return
+	}
+	writeJSON(w, http.StatusOK, created)
 }
 
 // getEvent serves GET /calendars/{id}/events/{eventId}.
