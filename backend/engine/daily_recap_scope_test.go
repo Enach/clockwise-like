@@ -48,18 +48,27 @@ func TestDailyRecap_OnlyTheUsersOwnData(t *testing.T) {
 	}
 
 	s := &DailyRecapService{DB: db}
-	focus := s.fetchFocusBlocks(alice.ID, day, time.UTC)
+	focus, err := s.fetchFocusBlocks(alice.ID, day, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(focus) != 1 || focus[0].Start != "09:00" {
 		t.Errorf("alice's focus blocks = %+v, want only her 09:00 block", focus)
 	}
-	habits := s.fetchHabits(alice.ID, day, time.UTC)
+	habits, err := s.fetchHabits(alice.ID, day, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(habits) != 1 || habits[0].Title != "Alice habit" || habits[0].WindowStart != "11:00" || habits[0].WindowEnd != "11:30" {
 		t.Errorf("alice's habits = %+v, want only her 11:00-11:30 habit", habits)
 	}
-	if paris := s.fetchFocusBlocks(alice.ID, day, time.FixedZone("CEST", 2*3600)); len(paris) != 1 || paris[0].Start != "11:00" {
+	if paris, err := s.fetchFocusBlocks(alice.ID, day, time.FixedZone("CEST", 2*3600)); err != nil || len(paris) != 1 || paris[0].Start != "11:00" {
 		t.Errorf("focus blocks in the recap's zone = %+v, want 11:00", paris)
 	}
-	meetings := s.fetchMeetings(context.Background(), alice.ID, day, day.Add(24*time.Hour))
+	meetings, err := s.fetchMeetings(context.Background(), alice.ID, day, day.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(meetings) != 1 || meetings[0].ID != "evt-recap-alice-brief" {
 		t.Errorf("alice's meetings = %+v, want only her brief", meetings)
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -137,8 +138,9 @@ func scanAnalyticsWeek(row *sql.Row) (*AnalyticsWeek, error) {
 		return nil, err
 	}
 	a.WeekStart = calendarDate(weekStart)
-	_ = json.Unmarshal(titlesJSON, &a.TopMeetingTitles)
-	normaliseMeetingTitles(&a)
+	if err := unmarshalMeetingTitles(titlesJSON, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 
@@ -151,8 +153,19 @@ func calendarDate(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// normaliseMeetingTitles turns a nil top_meeting_titles (a JSONB `null`, or a
-// failed unmarshal) into an empty slice so it encodes as [] (PAC-28).
+// unmarshalMeetingTitles decodes the stored top_meeting_titles. A value that
+// does not decode is an error naming the week's row id (PAC-122 SF-080); it
+// was discarded and the week read back with no titles.
+func unmarshalMeetingTitles(raw []byte, a *AnalyticsWeek) error {
+	if err := json.Unmarshal(raw, &a.TopMeetingTitles); err != nil {
+		return fmt.Errorf("analytics week %s: decode top_meeting_titles: %w", a.ID, err)
+	}
+	normaliseMeetingTitles(a)
+	return nil
+}
+
+// normaliseMeetingTitles turns a nil top_meeting_titles (a JSONB `null`)
+// into an empty slice so it encodes as [] (PAC-28).
 func normaliseMeetingTitles(a *AnalyticsWeek) {
 	if a.TopMeetingTitles == nil {
 		a.TopMeetingTitles = make([]MeetingTitle, 0)
@@ -173,7 +186,8 @@ func scanAnalyticsWeekRow(rows *sql.Rows) (*AnalyticsWeek, error) {
 		return nil, err
 	}
 	a.WeekStart = calendarDate(weekStart)
-	_ = json.Unmarshal(titlesJSON, &a.TopMeetingTitles)
-	normaliseMeetingTitles(&a)
+	if err := unmarshalMeetingTitles(titlesJSON, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }

@@ -1057,7 +1057,7 @@ type AnalyticsWeekRow struct {
 	MeetingMinutes           int                `json:"meeting_minutes"`
 	PersonalMinutes          int                `json:"personal_minutes"`
 
-	// TopMeetingTitles `[]` when the week has no titles, including when the JSONB column holds `null` or fails to unmarshal (PAC-28).
+	// TopMeetingTitles `[]` when the week has no titles, including when the JSONB column holds `null` (PAC-28). A stored value that does not decode is the operation's 500, not `[]` (PAC-122 SF-080).
 	TopMeetingTitles    []MeetingTitle     `json:"top_meeting_titles"`
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
@@ -1984,7 +1984,7 @@ type HabitCreateRequest struct {
 
 // HabitOccurrence storage.HabitOccurrence — one materialised instance of a habit on a date.
 type HabitOccurrence struct {
-	// CalendarEventId Google Calendar event id for the mirrored event. Empty string when no calendar is connected or event creation failed. Never null.
+	// CalendarEventId Google Calendar event id for the mirrored event. Empty string when no calendar is connected, and on a "missed" or "displaced" occurrence whose event was deleted. A "scheduled" occurrence of a user with a connected calendar always carries its event (PAC-122 SF-015; before, a failed event creation was stored as "scheduled" with an empty id). Never null.
 	CalendarEventId string             `json:"calendar_event_id"`
 	CreatedAt       time.Time          `json:"created_at"`
 	EndTime         time.Time          `json:"end_time"`
@@ -1993,21 +1993,26 @@ type HabitOccurrence struct {
 
 	// ScheduledDate The DB column is a DATE, but the Go field is `time.Time`, so it serialises as a
 	// full RFC3339 timestamp at midnight UTC (e.g. "2026-03-04T00:00:00Z"), NOT as
-	// "2026-03-04". Parsed from the DB with a failure-swallowing `time.Parse`, so a
-	// malformed stored value would surface as the zero time "0001-01-01T00:00:00Z".
+	// "2026-03-04". Before PAC-122 (SF-080) the column was read through a
+	// failure-swallowing `time.Parse` that always failed, so every occurrence
+	// surfaced as the zero time "0001-01-01T00:00:00Z"; it is now the stored date.
 	ScheduledDate time.Time `json:"scheduled_date"`
 	StartTime     time.Time `json:"start_time"`
 
 	// Status Written by the engine as well as by the API. "scheduled" (placed), "completed"
 	// (user-confirmed; survives reoptimization), "displaced" (its slot was taken and
-	// rescheduling is being attempted), "missed" (no slot fit in the window).
+	// rescheduling is being attempted; also left by a run that could not delete its
+	// old calendar event, which then keeps its `calendar_event_id`, or could not
+	// create the new one, PAC-122 SF-014/SF-015), "missed" (no slot fit in the window).
 	// Only "scheduled" and "completed" are settable via the API.
 	Status HabitOccurrenceStatus `json:"status"`
 }
 
 // HabitOccurrenceStatus Written by the engine as well as by the API. "scheduled" (placed), "completed"
 // (user-confirmed; survives reoptimization), "displaced" (its slot was taken and
-// rescheduling is being attempted), "missed" (no slot fit in the window).
+// rescheduling is being attempted; also left by a run that could not delete its
+// old calendar event, which then keeps its `calendar_event_id`, or could not
+// create the new one, PAC-122 SF-014/SF-015), "missed" (no slot fit in the window).
 // Only "scheduled" and "completed" are settable via the API.
 type HabitOccurrenceStatus string
 

@@ -225,8 +225,8 @@ func ListScheduledOccurrencesForDay(db DBTX, userID uuid.UUID, date time.Time) (
 
 func scanOccurrence(row *sql.Row) (*HabitOccurrence, error) {
 	var o HabitOccurrence
-	var dateStr string
-	err := row.Scan(&o.ID, &o.HabitID, &dateStr, &o.StartTime, &o.EndTime,
+	var date time.Time
+	err := row.Scan(&o.ID, &o.HabitID, &date, &o.StartTime, &o.EndTime,
 		&o.Status, &o.CalendarEventID, &o.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -234,17 +234,21 @@ func scanOccurrence(row *sql.Row) (*HabitOccurrence, error) {
 	if err != nil {
 		return nil, err
 	}
-	o.ScheduledDate, _ = time.Parse("2006-01-02", dateStr)
+	// PAC-122 SF-080: the DATE column is scanned as a time.Time (the driver
+	// delivers one). It was scanned into a string, which held RFC3339 text;
+	// parsing that as a bare date failed with the error discarded, so every
+	// occurrence read back as the zero date.
+	o.ScheduledDate = calendarDate(date)
 	return &o, nil
 }
 
 func scanOccurrenceRow(rows *sql.Rows) (*HabitOccurrence, error) {
 	var o HabitOccurrence
-	var dateStr string
-	if err := rows.Scan(&o.ID, &o.HabitID, &dateStr, &o.StartTime, &o.EndTime,
+	var date time.Time
+	if err := rows.Scan(&o.ID, &o.HabitID, &date, &o.StartTime, &o.EndTime,
 		&o.Status, &o.CalendarEventID, &o.CreatedAt); err != nil {
 		return nil, err
 	}
-	o.ScheduledDate, _ = time.Parse("2006-01-02", dateStr)
+	o.ScheduledDate = calendarDate(date) // PAC-122 SF-080, as scanOccurrence
 	return &o, nil
 }

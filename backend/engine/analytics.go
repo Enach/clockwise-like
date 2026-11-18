@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,6 +20,8 @@ import (
 type AnalyticsEngine struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+
+	calOps calendarOps // test seam: used instead of the user's calendar when set
 }
 
 // weekStartFor returns the Monday of the week containing date.
@@ -76,8 +79,17 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 		totalWorkingMinutes = 480 * 5
 	}
 
+	// PAC-122 SF-017: every read below is checked. A week computed from a
+	// failed read (focus blocks, habit occurrences, the calendar credential
+	// or the calendar itself) is an error and is not stored: it used to be
+	// upserted as a week with no meetings and served from the cache for 24h.
+	// A user with no connected calendar still gets a week with no meetings.
+
 	// Build focus event ID set.
-	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, userID, weekStart)
+	focusBlocks, err := storage.ListFocusBlocksForUserWeek(e.DB, userID, weekStart)
+	if err != nil {
+		return nil, fmt.Errorf("read focus blocks: %w", err)
+	}
 	focusIDs := make(map[string]struct{}, len(focusBlocks))
 	for _, fb := range focusBlocks {
 		focusIDs[fb.GoogleEventID] = struct{}{}
@@ -86,7 +98,10 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 	focusMinutes, largestFocusBlock := focusBlockMinutes(focusBlocks)
 
 	// Build habit event ID set + completion rate.
-	habitOccs := habitOccurrencesForWeek(e.DB, userID, weekStart, weekEnd)
+	habitOccs, err := habitOccurrencesForWeek(e.DB, userID, weekStart, weekEnd)
+	if err != nil {
+		return nil, err
+	}
 	habitIDs := make(map[string]struct{}, len(habitOccs))
 	habitMinutes := 0
 	scheduledCount, completedCount := 0, 0
@@ -116,43 +131,47 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 	meetingMap := make(map[string]int) // title → duration minutes (deduped by event ID)
 
 	calOps, calErr := e.calOpsForUser(ctx, userID)
+	if calErr != nil && !errors.Is(calErr, ErrCalendarNotConnected) {
+		return nil, fmt.Errorf("calendar: %w", calErr)
+	}
 	if calErr == nil {
 		events, err := calOps.listEvents(ctx, weekStart, weekEnd)
-		if err == nil {
-			for _, ev := range events {
-				if ev.Start == nil || ev.Start.DateTime == "" {
-					continue // skip all-day events
-				}
-				s, end := parseEventTime(ev)
-				if s.IsZero() || end.IsZero() {
-					continue
-				}
-				// Skip if before or after work week.
-				if end.Before(weekStart) || s.After(weekEnd) {
-					continue
-				}
-				dur := int(end.Sub(s).Minutes())
-				if dur <= 0 {
-					continue
-				}
+		if err != nil {
+			return nil, fmt.Errorf("read calendar: %w", err)
+		}
+		for _, ev := range events {
+			if ev.Start == nil || ev.Start.DateTime == "" {
+				continue // skip all-day events
+			}
+			s, end := parseEventTime(ev)
+			if s.IsZero() || end.IsZero() {
+				continue
+			}
+			// Skip if before or after work week.
+			if end.Before(weekStart) || s.After(weekEnd) {
+				continue
+			}
+			dur := int(end.Sub(s).Minutes())
+			if dur <= 0 {
+				continue
+			}
 
-				if _, ok := focusIDs[ev.Id]; ok {
-					continue // already counted via DB
-				}
-				if _, ok := habitIDs[ev.Id]; ok {
-					continue // already counted via DB
-				}
+			if _, ok := focusIDs[ev.Id]; ok {
+				continue // already counted via DB
+			}
+			if _, ok := habitIDs[ev.Id]; ok {
+				continue // already counted via DB
+			}
 
-				if len(ev.Attendees) > 0 {
-					meetingMinutes += dur
-					meetingCount++
-					estimatedCost += dur * len(ev.Attendees)
-					if ev.Summary != "" {
-						meetingMap[ev.Summary] += dur
-					}
-				} else {
-					personalMinutes += dur
+			if len(ev.Attendees) > 0 {
+				meetingMinutes += dur
+				meetingCount++
+				estimatedCost += dur * len(ev.Attendees)
+				if ev.Summary != "" {
+					meetingMap[ev.Summary] += dur
 				}
+			} else {
+				personalMinutes += dur
 			}
 		}
 	}
@@ -209,6 +228,9 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 }
 
 func (e *AnalyticsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (calendarOps, error) {
+	if e.calOps != nil {
+		return e.calOps, nil
+	}
 	token, err := LoadCalendarTokenCtx(ctx, e.DB, userID)
 	if err != nil {
 		return nil, err
@@ -226,14 +248,21 @@ func (e *AnalyticsEngine) WeekMeetings(ctx context.Context, userID uuid.UUID, da
 	weekStart := weekStartFor(date)
 	weekEnd := weekStart.AddDate(0, 0, 7)
 
-	// Build skip-sets.
-	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, userID, weekStart)
+	// Build skip-sets. A failed read is an error (PAC-122 SF-017): with an
+	// empty skip-set a focus block or habit event would be listed as a meeting.
+	focusBlocks, err := storage.ListFocusBlocksForUserWeek(e.DB, userID, weekStart)
+	if err != nil {
+		return nil, fmt.Errorf("read focus blocks: %w", err)
+	}
 	focusIDs := make(map[string]struct{}, len(focusBlocks))
 	for _, fb := range focusBlocks {
 		focusIDs[fb.GoogleEventID] = struct{}{}
 	}
 
-	habitOccs := habitOccurrencesForWeek(e.DB, userID, weekStart, weekEnd)
+	habitOccs, err := habitOccurrencesForWeek(e.DB, userID, weekStart, weekEnd)
+	if err != nil {
+		return nil, err
+	}
 	habitIDs := make(map[string]struct{}, len(habitOccs))
 	for _, occ := range habitOccs {
 		if occ.CalendarEventID != "" {
@@ -309,18 +338,21 @@ func focusBlockMinutes(blocks []storage.FocusBlock) (total, largest int) {
 	return
 }
 
-func habitOccurrencesForWeek(db *sql.DB, userID uuid.UUID, from, to time.Time) []*storage.HabitOccurrence {
+// habitOccurrencesForWeek returns the user's habit occurrences in [from, to].
+// A failed read is an error naming the habit (PAC-122 SF-017); it was
+// skipped, and the week read as having fewer habits.
+func habitOccurrencesForWeek(db *sql.DB, userID uuid.UUID, from, to time.Time) ([]*storage.HabitOccurrence, error) {
 	habits, err := storage.ListHabitsByUser(db, userID)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read habits: %w", err)
 	}
 	var all []*storage.HabitOccurrence
 	for _, h := range habits {
 		occs, err := storage.ListHabitOccurrences(db, h.ID, from, to)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read habit %s occurrences: %w", h.ID, err)
 		}
 		all = append(all, occs...)
 	}
-	return all
+	return all, nil
 }

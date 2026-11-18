@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,11 +72,8 @@ func GetMeetingBrief(db DBTX, userID uuid.UUID, calendarEventID string) (*Meetin
 		&slackJSON, &notionJSON, &b.BriefText, &b.Status); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(slackJSON, &b.SlackResults); err != nil {
-		b.SlackResults = nil
-	}
-	if err := json.Unmarshal(notionJSON, &b.NotionResults); err != nil {
-		b.NotionResults = nil
+	if err := decodeBriefResults(&b, slackJSON, notionJSON); err != nil {
+		return nil, err
 	}
 	return &b, nil
 }
@@ -100,9 +98,23 @@ func ListMeetingBriefsForUser(db DBTX, userID uuid.UUID) ([]*MeetingBrief, error
 			&slackJSON, &notionJSON, &b.BriefText, &b.Status); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal(slackJSON, &b.SlackResults)
-		_ = json.Unmarshal(notionJSON, &b.NotionResults)
+		if err := decodeBriefResults(&b, slackJSON, notionJSON); err != nil {
+			return nil, err
+		}
 		briefs = append(briefs, &b)
 	}
 	return briefs, rows.Err()
+}
+
+// decodeBriefResults decodes a brief's stored Slack and Notion results. A
+// value that does not decode is an error naming the brief's row id (PAC-122
+// SF-080); it was discarded and the brief read back with no sources.
+func decodeBriefResults(b *MeetingBrief, slackJSON, notionJSON []byte) error {
+	if err := json.Unmarshal(slackJSON, &b.SlackResults); err != nil {
+		return fmt.Errorf("meeting brief %s: decode slack_results: %w", b.ID, err)
+	}
+	if err := json.Unmarshal(notionJSON, &b.NotionResults); err != nil {
+		return fmt.Errorf("meeting brief %s: decode notion_results: %w", b.ID, err)
+	}
+	return nil
 }

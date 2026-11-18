@@ -238,7 +238,8 @@ Marked inline in `habits.yaml`:
 Uncertainties not expressible as an inline `x-uncertain` on a single node:
 
 4. **Response nullability for `top_meeting_titles` on `/analytics/trends`.** It is populated
-   by a failure-swallowing `json.Unmarshal` into a nil slice, so a NULL or malformed JSONB
+   by a failure-swallowing `json.Unmarshal` into a nil slice (PAC-122 SF-080 made a
+   malformed value an error; a JSONB `null` is still `[]`), so a NULL or malformed JSONB
    column marshals back as `null`, not `[]`. Marked `nullable: true` on `AnalyticsWeekRow`
    only; the `/analytics/week` map path passes the same nil slice through, so that response
    can emit `null` too — I did **not** mark it nullable there because the value always comes

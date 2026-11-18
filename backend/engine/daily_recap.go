@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -42,14 +43,19 @@ type RecapSend struct {
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 
-func recapAlreadySent(db *sql.DB, userID uuid.UUID, date time.Time) bool {
+// recapAlreadySent reports whether the user's recap for date was sent. A
+// failed read is an error (PAC-122 SF-082): it read as "not sent", so the
+// recap could be sent twice.
+func recapAlreadySent(db *sql.DB, userID uuid.UUID, date time.Time) (bool, error) {
 	var count int
 	row := db.QueryRow(
 		`SELECT COUNT(*) FROM recap_sends WHERE user_id=$1 AND sent_date=$2 AND status='sent'`,
 		userID, date.Format("2006-01-02"),
 	)
-	_ = row.Scan(&count)
-	return count > 0
+	if err := row.Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func insertRecapSend(db *sql.DB, r RecapSend) error {
@@ -70,15 +76,40 @@ func insertRecapSend(db *sql.DB, r RecapSend) error {
 
 // RunForUser checks whether it's time to send a recap to a single user and
 // sends if so.  Designed to be called every minute from a cron job.
+//
+// PAC-122 SF-082: a failure that stops the recap is logged and reported as
+// daily-recap/<user id> (ids only): a failed settings or Slack-connection
+// read, a stored send time that is not HH:MM, a failed read of whether
+// today's recap was sent (nothing is sent: it read as "not sent" and could
+// send twice), and a failed read of the day's content (SF-046: nothing is
+// sent; it read as "a clear calendar today"). The recap being off, or no
+// Slack connection, is not a failure.
 func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, userName string) {
+	unit := lifecycle.Unit{Kind: "daily-recap", ID: userID.String()}
+	stop := func(what string, err error) {
+		log.Printf("daily recap user=%s: %s: %v", userID, what, err)
+		lifecycle.Report(unit, fmt.Errorf("daily recap user=%s: %s: %w", userID, what, err))
+	}
+
 	settings, err := storage.GetOrCreateSettingsByUser(s.DB, userID)
-	if err != nil || !settings.RecapEnabled {
+	if err != nil {
+		stop("read settings", err)
+		return
+	}
+	if !settings.RecapEnabled {
 		return
 	}
 
 	conn, err := storage.GetWorkspaceConnection(s.DB, userID, "slack")
-	if err != nil || conn.TokenErr != nil {
-		return // no Slack connection, or (PAC-84 AC-17) its token cannot be decrypted: skip this user
+	if errors.Is(err, sql.ErrNoRows) {
+		return // no Slack connection: skip this user
+	}
+	if err != nil {
+		stop("read slack connection", err)
+		return
+	}
+	if conn.TokenErr != nil {
+		return // (PAC-84 AC-17) its token cannot be decrypted (the decrypt hook reports it): skip this user
 	}
 
 	loc, err := time.LoadLocation(settings.Timezone)
@@ -90,6 +121,7 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	// Parse send_time "HH:MM"
 	var sendH, sendM int
 	if _, err := fmt.Sscanf(settings.RecapSendTime, "%d:%d", &sendH, &sendM); err != nil {
+		stop("stored send time is not HH:MM", err)
 		return
 	}
 
@@ -98,11 +130,20 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	}
 
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	if recapAlreadySent(s.DB, userID, today) {
+	sent, err := recapAlreadySent(s.DB, userID, today)
+	if err != nil {
+		stop("read whether the recap was sent", err)
+		return
+	}
+	if sent {
 		return
 	}
 
-	msg := s.BuildMessage(ctx, userID, userName, now, settings)
+	msg, err := s.BuildMessage(ctx, userID, userName, now, settings)
+	if err != nil {
+		stop("build message", err)
+		return
+	}
 	ts, sendErr := sendSlackMessage(ctx, conn.BotToken, settings.RecapSendTo, settings.RecapChannelID, conn.WorkspaceID, userID, msg)
 
 	rec := RecapSend{
@@ -113,7 +154,6 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	}
 	// PAC-122 SF-082 (reporting half): a failed send and a failed record
 	// reach error monitoring; what is sent and stored is unchanged.
-	unit := lifecycle.Unit{Kind: "daily-recap", ID: userID.String()}
 	if sendErr != nil {
 		rec.Status = "failed"
 		log.Printf("daily recap send error user=%s: %v", userID, sendErr)
@@ -197,8 +237,10 @@ func (s *DailyRecapService) recapUsers(ctx context.Context) ([]recapUser, error)
 
 type slackBlock map[string]interface{}
 
-// BuildMessage assembles the Slack Block Kit payload for a user's day.
-func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, userName string, now time.Time, settings *storage.Settings) []slackBlock {
+// BuildMessage assembles the Slack Block Kit payload for a user's day. A
+// failed read of the day's content is an error (PAC-122 SF-046): it was an
+// empty section, and the recap said "a clear calendar today".
+func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, userName string, now time.Time, settings *storage.Settings) ([]slackBlock, error) {
 	firstName := firstName(userName)
 	weekday := now.Format("Monday")
 	date := now.Format("January 2")
@@ -220,11 +262,23 @@ func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, 
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	todayEnd := todayStart.Add(24 * time.Hour)
 
-	meetings := s.fetchMeetings(ctx, userID, todayStart, todayEnd)
+	meetings, err := s.fetchMeetings(ctx, userID, todayStart, todayEnd)
+	if err != nil {
+		return nil, fmt.Errorf("read meetings: %w", err)
+	}
 	// Times are shown in the zone the recap is built for, the one in its header.
-	focusBlocks := s.fetchFocusBlocks(userID, todayStart, now.Location())
-	habits := s.fetchHabits(userID, todayStart, now.Location())
-	briefs := s.fetchBriefs(ctx, userID, meetings)
+	focusBlocks, err := s.fetchFocusBlocks(userID, todayStart, now.Location())
+	if err != nil {
+		return nil, fmt.Errorf("read focus blocks: %w", err)
+	}
+	habits, err := s.fetchHabits(userID, todayStart, now.Location())
+	if err != nil {
+		return nil, fmt.Errorf("read habits: %w", err)
+	}
+	briefs, err := s.fetchBriefs(ctx, userID, meetings)
+	if err != nil {
+		return nil, fmt.Errorf("read briefs: %w", err)
+	}
 
 	// Summary line
 	blocks = append(blocks, s.buildSummaryBlock(meetings, focusBlocks, habits))
@@ -285,7 +339,7 @@ func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, 
 		"elements": []slackBlock{{"type": "mrkdwn", "text": "Sent by Paceday · <http://localhost/app|Open app> · Manage recap settings"}},
 	})
 
-	return blocks
+	return blocks, nil
 }
 
 func (s *DailyRecapService) buildSummaryBlock(meetings []recapMeeting, focus []recapFocusBlock, habits []recapHabit) slackBlock {
@@ -381,7 +435,10 @@ type recapHabit struct {
 	WindowEnd   string
 }
 
-func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, start, end time.Time) []recapMeeting {
+// PAC-122 SF-046: each fetch returns its read error, a row that does not
+// scan and the rows' own error, instead of a short or empty list.
+
+func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, start, end time.Time) ([]recapMeeting, error) {
 	rows, err := s.DB.Query(`
 		SELECT calendar_event_id, brief_text
 		FROM meeting_briefs
@@ -389,13 +446,15 @@ func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, s
 		  AND generated_at >= $2 AND generated_at < $3
 		LIMIT 20`, userID, start, end)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var meetings []recapMeeting
 	for rows.Next() {
 		var id, briefText string
-		_ = rows.Scan(&id, &briefText)
+		if err := rows.Scan(&id, &briefText); err != nil {
+			return nil, err
+		}
 		meetings = append(meetings, recapMeeting{
 			ID:    id,
 			Title: "Meeting",
@@ -403,25 +462,28 @@ func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, s
 			End:   end.Format("15:04"),
 		})
 	}
-	return meetings
+	return meetings, rows.Err()
 }
 
-func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time, loc *time.Location) []recapFocusBlock {
+// fetchFocusBlocks returns the blocks starting in [day, day+24h). day is the
+// recap's local midnight (SF-046: the day was cut with date_trunc in the
+// database session's zone, not the recap's).
+func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time, loc *time.Location) ([]recapFocusBlock, error) {
 	rows, err := s.DB.Query(`
 		SELECT start_time, end_time
 		FROM focus_blocks
 		WHERE user_id = $1
-		  AND date_trunc('day', start_time) = date_trunc('day', $2::timestamptz)
-		ORDER BY start_time`, userID, day)
+		  AND start_time >= $2 AND start_time < $3
+		ORDER BY start_time`, userID, day, day.Add(24*time.Hour))
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var blocks []recapFocusBlock
 	for rows.Next() {
 		var st, et time.Time
 		if err := rows.Scan(&st, &et); err != nil {
-			continue
+			return nil, err
 		}
 		st, et = st.In(loc), et.In(loc) // never the host's zone
 		dur := et.Sub(st)
@@ -431,10 +493,10 @@ func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time, lo
 			Duration: fmt.Sprintf("%.0fh", dur.Hours()),
 		})
 	}
-	return blocks
+	return blocks, rows.Err()
 }
 
-func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time, loc *time.Location) []recapHabit {
+func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time, loc *time.Location) ([]recapHabit, error) {
 	rows, err := s.DB.Query(`
 		SELECT h.title, ho.start_time, ho.end_time
 		FROM habit_occurrences ho
@@ -442,7 +504,7 @@ func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time, loc *ti
 		WHERE h.user_id = $1 AND ho.scheduled_date = $2 AND ho.status = 'scheduled'
 		ORDER BY ho.start_time`, userID, day.Format("2006-01-02"))
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var habits []recapHabit
@@ -450,23 +512,29 @@ func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time, loc *ti
 		var title string
 		var st, et time.Time
 		if err := rows.Scan(&title, &st, &et); err != nil {
-			continue
+			return nil, err
 		}
 		ws, we := st.In(loc).Format("15:04"), et.In(loc).Format("15:04")
 		habits = append(habits, recapHabit{Emoji: "🎯", Title: title, WindowStart: ws, WindowEnd: we})
 	}
-	return habits
+	return habits, rows.Err()
 }
 
-func (s *DailyRecapService) fetchBriefs(_ context.Context, userID uuid.UUID, meetings []recapMeeting) map[string]*storage.MeetingBrief {
+// fetchBriefs reads each meeting's brief; a meeting with none has no entry,
+// and any other failed read is an error.
+func (s *DailyRecapService) fetchBriefs(_ context.Context, userID uuid.UUID, meetings []recapMeeting) (map[string]*storage.MeetingBrief, error) {
 	result := map[string]*storage.MeetingBrief{}
 	for _, m := range meetings {
 		b, err := storage.GetMeetingBrief(s.DB, userID, m.ID)
-		if err == nil {
-			result[m.ID] = b
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		result[m.ID] = b
 	}
-	return result
+	return result, nil
 }
 
 // ── Slack sending ─────────────────────────────────────────────────────────────
