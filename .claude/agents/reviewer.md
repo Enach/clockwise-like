@@ -54,6 +54,12 @@ prove. The question is whether the spec's promise is now true.
   taste is an input, not the spec. Not having written the code is what makes
   your critique worth running; an implementer critiquing its own UI is the
   author-challenger collapse the factory exists to prevent.
+- **Silent-failure guard (backend PRs).** Any line added to
+  `tools/sfguard/baseline.txt` is a finding unless its PAC issue and verdict
+  hold up: the issue exists and tracks removing that discard (or the "fine"
+  reason is true at the call site). The guard only checks that an issue is
+  named; `make lint` prints the growth against `origin/main`. The same goes for
+  an interface added to `notSeams` in `tools/sfguard/seams.go`.
 
 ## Output
 

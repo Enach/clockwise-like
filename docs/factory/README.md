@@ -144,6 +144,7 @@ whole point of having one entrypoint rather than a CI config.
 ```
 make verify        # everything below, in order, fail-fast
 ├── make lint      # golangci-lint / eslint
+│   └── api: tools/sfguard, new blank-assigned storage/auth/calendar errors; baseline grows only with a named PAC issue, reviewer-confirmed
 ├── make design-check    # frontend only: Impeccable detector, ratcheted
 ├── make openapi-check   # bundle matches fragments; generated code matches bundle
 ├── make test      # unit + contract tests

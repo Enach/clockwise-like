@@ -42,7 +42,7 @@ SELF := $(MAKE) --no-print-directory -f $(ROOT)/Makefile
 .DEFAULT_GOAL := help
 
 .PHONY: help clone-frontend install-hooks db-shell \
-        openapi openapi-check openapi-check-web lint test coverage e2e \
+        openapi openapi-check openapi-check-web lint sfguard test coverage e2e \
         test-backend test-mcp test-fake-google test-fileserver test-nginx test-compose \
         coverage-backend coverage-mcp require-docker print-suites \
         verify verify-banner verify-summary
@@ -50,7 +50,8 @@ SELF := $(MAKE) --no-print-directory -f $(ROOT)/Makefile
 help:
 	@echo "Paceday (api repo) — targets"
 	@echo "  verify         lint, openapi-check, test, coverage, e2e — fail-fast, prints a PR-pasteable summary"
-	@echo "  lint           golangci-lint over backend/ and mcp/"
+	@echo "  lint           golangci-lint over backend/ and mcp/, then sfguard"
+	@echo "  sfguard        refuse new blank-assigned storage/auth/calendar errors (silent-failures.md §8)"
 	@echo "  test           backend suite (throwaway postgres, via docker) + mcp suite"
 	@echo "                 one suite: test-backend test-mcp test-fake-google test-fileserver test-nginx test-compose"
 	@echo "  coverage       the same suites with profiles, gated at $(BACKEND_COVERAGE_MIN)%/$(MCP_COVERAGE_MIN)% (coverage-backend, coverage-mcp)"
@@ -152,7 +153,35 @@ lint:
 	cd $(ROOT)/backend && golangci-lint run --config $(ROOT)/.golangci.yml ./...
 	@echo "-> lint mcp"
 	cd $(ROOT)/mcp && GONOSUMDB='*' GOFLAGS='-mod=mod' golangci-lint run --config $(ROOT)/.golangci.yml ./...
+	@echo "-> lint tools/sfguard"
+	cd $(ROOT)/tools/sfguard && golangci-lint run --config $(ROOT)/.golangci.yml ./...
+	@$(SELF) sfguard
 	@echo "lint OK (generated files carry a DO NOT EDIT header and are excluded by golangci-lint)"
+
+## Silent-failure guardrail (PAC-122, docs/factory/silent-failures.md §8)
+# errcheck runs with check-blank: false, so it accepts `_ = storage.X(...)`.
+# tools/sfguard is a type-aware (go/types) check for exactly that shape: a
+# blank-assigned error from backend/storage, auth.Load*, the calendar clients,
+# the engine's calendar-ops seams, or database/sql handles, in non-test,
+# non-generated code. It ratchets against tools/sfguard/baseline.txt, which
+# grows only with a named PAC issue, reviewer-confirmed: a new occurrence
+# fails, a fixed one must be deleted from the baseline, every baseline line
+# names a PAC issue, and the reviewer treats an added line as a finding unless
+# its issue and verdict hold up. A storage or calendar seam interface outside
+# those packages that is in neither of its lists fails too. Its own tests (go test
+# and the end-to-end self-test) run first, so a broken guard cannot pass.
+# mcp/ is scanned too; it calls none of the targeted packages today.
+sfguard:
+	@echo "-> sfguard self-test"
+	cd $(ROOT)/tools/sfguard && go vet ./... && go test ./...
+	bash $(ROOT)/tools/sfguard/sfguard.test.sh
+	@echo "-> sfguard backend mcp"
+	@# Built, then exec'd: `go run` turns every failure into exit 1, and the
+	@# guard's 2 (could not type-check: not a pass, not a finding either) must
+	@# reach make's "Error 2" line as itself.
+	@mkdir -p "$(VERIFY_DIR)/bin"
+	cd $(ROOT)/tools/sfguard && go build -o "$(VERIFY_DIR)/bin/sfguard" .
+	"$(VERIFY_DIR)/bin/sfguard" -root $(ROOT) -baseline $(ROOT)/tools/sfguard/baseline.txt -base-ref origin/main backend mcp
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 # scripts/test-backend.sh runs the suite inside golang:1.26-alpine against a
