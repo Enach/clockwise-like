@@ -859,8 +859,10 @@ paths:
       summary: Invite an address to Paceday on this team; an address not on the team is also added. Owner only.
       description: >
         PAC-129 (spec §3.7, §3.10, D-4, D-8, D-12, AC-18, AC-20, AC-23, AC-25; contract
-        PAC-129 §3.3, §4). The address is normalised (trimmed, lowercased, validated) as
-        before. The write is ONE storage-owned transaction: the PAC-71 re-check (stale session: 401,
+        PAC-129 §3.0, §3.3, §4). The address is normalised by the one address normaliser
+        of AddTeamPersonRequest.email (trim set of contract §2.2, which since revision
+        1.2 includes U+FEFF; lowercase; ParseAddress), and every check below compares
+        that form. The write is ONE storage-owned transaction: the PAC-71 re-check (stale session: 401,
         nothing written); the team row locked FOR NO KEY UPDATE (no row: 403); the owner
         check (not an owner: 403; a storage error there is still the 403, SF-074 left
         open on this existing operation, spec OQ-12). Then, judged under the lock, with
@@ -1493,9 +1495,9 @@ components:
       in: path
       required: true
       description: >
-        PAC-129. The person's address, percent-encoded (`@` as %40). Unescaped, trimmed and
-        lowercased before matching; an address that does not then validate is the 400
-        "invalid email".
+        PAC-129. The person's address, percent-encoded (`@` as %40). Unescaped, then
+        normalised by the one address normaliser of AddTeamPersonRequest.email before
+        matching; blank, or refused by it, is the 400 "invalid email".
       schema: { type: string, format: email }
 
     MemberEmailPath:
@@ -1990,7 +1992,10 @@ components:
         email:
           type: string
           format: email
-          description: Lowercased, trimmed and validated with net/mail.ParseAddress.
+          description: >
+            Normalised by the one address normaliser of AddTeamPersonRequest.email
+            (PAC-129 revision 1.2: the trim set now includes U+FEFF); every check of
+            inviteTeamMember compares the normalised form, and it is the form stored.
         name:
           type: string
           description: >
@@ -2009,11 +2014,13 @@ components:
           description: >
             PAC-129 contract 1.1 (challenge B-1): a plain string, deliberately WITHOUT
             `format: email`, so the generated decoder accepts any JSON string and the
-            server's own normaliser is the only validator, the same as inviteTeamMember's
-            (normalizeManagerEmail): leading and trailing whitespace trimmed
-            (strings.TrimSpace, Unicode White_Space, which covers ECMAScript WhiteSpace and
-            LineTerminator except U+FEFF), lowercased, then net/mail.ParseAddress, whose
-            parsed address must equal the normalised input. Blank after trimming: 400
+            server's one address normaliser is the only validator (contract PAC-129 §3.0,
+            revision 1.2): trim the 26 code points of contract §2.2 from both ends
+            (ECMAScript WhiteSpace and LineTerminator plus Go's unicode.IsSpace: U+0009-
+            U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029,
+            U+202F, U+205F, U+3000, U+FEFF), lowercase, then net/mail.ParseAddress, whose
+            parsed address must equal the result. Every check of this operation compares
+            that form, and it is the form stored. Blank after trimming: 400
             "email is required". Refused by the normaliser: 422 "email must be a valid
             email address". Stored normalised. A body that is not JSON, or an `email`
             that is not a JSON string, is the wrapper's 400 "invalid body".

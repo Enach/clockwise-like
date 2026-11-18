@@ -1035,7 +1035,7 @@ type AddTeamPersonErrorError string
 
 // AddTeamPersonRequest PAC-129. Unknown keys are ignored (the generated decoder does not refuse them).
 type AddTeamPersonRequest struct {
-	// Email PAC-129 contract 1.1 (challenge B-1): a plain string, deliberately WITHOUT `format: email`, so the generated decoder accepts any JSON string and the server's own normaliser is the only validator, the same as inviteTeamMember's (normalizeManagerEmail): leading and trailing whitespace trimmed (strings.TrimSpace, Unicode White_Space, which covers ECMAScript WhiteSpace and LineTerminator except U+FEFF), lowercased, then net/mail.ParseAddress, whose parsed address must equal the normalised input. Blank after trimming: 400 "email is required". Refused by the normaliser: 422 "email must be a valid email address". Stored normalised. A body that is not JSON, or an `email` that is not a JSON string, is the wrapper's 400 "invalid body".
+	// Email PAC-129 contract 1.1 (challenge B-1): a plain string, deliberately WITHOUT `format: email`, so the generated decoder accepts any JSON string and the server's one address normaliser is the only validator (contract PAC-129 §3.0, revision 1.2): trim the 26 code points of contract §2.2 from both ends (ECMAScript WhiteSpace and LineTerminator plus Go's unicode.IsSpace: U+0009- U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF), lowercase, then net/mail.ParseAddress, whose parsed address must equal the result. Every check of this operation compares that form, and it is the form stored. Blank after trimming: 400 "email is required". Refused by the normaliser: 422 "email must be a valid email address". Stored normalised. A body that is not JSON, or an `email` that is not a JSON string, is the wrapper's 400 "invalid body".
 	Email string `json:"email"`
 
 	// Name Optional display name, trimmed; absent or blank stores "".
@@ -2159,7 +2159,7 @@ type InvalidEmailErrorError string
 
 // InviteEmailRequest defines model for InviteEmailRequest.
 type InviteEmailRequest struct {
-	// Email Lowercased, trimmed and validated with net/mail.ParseAddress.
+	// Email Normalised by the one address normaliser of AddTeamPersonRequest.email (PAC-129 revision 1.2: the trim set now includes U+FEFF); every check of inviteTeamMember compares the normalised form, and it is the form stored.
 	Email openapi_types.Email `json:"email"`
 
 	// Name PAC-129 (SF-051). Optional display name, trimmed. Used only when the call adds the address to the team (inviteTeamMember step 3); an existing entry's name is never changed. Absent or blank: "".
