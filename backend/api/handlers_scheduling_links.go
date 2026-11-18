@@ -318,20 +318,47 @@ func validateSchedulingLink(link *storage.SchedulingLink) *httpError {
 	return nil
 }
 
-func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, includeHosts bool) schedulingLinkDTO {
-	dto, _ := buildSchedulingLinkDTO(db, link, loc, viewer, includeHosts, false)
-	return dto
-}
-
-// buildSchedulingLinkDTO builds the wire record. With strict set, a failed
-// roster read (the host rows, or a host's user record) is returned as an error
-// instead of degrading to an emptied roster or a host without an email: the
-// single-link read answers 500 for it (PAC-25 C-2). Without strict, the error
-// is always nil and the roster degrades as it always has.
+// buildSchedulingLinkDTO builds the wire record with its roster, read
+// strictly: a failed roster read (the host rows, or a host's user record) is
+// returned as an error, never an emptied roster or a host without an email.
+// The single-link read answers 500 for it (PAC-25 C-2), as does the list
+// (PAC-122 SF-029) and a keyed create's replay (PAC-132). The create and
+// PATCH answers do not read here: their roster is read inside the write
+// (savedLinkDTO, PAC-132).
 //
 // loc is the link's zone, read from the owner's settings by the caller
 // (linkLocation): a failed read is the caller's 500 (PAC-72 revision 2.1).
-func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, includeHosts, strict bool) (schedulingLinkDTO, error) {
+func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID) (schedulingLinkDTO, error) {
+	dto := baseSchedulingLinkDTO(link, loc, viewer)
+	hosts, err := storage.GetLinkHosts(db, link.ID)
+	if err != nil {
+		return dto, err
+	}
+	for _, host := range hosts {
+		user, err := storage.GetUserByID(db, host.UserID)
+		if err != nil {
+			return dto, err
+		}
+		if user == nil {
+			return dto, storage.ErrHostUserMissing
+		}
+		dto.addHost(link, viewer, host.UserID, host.Status, user.Email, user.Name, user.AvatarURL)
+	}
+	return dto, nil
+}
+
+// savedLinkDTO builds the create or PATCH answer's record from the roster
+// its write transaction read strictly before committing (PAC-132, SF-029).
+func savedLinkDTO(link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, roster []*storage.LinkRosterHost) schedulingLinkDTO {
+	dto := baseSchedulingLinkDTO(link, loc, viewer)
+	for _, h := range roster {
+		dto.addHost(link, viewer, h.UserID, h.Status, h.Email, h.Name, h.AvatarURL)
+	}
+	return dto
+}
+
+// baseSchedulingLinkDTO is the record without hosts (`hosts` is []).
+func baseSchedulingLinkDTO(link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID) schedulingLinkDTO {
 	dto := schedulingLinkDTO{
 		ID: link.ID.String(), OwnerID: link.OwnerUserID.String(), Title: link.Title, Slug: link.Slug,
 		Durations: link.DurationOptions, Days: dayNames(link.DaysOfWeek), WindowStart: link.WindowStart,
@@ -340,6 +367,7 @@ func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.
 		UsesCount: link.UsesCount, Active: link.Active, CreatedAt: link.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		IsOwner:            link.OwnerUserID == viewer,
 		BookingHorizonDays: horizonDays(link), RefusalMessage: link.RefusalMessage, TimeZone: loc.String(),
+		Hosts: []schedulingHostDTO{},
 	}
 	if dto.RefusalMessage == "" {
 		dto.RefusalMessage = storage.RefusalGeneric
@@ -347,33 +375,18 @@ func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.
 	if dto.UsageType == "" {
 		dto.UsageType = "reusable"
 	}
-	if includeHosts {
-		hosts, err := storage.GetLinkHosts(db, link.ID)
-		if err != nil && strict {
-			return dto, err
-		}
-		dto.Hosts = make([]schedulingHostDTO, 0, len(hosts))
-		for _, host := range hosts {
-			h := schedulingHostDTO{UserID: host.UserID.String(), IsOwner: host.UserID == link.OwnerUserID, Status: host.Status}
-			user, err := storage.GetUserByID(db, host.UserID)
-			if err == nil && user != nil {
-				h.Email, h.Name, h.AvatarURL = user.Email, user.Name, user.AvatarURL
-			} else if strict {
-				if err == nil {
-					err = errors.New("host user record missing")
-				}
-				return dto, err
-			}
-			dto.Hosts = append(dto.Hosts, h)
-			if host.UserID == viewer {
-				dto.MyStatus = host.Status
-			}
-		}
+	return dto
+}
+
+// addHost appends one host and, for the viewer's own row, sets my_status.
+func (dto *schedulingLinkDTO) addHost(link *storage.SchedulingLink, viewer, userID uuid.UUID, status, email, name, avatarURL string) {
+	dto.Hosts = append(dto.Hosts, schedulingHostDTO{
+		UserID: userID.String(), IsOwner: userID == link.OwnerUserID, Status: status,
+		Email: email, Name: name, AvatarURL: avatarURL,
+	})
+	if userID == viewer {
+		dto.MyStatus = status
 	}
-	if dto.Hosts == nil {
-		dto.Hosts = []schedulingHostDTO{}
-	}
-	return dto, nil
 }
 
 // PAC-112 (contract md §2): SchedulingLinkSaved, the create and PATCH answer.
@@ -442,16 +455,14 @@ func toCoHostChangesDTO(c *storage.CoHostChanges) *coHostChangesDTO {
 }
 
 // writeSavedLink answers a create (201) or PATCH (200) with SchedulingLinkSaved.
-// The roster is built non-strictly, as before PAC-112; co_host_changes was
-// computed inside the write and is never degraded. A strict read here would
-// answer 500 after the write committed, against the contract's "every 500
-// leaves nothing behind" (create) and "leaves the link exactly as it was"
-// (PATCH): PAC-122 SF-029 stops there for a contract decision.
-func (h *schedulingLinkHandlers) writeSavedLink(w http.ResponseWriter, code int, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, changes *storage.CoHostChanges) {
+// dto is built from the roster read inside the write (savedLinkDTO), or for
+// a keyed create's replay by the strict read (buildSchedulingLinkDTO);
+// co_host_changes was computed inside the write and is never degraded.
+func writeSavedLink(w http.ResponseWriter, code int, dto schedulingLinkDTO, changes *storage.CoHostChanges) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(schedulingLinkSavedDTO{
-		schedulingLinkDTO: toSchedulingLinkDTO(h.db, link, loc, viewer, true),
+		schedulingLinkDTO: dto,
 		CoHostChanges:     toCoHostChangesDTO(changes),
 	})
 }
@@ -552,9 +563,13 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	var (
 		created *storage.SchedulingLink
 		changes *storage.CoHostChanges
+		roster  []*storage.LinkRosterHost
 	)
 	for try := 1; ; try++ {
-		created, changes, err = storage.CreateSchedulingLinkWithCoHostsKeyedCtx(r.Context(), h.db, &link, input.CoHostEmails, key, digest)
+		// PAC-132: the roster for `hosts` is read inside each attempt's
+		// transaction, after its last write; a failed read rolls that
+		// attempt back and is not a slug conflict, so it ends the loop.
+		created, changes, roster, err = storage.CreateSchedulingLinkWithCoHostsKeyedCtx(r.Context(), h.db, &link, input.CoHostEmails, key, digest)
 		if errors.Is(err, storage.ErrCoHostListTooLong) {
 			writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
 			return
@@ -583,7 +598,7 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		writeServerError(w, r, "create failed", err, http.StatusInternalServerError)
 		return
 	}
-	h.writeSavedLink(w, http.StatusCreated, created, loc, userID, changes)
+	writeSavedLink(w, http.StatusCreated, savedLinkDTO(created, loc, userID, roster), changes)
 }
 
 // maxGeneratedSlugTries bounds a create's inserts under generated slugs
@@ -616,7 +631,15 @@ func (h *schedulingLinkHandlers) answerLinkCreateKey(w http.ResponseWriter, r *h
 	}
 	switch res.Outcome {
 	case storage.LinkCreateKeyReplay:
-		h.writeSavedLink(w, http.StatusCreated, res.Link, loc, userID, res.Changes)
+		// The replay writes nothing: its roster is the link's current one,
+		// read strictly after the resolution committed (PAC-132), so a
+		// failed read is the 500 with nothing written.
+		dto, err := buildSchedulingLinkDTO(h.db, res.Link, loc, userID)
+		if err != nil {
+			writeServerError(w, r, "create link replay roster", err, http.StatusInternalServerError)
+			return true
+		}
+		writeSavedLink(w, http.StatusCreated, dto, res.Changes)
 	case storage.LinkCreateKeyDeleted:
 		writeLinkCreateKeyConflict(w, gen.SchedulingLinkCreateKeyDeletedError{Error: gen.SchedulingLinkCreateKeyDeletedLink})
 	case storage.LinkCreateKeyExpired:
@@ -662,7 +685,7 @@ func (h *schedulingLinkHandlers) listLinks(w http.ResponseWriter, r *http.Reques
 		// PAC-122 SF-029: the roster is read strictly, as on the single
 		// read (PAC-25 C-2): a failed read fails the list, never a link
 		// with its hosts emptied or a host's email blanked.
-		dto, err := buildSchedulingLinkDTO(h.db, link, loc, userID, true, true)
+		dto, err := buildSchedulingLinkDTO(h.db, link, loc, userID)
 		if err != nil {
 			writeServerError(w, r, "list links roster", err, http.StatusInternalServerError)
 			return
@@ -718,7 +741,7 @@ func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request)
 		writeServerError(w, r, "getLink zone", err, http.StatusInternalServerError)
 		return
 	}
-	dto, err := buildSchedulingLinkDTO(h.db, link, loc, userID, true, true)
+	dto, err := buildSchedulingLinkDTO(h.db, link, loc, userID)
 	if err != nil {
 		writeServerError(w, r, "getLink roster", err, http.StatusInternalServerError)
 		return
@@ -857,7 +880,10 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	// PAC-112 (contract md §3.2, §3.3): the same transaction reads the host
 	// set after the UPDATE, decides the over-5 rule there (422, nothing
 	// changed) and reports what it did in co_host_changes.
-	result, changes, err := storage.UpdateSchedulingLinkReportingCoHostsCtx(r.Context(), h.db, id, &updated, userID, patch.CoHostEmails)
+	//
+	// PAC-132 (SF-029): it also reads the roster for `hosts`, strictly, after
+	// its last write; a failed read rolls the PATCH back and is the 500.
+	result, changes, roster, err := storage.UpdateSchedulingLinkReportingCoHostsCtx(r.Context(), h.db, id, &updated, userID, patch.CoHostEmails)
 	if errors.Is(err, storage.ErrCoHostListTooLong) {
 		writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
 		return
@@ -870,7 +896,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.writeSavedLink(w, http.StatusOK, result, loc, userID, changes)
+	writeSavedLink(w, http.StatusOK, savedLinkDTO(result, loc, userID, roster), changes)
 }
 
 // DELETE /api/scheduling-links/{id}

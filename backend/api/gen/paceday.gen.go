@@ -3518,7 +3518,7 @@ type SchedulingLinkHost struct {
 	// AvatarUrl Omitted when empty.
 	AvatarUrl *string `json:"avatar_url,omitempty"`
 
-	// Email Empty string when the user record could not be loaded.
+	// Email The host's address. Never empty: every operation that answers a roster reads it strictly, and a host's user record that cannot be loaded is that operation's 500 (PAC-25, PAC-122, PAC-132; SF-029).
 	Email   openapi_types.Email `json:"email"`
 	IsOwner bool                `json:"is_owner"`
 
@@ -3605,7 +3605,7 @@ type SchedulingLinkRemovedHost struct {
 // SchedulingLinkRemovedHostStatus The status the host had when removed.
 type SchedulingLinkRemovedHostStatus string
 
-// SchedulingLinkSaved PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200): every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus the optional `co_host_changes`. The roster in `hosts` is built without the strict read's guarantee (a failed roster read can empty it or blank a host's email; PAC-122 SF-029 leaves this open), unlike `getSchedulingLink`'s and, since PAC-122, the list's, and is never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither the property map nor the required list can drift.
+// SchedulingLinkSaved PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200): every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus the optional `co_host_changes`. The roster in `hosts` is read strictly inside the write, before it commits (PAC-132, SF-029): a failed roster read is the operation's 500 with nothing written, never an emptied roster or a blank email. It is still never a co-host baseline (spec D-3). `required` is shared through a second anchor, so neither the property map nor the required list can drift.
 type SchedulingLinkSaved struct {
 	// Active false means paused: the owner switched the link off and can switch it back on with PATCH. A deleted link is never returned, so this field never describes one (PAC-40).
 	Active bool `json:"active"`

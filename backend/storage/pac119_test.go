@@ -41,7 +41,7 @@ func pac119Create(t *testing.T, db *sql.DB, l *SchedulingLink, emails []string, 
 	if err != nil || res.Outcome != LinkCreateKeyNotStored {
 		t.Fatalf("R1 before the create: %+v %v", res, err)
 	}
-	created, changes, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, l, emails, key, a.Digest)
+	created, changes, _, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, l, emails, key, a.Digest)
 	if err != nil {
 		t.Fatalf("keyed create: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestPAC119_UniqueViolationsByConstraintName(t *testing.T) {
 		return
 	}
 
-	_, _, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, pac119Link(owner, "Intro"), nil, key, digest)
+	_, _, _, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, pac119Link(owner, "Intro"), nil, key, digest)
 	var conflict *LinkCreateConflictError
 	if !errors.As(err, &conflict) || conflict.Constraint != LinkCreateKeyConstraint || !errors.Is(err, ErrLinkCreateConflict) {
 		t.Fatalf("same key = %v; want the key-constraint conflict", err)
@@ -278,7 +278,7 @@ func TestPAC119_UniqueViolationsByConstraintName(t *testing.T) {
 
 	dup := pac119Link(owner, "Intro")
 	dup.Slug = first.Slug
-	_, _, err = CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, dup, nil, pac119Key(), digest)
+	_, _, _, err = CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, dup, nil, pac119Key(), digest)
 	if !errors.As(err, &conflict) || conflict.Constraint != LinkSlugConstraint {
 		t.Fatalf("same slug = %v; want the slug-constraint conflict", err)
 	}
@@ -287,7 +287,7 @@ func TestPAC119_UniqueViolationsByConstraintName(t *testing.T) {
 	}
 
 	// A keyed create needs the 32-byte digest.
-	if _, _, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, pac119Link(owner, "x"), nil, pac119Key(), nil); err == nil {
+	if _, _, _, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, pac119Link(owner, "x"), nil, pac119Key(), nil); err == nil {
 		t.Error("a keyed create without a digest succeeded")
 	}
 }
@@ -460,7 +460,7 @@ func TestPAC119_BeforeCommitErrorStoresNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	InstallBeforeLinkCreateCommit(t, func(uuid.UUID) error { return errors.New("pac119: refused") })
-	if _, _, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, l, nil, key, a.Digest); err == nil {
+	if _, _, _, err := CreateSchedulingLinkWithCoHostsKeyedCtx(context.Background(), db, l, nil, key, a.Digest); err == nil {
 		t.Fatal("create succeeded")
 	}
 	var links, keys, hosts int

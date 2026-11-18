@@ -1539,6 +1539,68 @@ func createSchedulingLinkWithCoHosts(q Querier, l *SchedulingLink, coHostEmails 
 	return created, changes, nil
 }
 
+// --- PAC-132: the saved link's roster, read inside the write ----------------
+
+// LinkRosterHost is one host of a link with its user record: what the create
+// (201) and PATCH (200) answers show in `hosts` (PAC-132, SF-029).
+type LinkRosterHost struct {
+	UserID    uuid.UUID
+	Status    string
+	Email     string
+	Name      string
+	AvatarURL string
+}
+
+// ErrHostUserMissing is a host row whose user record could not be found.
+var ErrHostUserMissing = errors.New("host user record missing")
+
+// readLinkRoster reads linkID's host rows, in GetLinkHosts' order, and each
+// host's user record on q, strictly: a failed read, or a host with no user
+// record, is an error and never a shorter roster or a blank email. The create
+// and PATCH transactions call it after their last write, so its error rolls
+// the whole write back and the 500 leaves nothing behind (PAC-132, SF-029).
+func readLinkRoster(ctx context.Context, q Querier, linkID uuid.UUID) ([]*LinkRosterHost, error) {
+	if err := fireSeamErr(&linkRosterHosts, linkID); err != nil {
+		return nil, fmt.Errorf("link roster hosts: %w", err)
+	}
+	rows, err := q.QueryContext(ctx, `
+		SELECT user_id, status FROM scheduling_link_hosts WHERE link_id = $1 ORDER BY invited_at`, linkID)
+	if err != nil {
+		return nil, fmt.Errorf("link roster hosts: %w", err)
+	}
+	var roster []*LinkRosterHost
+	for rows.Next() {
+		var h LinkRosterHost
+		if err := rows.Scan(&h.UserID, &h.Status); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("link roster hosts: %w", err)
+		}
+		roster = append(roster, &h)
+	}
+	// Closed before the user reads: the transaction's connection serves one
+	// statement at a time.
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("link roster hosts: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("link roster hosts: %w", err)
+	}
+	for _, h := range roster {
+		if err := fireSeamErr2(&linkRosterUser, linkID, h.UserID); err != nil {
+			return nil, fmt.Errorf("link roster user: %w", err)
+		}
+		err := q.QueryRowContext(ctx, `SELECT email, name, avatar_url FROM users WHERE id = $1`, h.UserID).
+			Scan(&h.Email, &h.Name, &h.AvatarURL)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrHostUserMissing
+		}
+		if err != nil {
+			return nil, fmt.Errorf("link roster user: %w", err)
+		}
+	}
+	return roster, nil
+}
+
 // --- PAC-119: keyed link create (contracts/features/PAC-119.md) -------------
 
 // The two unique constraints a create can violate (contract md §4.2, §3.1).

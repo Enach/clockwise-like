@@ -7813,15 +7813,17 @@ paths:
       responses:
         '201':
           description: 'Link created, with its owner host row and every invitation. The roster in `hosts`
-            is read after the write without the strict read''s guarantee (it can come back degraded, spec
-            §2.4): clients must not use it as the co-host baseline; `getSchedulingLink` is the strict
-            read. `co_host_changes` is computed inside the write and is never degraded. PAC-119 replay:
-            a keyed retry of the same request within 24 hours (operation description, rule 3) is answered
-            201 with the same schema and no replay marker. `id` and `slug` are the original link''s. The
-            other link fields and `hosts` are the link''s current values, read as on every 201. `co_host_changes`
-            is present exactly when the original carried a list, and is the original answer''s object
-            unchanged. Its outcomes and counts are not re-evaluated, and nobody is invited or removed.
-            Nothing is written.'
+            is read strictly inside the write, after its last write and before it commits (PAC-132, SF-029):
+            it is the whole roster, never emptied and with every host''s email, and a failed read is the
+            500 with nothing created. Clients still must not use it as the co-host baseline (spec D-3);
+            `getSchedulingLink` is the baseline read. `co_host_changes` is computed inside the write and
+            is never degraded. PAC-119 replay: a keyed retry of the same request within 24 hours (operation
+            description, rule 3) is answered 201 with the same schema and no replay marker. `id` and `slug`
+            are the original link''s. The other link fields and `hosts` are the link''s current values.
+            The replay writes nothing, so its roster is read strictly after the key resolution, as by
+            `getSchedulingLink`: a failed read is the 500. `co_host_changes` is present exactly when the
+            original carried a list, and is the original answer''s object unchanged. Its outcomes and
+            counts are not re-evaluated, and nobody is invited or removed. Nothing is written.'
           content:
             application/json:
               schema:
@@ -7870,7 +7872,10 @@ paths:
             by the key''s rules. "internal error" stays the answer when the third insert also loses its
             generated slug, and when an explicit slug that passed the pre-check is taken by a concurrent
             create before the insert (with a key, once the key is resolved again and nothing is stored
-            under it).'
+            under it). PAC-132: also "internal error" when the roster for `hosts` (the link''s host rows,
+            or a host''s user record) could not be read. It is read inside the write, in every attempt,
+            so the create is rolled back: no link, no host row, no key. On a replay it is the same 500,
+            and nothing is written.'
           content:
             application/json:
               schema:
@@ -8181,9 +8186,9 @@ paths:
         PAC-112 (spec D-3, §6): this is the ONLY read from which a client may take a link''s co-host list
         as the baseline for a co-host edit (the list sent in `co_host_emails` is the complete list, so
         a baseline missing someone removes them). The answers of `listSchedulingLinks`, `createSchedulingLink`
-        and `updateSchedulingLink` must not be used as a baseline: create and PATCH build the roster without
-        this guarantee, and the list, although it reads the roster strictly since PAC-122 (SF-029: a failed
-        roster read is its 500), is not the baseline read either. The strictness above (500, never a degraded
+        and `updateSchedulingLink` must not be used as a baseline. They read the roster strictly too (the
+        list since PAC-122, create and PATCH inside their write since PAC-132; SF-029: a failed roster
+        read is their 500), but they are not the baseline read. The strictness above (500, never a degraded
         roster) is therefore load-bearing and must not be relaxed; it is pinned by TestPAC25GetLinkRosterFailureIs500.'
       responses:
         '200':
@@ -8284,9 +8289,10 @@ paths:
               $ref: '#/components/schemas/UpdateSchedulingLinkRequest'
       responses:
         '200':
-          description: Updated link. As on create, `hosts` is not the strict roster and must not be used
-            as a co-host baseline (`getSchedulingLink` is); `co_host_changes` is present exactly when
-            `co_host_emails` was carried (non-null).
+          description: 'Updated link. As on create, `hosts` is read strictly inside the write, before
+            it commits (PAC-132): the whole roster with every host''s email, and a failed read is the
+            500 with nothing changed. It must still not be used as a co-host baseline (`getSchedulingLink`
+            is); `co_host_changes` is present exactly when `co_host_emails` was carried (non-null).'
           content:
             application/json:
               schema:
@@ -8330,8 +8336,10 @@ paths:
             also "internal error" when a co-host lookup, removal or invitation could not be stored, or
             when a lock on the link (or on an invitee''s account) was not obtained within 10 seconds.
             PAC-112: also when the host rows or a removed host''s address, needed for `co_host_changes`,
-            could not be read. Every 500 from this operation leaves the link exactly as it was: neither
-            its fields nor any host row changed.'
+            could not be read. PAC-132: also when the roster for `hosts` (the host rows, or a host''s
+            user record) could not be read; it is read inside the write, so the PATCH is rolled back.
+            Every 500 from this operation leaves the link exactly as it was: neither its fields nor any
+            host row changed.'
           content:
             application/json:
               schema:
@@ -14926,7 +14934,9 @@ components:
         email:
           type: string
           format: email
-          description: Empty string when the user record could not be loaded.
+          description: 'The host''s address. Never empty: every operation that answers a roster reads
+            it strictly, and a host''s user record that cannot be loaded is that operation''s 500 (PAC-25,
+            PAC-122, PAC-132; SF-029).'
         name:
           type: string
           description: Omitted when empty.
@@ -15086,11 +15096,10 @@ components:
       type: object
       description: 'PAC-112. The answer to `createSchedulingLink` (201) and `updateSchedulingLink` (200):
         every property of `SchedulingLink` (shared through a YAML anchor, so the two cannot drift) plus
-        the optional `co_host_changes`. The roster in `hosts` is built without the strict read''s guarantee
-        (a failed roster read can empty it or blank a host''s email; PAC-122 SF-029 leaves this open),
-        unlike `getSchedulingLink`''s and, since PAC-122, the list''s, and is never a co-host baseline
-        (spec D-3). `required` is shared through a second anchor, so neither the property map nor the
-        required list can drift.'
+        the optional `co_host_changes`. The roster in `hosts` is read strictly inside the write, before
+        it commits (PAC-132, SF-029): a failed roster read is the operation''s 500 with nothing written,
+        never an emptied roster or a blank email. It is still never a co-host baseline (spec D-3). `required`
+        is shared through a second anchor, so neither the property map nor the required list can drift.'
       required: *id001
       additionalProperties: false
       properties:
