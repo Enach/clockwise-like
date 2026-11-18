@@ -56,7 +56,7 @@ func (g *googleProvider) ListEvents(ctx context.Context, start, end time.Time) (
 	return events, nil
 }
 
-func (g *googleProvider) GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string][]TimeSlot, error) {
+func (g *googleProvider) GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string]FreeBusyEntry, error) {
 	return g.c.GetFreeBusy(ctx, emails, start, end)
 }
 

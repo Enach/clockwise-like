@@ -158,6 +158,11 @@ func TestSmartScheduler_Suggest_WithMock(t *testing.T) {
 		t.Fatal("suggestions should not be nil")
 	}
 	// With empty busy map, should return slots
+	// PAC-133 AC-38: the double was told nothing about alice, so she is
+	// unknown, which does not constrain; she is named.
+	if len(suggestions.UnknownAttendees) != 1 || suggestions.UnknownAttendees[0] != "alice@co.com" {
+		t.Errorf("unknown_attendees = %v, want [alice@co.com]", suggestions.UnknownAttendees)
+	}
 }
 
 func futureEnabledWorkSlot(t *testing.T, settings *storage.Settings) SuggestedSlot {

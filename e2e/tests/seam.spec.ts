@@ -231,18 +231,26 @@ test.describe('AC-22 — every redirected behaviour arrives at the stand-in', ()
 
   test('smart scheduling (suggest)', async ({ apiAs }) => {
     const day = EXERCISE_DAY(2);
+    let status = 0;
     await expectArrival(
-      () =>
-        apiAs(SEAM).post('/api/schedule/suggest', {
+      async () => {
+        const res = await apiAs(SEAM).post('/api/schedule/suggest', {
           duration_minutes: 30,
           attendees: [SEAM.email],
           range_start: atUtc(day, '09:00'),
           range_end: atUtc(day, '17:00'),
           title: 'E2E AC-22 suggest',
-        }),
+        });
+        status = res.status();
+        return res;
+      },
       (r) => r.operation === 'events.list' || r.operation === 'freebusy.query',
       'POST /api/schedule/suggest',
     );
+    // PAC-133 AC-37: the seam calendar was cleared (beforeAll), and the stand-in
+    // answers a fixture credential's empty calendar readable, as Google does;
+    // before AC-37 it was notFound, which is now the own-calendar 500.
+    expect(status, 'POST /api/schedule/suggest status').toBe(200);
   });
 
   test('natural-language confirmation', async ({ apiAs }) => {

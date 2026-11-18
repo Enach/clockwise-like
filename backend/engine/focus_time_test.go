@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,14 @@ func openTestDB(t *testing.T) *sql.DB {
 }
 
 // mockCalOps implements calendarOps for tests.
+//
+// Free/busy (PAC-133 §7.1, AC-38): the double tells the truth about calendars.
+// Its own calendar (calendarID()) is readable with no windows unless the test
+// lists it in fb; an address listed in fb is answered as listed (readable or
+// unknown, with windows, or a group); any other address is unknown with no
+// windows, so it never reports "free" for an address it was not told about.
+// fbErr fails the whole call; fbBlock makes the call wait for its context to
+// end. Every call is recorded.
 type mockCalOps struct {
 	calID       string
 	events      []*googlecalendar.Event
@@ -42,6 +51,43 @@ type mockCalOps struct {
 	deletedEvts []string
 	createErr   error
 	listErr     error
+
+	fb      map[string]calendar.FreeBusyEntry
+	fbErr   error
+	fbBlock bool
+
+	mu          sync.Mutex
+	fbCalls     []fbCall
+	getCalls    []string
+	updatedEvts []string
+}
+
+// fbCall is one recorded free/busy call.
+type fbCall struct {
+	ids        []string
+	start, end time.Time
+}
+
+// readable is a readable fb entry with the given windows.
+func readable(windows ...calendar.TimeSlot) calendar.FreeBusyEntry {
+	return calendar.FreeBusyEntry{Known: true, Busy: append([]calendar.TimeSlot{}, windows...)}
+}
+
+// unknownWith is an unknown fb entry carrying the windows the provider reported.
+func unknownWith(windows ...calendar.TimeSlot) calendar.FreeBusyEntry {
+	return calendar.FreeBusyEntry{Known: false, Busy: append([]calendar.TimeSlot{}, windows...)}
+}
+
+// group is a group fb entry built from its members by the reader's rule.
+func group(expansionOK bool, members ...calendar.FreeBusyMember) calendar.FreeBusyEntry {
+	e := calendar.FreeBusyEntry{Known: expansionOK, Busy: []calendar.TimeSlot{}, Members: members}
+	for _, m := range members {
+		e.Busy = append(e.Busy, m.Busy...)
+		if !m.Known {
+			e.Known = false
+		}
+	}
+	return e
 }
 
 func (m *mockCalOps) calendarID() string { return m.calID }
@@ -60,7 +106,10 @@ func (m *mockCalOps) createEvent(_ context.Context, ev *googlecalendar.Event) (*
 	return &out, nil
 }
 
-func (m *mockCalOps) updateEvent(_ context.Context, _ string, ev *googlecalendar.Event) (*googlecalendar.Event, error) {
+func (m *mockCalOps) updateEvent(_ context.Context, eventID string, ev *googlecalendar.Event) (*googlecalendar.Event, error) {
+	m.mu.Lock()
+	m.updatedEvts = append(m.updatedEvts, eventID)
+	m.mu.Unlock()
 	return ev, nil
 }
 
@@ -70,6 +119,9 @@ func (m *mockCalOps) deleteEvent(_ context.Context, eventID string) error {
 }
 
 func (m *mockCalOps) getEvent(_ context.Context, eventID string) (*googlecalendar.Event, error) {
+	m.mu.Lock()
+	m.getCalls = append(m.getCalls, eventID)
+	m.mu.Unlock()
 	for _, ev := range m.events {
 		if ev.Id == eventID {
 			return ev, nil
@@ -78,8 +130,36 @@ func (m *mockCalOps) getEvent(_ context.Context, eventID string) (*googlecalenda
 	return &googlecalendar.Event{Id: eventID}, nil
 }
 
-func (m *mockCalOps) getFreeBusy(_ context.Context, _ []string, _, _ time.Time) (map[string][]calendar.TimeSlot, error) {
-	return map[string][]calendar.TimeSlot{}, nil
+func (m *mockCalOps) getFreeBusy(ctx context.Context, ids []string, start, end time.Time) (map[string]calendar.FreeBusyEntry, error) {
+	m.mu.Lock()
+	m.fbCalls = append(m.fbCalls, fbCall{ids: append([]string(nil), ids...), start: start, end: end})
+	m.mu.Unlock()
+	if m.fbBlock {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if m.fbErr != nil {
+		return nil, m.fbErr
+	}
+	out := make(map[string]calendar.FreeBusyEntry, len(ids))
+	for _, id := range ids {
+		if e, ok := m.fb[id]; ok {
+			out[id] = e
+			continue
+		}
+		if id == m.calID {
+			out[id] = readable()
+			continue
+		}
+		out[id] = unknownWith()
+	}
+	return out, nil
+}
+
+func (m *mockCalOps) calls() []fbCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]fbCall(nil), m.fbCalls...)
 }
 
 // subtractIntervals tests

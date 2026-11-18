@@ -7,13 +7,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Enach/paceday/backend/internal/outbound"
 	"golang.org/x/oauth2"
 )
 
-const graphBaseURL = "https://graph.microsoft.com/v1.0"
+// graphPublishedURL is Microsoft Graph's address. Production never changes
+// it; a test reaches a stand-in through InstallGraphBaseURL (PAC-80 rules).
+const graphPublishedURL = "https://graph.microsoft.com/v1.0"
+
+// graphBase is the Graph address every OutlookClient call uses.
+func graphBase() string {
+	if u, ok := graphBaseURL.get(); ok {
+		return u
+	}
+	return graphPublishedURL
+}
 
 // OutlookClient calls Microsoft Graph API using an OAuth2 token source.
 type OutlookClient struct {
@@ -72,7 +83,7 @@ func (c *OutlookClient) doJSON(ctx context.Context, method, url string, body int
 
 func (c *OutlookClient) ListEvents(ctx context.Context, start, end time.Time) ([]GenericEvent, error) {
 	url := fmt.Sprintf("%s/me/calendarView?startDateTime=%s&endDateTime=%s",
-		graphBaseURL,
+		graphBase(),
 		start.UTC().Format(time.RFC3339),
 		end.UTC().Format(time.RFC3339),
 	)
@@ -107,44 +118,90 @@ func (c *OutlookClient) ListEvents(ctx context.Context, start, end time.Time) ([
 	return events, nil
 }
 
-func (c *OutlookClient) GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string][]TimeSlot, error) {
-	url := graphBaseURL + "/me/calendar/getSchedule"
+// GetFreeBusy asks Graph's getSchedule about every address in one call and
+// answers every distinct address with an outcome (PAC-133 §3.2):
+//
+//   - a schedule with a non-null error is unknown, with the windows of its
+//     items whose status is not free kept;
+//   - a schedule without an error is readable with those windows;
+//   - a requested address with no schedule is unknown with no windows.
+//
+// Schedules are matched by scheduleId exactly, else case-insensitively; one
+// for an unrequested address is dropped. A failed call (transport, non-2xx,
+// undecodable body) is the error.
+func (c *OutlookClient) GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string]FreeBusyEntry, error) {
+	emails = distinctIDs(emails)
+	url := graphBase() + "/me/calendar/getSchedule"
 	payload := map[string]interface{}{
-		"schedules":          emails,
-		"startTime":          map[string]string{"dateTime": start.UTC().Format(time.RFC3339), "timeZone": "UTC"},
-		"endTime":            map[string]string{"dateTime": end.UTC().Format(time.RFC3339), "timeZone": "UTC"},
+		"schedules":                emails,
+		"startTime":                map[string]string{"dateTime": start.UTC().Format(time.RFC3339), "timeZone": "UTC"},
+		"endTime":                  map[string]string{"dateTime": end.UTC().Format(time.RFC3339), "timeZone": "UTC"},
 		"availabilityViewInterval": 30,
 	}
 	var resp struct {
-		Value []struct {
-			ScheduleID   string `json:"scheduleId"`
-			ScheduleItems []struct {
-				Start  map[string]string `json:"start"`
-				End    map[string]string `json:"end"`
-				Status string            `json:"status"`
-			} `json:"scheduleItems"`
-		} `json:"value"`
+		Value []graphSchedule `json:"value"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, url, payload, &resp); err != nil {
 		return nil, err
 	}
-	result := make(map[string][]TimeSlot)
-	for _, v := range resp.Value {
-		var slots []TimeSlot
-		for _, item := range v.ScheduleItems {
-			if item.Status != "free" {
-				s, _ := time.Parse("2006-01-02T15:04:05.0000000", item.Start["dateTime"])
-				e, _ := time.Parse("2006-01-02T15:04:05.0000000", item.End["dateTime"])
-				slots = append(slots, TimeSlot{Start: s.UTC(), End: e.UTC()})
-			}
+	return graphFreeBusyAnswer(emails, resp.Value), nil
+}
+
+// graphSchedule is one value[] entry of getSchedule.
+type graphSchedule struct {
+	ScheduleID    string `json:"scheduleId"`
+	ScheduleItems []struct {
+		Start  map[string]string `json:"start"`
+		End    map[string]string `json:"end"`
+		Status string            `json:"status"`
+	} `json:"scheduleItems"`
+	// Error is Graph's freeBusyError; only its presence is read (§3.2).
+	Error json.RawMessage `json:"error"`
+}
+
+func (g graphSchedule) hasError() bool {
+	e := bytes.TrimSpace(g.Error)
+	return len(e) > 0 && !bytes.Equal(e, []byte("null"))
+}
+
+func graphFreeBusyAnswer(emails []string, schedules []graphSchedule) map[string]FreeBusyEntry {
+	out := make(map[string]FreeBusyEntry, len(emails))
+	for _, email := range emails {
+		sched, ok := findSchedule(schedules, email)
+		if !ok {
+			out[email] = FreeBusyEntry{Known: false, Busy: []TimeSlot{}}
+			continue
 		}
-		result[v.ScheduleID] = slots
+		slots := make([]TimeSlot, 0, len(sched.ScheduleItems))
+		for _, item := range sched.ScheduleItems {
+			if item.Status == "free" {
+				continue
+			}
+			s, _ := time.Parse("2006-01-02T15:04:05.0000000", item.Start["dateTime"])
+			e, _ := time.Parse("2006-01-02T15:04:05.0000000", item.End["dateTime"])
+			slots = append(slots, TimeSlot{Start: s.UTC(), End: e.UTC()})
+		}
+		out[email] = FreeBusyEntry{Known: !sched.hasError(), Busy: slots}
 	}
-	return result, nil
+	return out
+}
+
+func findSchedule(schedules []graphSchedule, email string) (graphSchedule, bool) {
+	for _, s := range schedules {
+		if s.ScheduleID == email {
+			return s, true
+		}
+	}
+	for _, s := range schedules {
+		if strings.EqualFold(s.ScheduleID, email) {
+			return s, true
+		}
+	}
+	return graphSchedule{}, false
 }
 
 func (c *OutlookClient) CreateEvent(ctx context.Context, e GenericEvent) (string, error) {
-	url := graphBaseURL + "/me/events"
+	url := graphBase() + "/me/events"
 	payload := map[string]interface{}{
 		"subject": e.Title,
 		"start":   map[string]string{"dateTime": e.Start.UTC().Format("2006-01-02T15:04:05"), "timeZone": "UTC"},
