@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -38,7 +39,7 @@ func lastAuditOutcome(t *testing.T, e *opEnv, action string) string {
 
 func TestPAC140_RotateCountFailureStops(t *testing.T) {
 	e := rotateReady(t)
-	InstallCountValuesUnder(t, func(dek int32) error {
+	uninstall := InstallCountValuesUnder(t, func(dek int32) error {
 		if dek != 1 {
 			t.Errorf("count of data key %d, want 1", dek)
 		}
@@ -61,7 +62,7 @@ func TestPAC140_RotateCountFailureStops(t *testing.T) {
 		t.Fatalf("audit outcome %q after a failed count", got)
 	}
 	// With the seam gone the same command finds 0 values left and exits 0.
-	countValuesUnderHook.p.Store(nil)
+	uninstall()
 	code, out, stderr = e.run(e.keyed(), "rotate-data-key", "--operator", "o", "--reason", "again", "--retire", "1")
 	if code != exitOK || !strings.Contains(out, "0 values re-encrypted; 0 values left under data key 1") {
 		t.Fatalf("re-run: %d\n%s\n%s", code, out, stderr)
@@ -90,40 +91,108 @@ func TestPAC140_RotateValuesLeftIsAFailure(t *testing.T) {
 	}
 }
 
+// flushCase seeds a run of sub whose seals land on one data key: convert
+// seals 2 values under data key 1; rotate-data-key (after a convert) seals
+// them under data key 2. It returns the args, the audit action and that key.
+func flushCase(t *testing.T, e *opEnv, sub string) ([]string, string, int32) {
+	t.Helper()
+	e.seedPlain()
+	args := []string{"convert", "--operator", "o", "--reason", "r"}
+	if sub == "convert" {
+		return args, storage.AuditEncryptionConvert, 1
+	}
+	if code, _, stderr := e.run(e.keyed(), args...); code != exitOK {
+		t.Fatalf("convert: %d %s", code, stderr)
+	}
+	return []string{"rotate-data-key", "--operator", "o", "--reason", "r", "--retire", "1"}, storage.AuditEncryptionRotate, 2
+}
+
+func (e *opEnv) sealed(id int32) int64 {
+	e.t.Helper()
+	var n int64
+	if err := e.db.QueryRow(`SELECT sealed_count FROM encryption_data_keys WHERE id = $1`, id).Scan(&n); err != nil {
+		e.t.Fatal(err)
+	}
+	return n
+}
+
+// A flush that fails once is retried, and the run succeeds with the seals
+// recorded exactly once.
+func TestPAC140_FlushRetrySucceeds(t *testing.T) {
+	for _, sub := range []string{"convert", "rotate-data-key"} {
+		t.Run(sub, func(t *testing.T) {
+			e := newOpEnv(t)
+			args, _, dek := flushCase(t, e, sub)
+			var calls int
+			InstallFlushSealCounts(t, func(got string, id int32) error {
+				calls++
+				if got != sub || id != dek {
+					t.Errorf("flush seam fired for %q data key %d, want %q data key %d", got, id, sub, dek)
+				}
+				if calls == 1 {
+					return errors.New("flush refused once")
+				}
+				return nil
+			})
+			code, out, stderr := e.run(e.keyed(), args...)
+			if code != exitOK || calls != 2 {
+				t.Fatalf("a flush that succeeds on retry: exit %d, %d attempts: %s %s", code, calls, out, stderr)
+			}
+			if strings.Contains(stderr, "seal counts not recorded") {
+				t.Fatalf("a recorded flush is reported as failed: %s", stderr)
+			}
+			if got := e.sealed(dek); got != 2 {
+				t.Fatalf("sealed_count of data key %d = %d, want 2", dek, got)
+			}
+		})
+	}
+}
+
+// A flush that fails twice ends the run with exit 1 and prints, per data
+// key, the missing count and the statement that records it; running that
+// statement restores sealed_count, and a re-run does not.
 func TestPAC140_FlushFailureStops(t *testing.T) {
 	for _, sub := range []string{"convert", "rotate-data-key"} {
 		t.Run(sub, func(t *testing.T) {
 			e := newOpEnv(t)
-			e.seedPlain()
-			args := []string{"convert", "--operator", "o", "--reason", "r"}
-			action := storage.AuditEncryptionConvert
-			if sub == "rotate-data-key" {
-				if code, _, stderr := e.run(e.keyed(), args...); code != exitOK {
-					t.Fatalf("convert: %d %s", code, stderr)
-				}
-				args = []string{"rotate-data-key", "--operator", "o", "--reason", "r", "--retire", "1"}
-				action = storage.AuditEncryptionRotate
-			}
+			args, action, dek := flushCase(t, e, sub)
 			var calls int
-			InstallFlushSealCounts(t, func(got string) error {
+			uninstall := InstallFlushSealCounts(t, func(got string, id int32) error {
 				calls++
-				if got != sub {
-					t.Errorf("flush seam fired for %q, want %q", got, sub)
+				if got != sub || id != dek {
+					t.Errorf("flush seam fired for %q data key %d, want %q data key %d", got, id, sub, dek)
 				}
 				return errors.New("flush refused")
 			})
 			code, out, stderr := e.run(e.keyed(), args...)
-			if calls != 1 {
-				t.Fatalf("flush seam fired %d times", calls)
+			if calls != 2 {
+				t.Fatalf("flush attempted %d times, want 2 (one retry)", calls)
 			}
 			if code != exitFailed {
-				t.Fatalf("a failed flush must exit 1, got %d\n%s\n%s", code, out, stderr)
+				t.Fatalf("a failed flush must exit 1, got %d: %s %s", code, out, stderr)
 			}
-			if !strings.Contains(stderr, "seal counts not recorded") || !strings.Contains(stderr, "flush refused") {
-				t.Fatalf("stderr does not say the flush failed:\n%s", stderr)
+			stmt := fmt.Sprintf("UPDATE encryption_data_keys SET sealed_count = sealed_count + 2 WHERE id = %d;", dek)
+			if !strings.Contains(stderr, "seal counts not recorded after a retry (flush refused)") ||
+				!strings.Contains(stderr, fmt.Sprintf("data key %d: 2 seals missing: %s", dek, stmt)) ||
+				!strings.Contains(stderr, "a re-run does not record them") {
+				t.Fatalf("stderr does not name the missing counts: %s", stderr)
+			}
+			if strings.Contains(stderr, "run the same command again") {
+				t.Fatalf("a failed flush advises a re-run: %s", stderr)
 			}
 			if got := lastAuditOutcome(t, e, action); got == "completed" {
 				t.Fatalf("audit outcome %q after a failed flush", got)
+			}
+			if got := e.sealed(dek); got != 0 {
+				t.Fatalf("sealed_count of data key %d = %d after a refused flush, want 0", dek, got)
+			}
+			uninstall()
+			// The runbook's step: run the printed statement.
+			if _, err := e.db.Exec(strings.TrimSuffix(stmt, ";")); err != nil {
+				t.Fatal(err)
+			}
+			if got := e.sealed(dek); got != 2 {
+				t.Fatalf("sealed_count of data key %d = %d after the printed statement, want 2", dek, got)
 			}
 		})
 	}

@@ -438,21 +438,38 @@ func (r *encryptionRun) printPass(res *storage.PassResult) {
 	}
 }
 
-// flush adds the keyring's seal counts to sealed_count. A failure is
-// reported and makes the run fail (PAC-140, SF-108): sealed_count is the data
-// key's seal budget (automatic rotation at 2^30), and this process ends
-// without another chance to record them.
+// flush adds the keyring's seal counts to sealed_count, one data key at a
+// time, and retries the keys that failed once (PAC-140, SF-108).
+// sealed_count is the data key's seal budget (automatic rotation at 2^30).
+// The counts live only in this process: a re-run seals nothing new for
+// them, so a count still not recorded after the retry is printed per data
+// key, with the statement that records it by hand, and the run fails.
 func (r *encryptionRun) flush(ctx context.Context, db *sql.DB, k *secretbox.Keyring) bool {
 	counts := k.TakeSealCounts()
-	if err := flushSealCounts(ctx, db, r.sub, counts); err != nil {
-		var n int64
-		for _, c := range counts {
-			n += c
-		}
-		fmt.Fprintf(r.errw, "encryption %s: data key seal counts not recorded (%d seals missing from sealed_count): %v; run the same command again\n", r.sub, n, err)
-		return false
+	ids := make([]int32, 0, len(counts))
+	for id := range counts {
+		ids = append(ids, id)
 	}
-	return true
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	var lastErr error
+	for attempt := 0; attempt < 2 && len(ids) > 0; attempt++ {
+		failed := ids[:0:0]
+		for _, id := range ids {
+			if err := flushSealCount(ctx, db, r.sub, id, counts[id]); err != nil {
+				lastErr = err
+				failed = append(failed, id)
+			}
+		}
+		ids = failed
+	}
+	if len(ids) == 0 {
+		return true
+	}
+	fmt.Fprintf(r.errw, "encryption %s: data key seal counts not recorded after a retry (%v); a re-run does not record them. Record them by hand (docs/runbook.md, \"Recording missing seal counts\"):\n", r.sub, lastErr)
+	for _, id := range ids {
+		fmt.Fprintf(r.errw, "  data key %d: %d seals missing: UPDATE encryption_data_keys SET sealed_count = sealed_count + %d WHERE id = %d;\n", id, counts[id], counts[id], id)
+	}
+	return false
 }
 
 func (r *encryptionRun) convert(ctx context.Context, db *sql.DB, cfg secretbox.KeyConfig) int {

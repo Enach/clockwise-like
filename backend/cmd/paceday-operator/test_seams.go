@@ -43,20 +43,21 @@ func (s *seam[F]) install(tb TB, f F) (uninstall func()) {
 
 // PAC-140 (docs/factory/silent-failures.md SF-108): the encryption
 // commands' sealed_count flush and the count of values left under a retired
-// data key. For the flush, a non-nil error from the hook replaces the
-// flush's error after the real flush ran. For the count, the hook runs
-// before the real count (so a test can change what it reads), and a non-nil
-// error is returned in place of the count. Either way the command takes its
-// production error path.
+// data key. Both hooks run before the real step; a non-nil error is
+// returned in place of the step, which then does not run (so a refused
+// flush records nothing, as a failed UPDATE would, and a test can change
+// what the count reads). Either way the command takes its production error
+// path.
 var (
-	flushSealCountsHook  seam[func(sub string) error]
+	flushSealCountsHook  seam[func(sub string, dek int32) error]
 	countValuesUnderHook seam[func(dek int32) error]
 	auditTableProbeHook  seam[func() error]
 )
 
-// InstallFlushSealCounts installs the sealed_count flush seam; sub is the
-// subcommand ("convert" or "rotate-data-key").
-func InstallFlushSealCounts(tb TB, fn func(sub string) error) (uninstall func()) {
+// InstallFlushSealCounts installs the sealed_count flush seam, called once
+// per data key and attempt; sub is the subcommand ("convert" or
+// "rotate-data-key").
+func InstallFlushSealCounts(tb TB, fn func(sub string, dek int32) error) (uninstall func()) {
 	tb.Helper()
 	return flushSealCountsHook.install(tb, fn)
 }
@@ -68,15 +69,15 @@ func InstallCountValuesUnder(tb TB, fn func(dek int32) error) (uninstall func())
 	return countValuesUnderHook.install(tb, fn)
 }
 
-// flushSealCounts is storage.FlushSealCounts behind its seam.
-func flushSealCounts(ctx context.Context, db *sql.DB, sub string, counts map[int32]int64) error {
-	err := storage.FlushSealCounts(ctx, db, counts)
+// flushSealCount is storage.FlushSealCounts for one data key, behind its
+// seam.
+func flushSealCount(ctx context.Context, db *sql.DB, sub string, dek int32, n int64) error {
 	if hook, ok := flushSealCountsHook.get(); ok {
-		if hookErr := hook(sub); hookErr != nil {
-			return hookErr
+		if err := hook(sub, dek); err != nil {
+			return err
 		}
 	}
-	return err
+	return storage.FlushSealCounts(ctx, db, map[int32]int64{dek: n})
 }
 
 // countValuesUnder is storage.CountValuesUnder behind its seam.
