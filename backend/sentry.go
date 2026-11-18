@@ -3,9 +3,11 @@ package main
 import (
 	"cmp"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 
+	"github.com/Enach/paceday/backend/api"
 	"github.com/getsentry/sentry-go"
 )
 
@@ -53,8 +55,8 @@ func scrubSensitive(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 }
 
 // scrubRequest removes sensitive headers, all cookies, the query string and
-// any request body from a captured HTTP request. Request bodies are never
-// attached.
+// any request body from a captured HTTP request, and replaces the URL's path
+// with its route pattern. Request bodies are never attached.
 func scrubRequest(req *sentry.Request) {
 	if req == nil {
 		return
@@ -74,6 +76,39 @@ func scrubRequest(req *sentry.Request) {
 	// Zoom, Slack, Notion, OIDC) it carries the authorization code and state,
 	// and sentry-go's default filter does not match either (PAC-14 §2, PAC-21).
 	req.QueryString = ""
+	// Never ship the path either: a path parameter can carry an email
+	// address (/api/manager/team/members/{email}) or an invite token, a
+	// bearer secret (/api/teams/invites/{token}). The route pattern names
+	// the endpoint without its parameters (PAC-125).
+	req.URL = routeURL(req.Method, req.URL)
+	// The referring page's path can carry the same token: the web app's
+	// invite page is /app/team/invite/:token, and it calls the API from there.
+	for k := range req.Headers {
+		if strings.EqualFold(k, "Referer") {
+			delete(req.Headers, k)
+		}
+	}
+}
+
+// routeURL is raw with its path replaced by the route pattern of method and
+// that path, and with no query or fragment; "" when raw does not parse.
+func routeURL(method, raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	label := api.RouteLabel(method, u.Path)
+	if !strings.HasPrefix(label, "/") {
+		label = "/" + label
+	}
+	// Concatenated, not set on u: url.URL would escape the pattern's braces.
+	if u.Scheme == "" && u.Host == "" {
+		return label
+	}
+	return u.Scheme + "://" + u.Host + label
 }
 
 func scrubStringMap(m map[string]string) {

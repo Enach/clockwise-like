@@ -110,10 +110,27 @@ func Expired(ctx context.Context) bool {
 // function is called when the goroutine returns.
 type Tracker func(r *http.Request) (done func())
 
+// Option configures the middleware.
+type Option func(*handler)
+
+// WithRoute names a request in the middleware's own log line. The line never
+// carries the raw path, which can hold an email address or an invite token
+// (PAC-125); without this option it names no route at all.
+func WithRoute(route func(r *http.Request) string) Option {
+	return func(h *handler) { h.route = route }
+}
+
+// unnamedRoute is the log line's route when no WithRoute was given.
+const unnamedRoute = "unmatched"
+
 // Middleware returns the budget middleware.
-func Middleware(budget time.Duration, track Tracker) func(http.Handler) http.Handler {
+func Middleware(budget time.Duration, track Tracker, opts ...Option) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return &handler{next: next, budget: budget, track: track}
+		h := &handler{next: next, budget: budget, track: track}
+		for _, o := range opts {
+			o(h)
+		}
+		return h
 	}
 }
 
@@ -121,6 +138,7 @@ type handler struct {
 	next   http.Handler
 	budget time.Duration
 	track  Tracker
+	route  func(r *http.Request) string
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +161,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.track != nil {
 		release = h.track(r)
 	}
+	// Named here, before the handler runs: the route is read on this
+	// goroutine, never on the handler's after the budget answered.
+	route := unnamedRoute
+	if h.route != nil {
+		route = h.route(r)
+	}
 	go func() {
 		defer func() {
 			if release != nil {
@@ -157,7 +181,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				st.mu.Unlock()
 				if answered {
 					// Nobody is left to re-raise it to: log it and report it.
-					log.Printf("budget: %s %s panicked after the budget answered: %v", r.Method, r.URL.Path, p)
+					log.Printf("budget: %s %s panicked after the budget answered: %v", r.Method, route, p)
 					sentry.CurrentHub().Recover(p)
 					return
 				}
