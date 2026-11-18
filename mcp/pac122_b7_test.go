@@ -174,16 +174,23 @@ func TestPAC122_SF064_ClearFocusBlocksSaysWeekAndCount(t *testing.T) {
 		t.Errorf("result %+v, want the count 3 and the Monday-Sunday week", got)
 	}
 	desc := toolDescriptions(t)["clockwise_clear_focus_blocks"]
-	if strings.Contains(strings.ToLower(desc), "all ") || !strings.Contains(desc, "Monday") {
-		t.Errorf("description %q, want the current Monday-Sunday week, not all", desc)
+	if strings.Contains(strings.ToLower(desc), "all ") || !strings.Contains(desc, "Monday") || !strings.Contains(desc, "server date") {
+		t.Errorf("description %q, want the current Monday-Sunday week by the server date, not all", desc)
+	}
+
+	// A 200 that does not say how many were deleted is not reported as done.
+	noCount := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, `{}` })
+	got = decodeToolResult(t, callTool(t, buildServer(newClient(noCount.srv.URL)), "clockwise_clear_focus_blocks", map[string]any{}))
+	if !got.isError || !strings.Contains(got.text, "did not say how many") {
+		t.Errorf("200 {} relayed as %+v, want a tool error saying the count is missing", got)
 	}
 }
 
 // SF-065: list_focus_blocks says it lists the next 7 days, not all.
 func TestPAC122_SF065_ListFocusBlocksSaysSevenDays(t *testing.T) {
 	desc := toolDescriptions(t)["clockwise_list_focus_blocks"]
-	if strings.Contains(strings.ToLower(desc), "all ") || !strings.Contains(desc, "7 days") {
-		t.Errorf("description %q, want the 7 days from now, not all", desc)
+	if strings.Contains(strings.ToLower(desc), "all ") || !strings.Contains(desc, "7 days") || !strings.Contains(desc, "server date") {
+		t.Errorf("description %q, want the 7 days from today by the server date, not all", desc)
 	}
 }
 
@@ -256,5 +263,39 @@ func TestPAC122_SF095_TruncatedBodyIsError(t *testing.T) {
 	got := decodeToolResult(t, callTool(t, buildServer(c), "clockwise_get_settings", map[string]any{}))
 	if !got.isError {
 		t.Errorf("tool relayed a truncated body as success: %+v", got)
+	}
+}
+
+// SF-063 follow-up: an empty plan is "nothing to apply" whatever its shape,
+// and never reaches the backend.
+func TestPAC122_SF063_EmptyPlanIsNothingToApply(t *testing.T) {
+	b := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, `{"applied":[],"failed":[]}` })
+	s := buildServer(newClient(b.srv.URL))
+	for _, plan := range []string{`{"proposals":[]}`, `[]`, `[{"date":"2026-05-04","proposals":[]}]`} {
+		got := decodeToolResult(t, callTool(t, s, "clockwise_apply_compression", map[string]any{"plan": plan}))
+		if got.isError || !strings.Contains(got.text, "Nothing to apply") {
+			t.Errorf("plan %s: %+v, want the non-error nothing-to-apply text", plan, got)
+		}
+	}
+	if n := b.count(); n != 0 {
+		t.Errorf("an empty plan reached the backend %d times", n)
+	}
+}
+
+// SF-063 follow-up: an apply where nothing was applied and something failed
+// is a tool error that keeps the failed list; a partial apply is not.
+func TestPAC122_SF063_FullyFailedApplyIsError(t *testing.T) {
+	answer := `{"applied":[],"failed":["evt-1: event not found"]}`
+	b := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, answer })
+	s := buildServer(newClient(b.srv.URL))
+	plan := `{"proposals":[{"eventId":"evt-1","proposedStart":"2026-05-04T10:00:00Z","proposedEnd":"2026-05-04T10:30:00Z"}]}`
+	got := decodeToolResult(t, callTool(t, s, "clockwise_apply_compression", map[string]any{"plan": plan}))
+	if !got.isError || !strings.Contains(got.text, "evt-1: event not found") {
+		t.Errorf("fully failed apply relayed as %+v, want a tool error with the failed list", got)
+	}
+	answer = `{"applied":["evt-2"],"failed":["evt-1: event not found"]}`
+	got = decodeToolResult(t, callTool(t, s, "clockwise_apply_compression", map[string]any{"plan": plan}))
+	if got.isError || !strings.Contains(got.text, "evt-1: event not found") {
+		t.Errorf("partial apply relayed as %+v, want a success carrying the failed list", got)
 	}
 }

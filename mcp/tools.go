@@ -103,14 +103,14 @@ func buildServer(c *backendClient) *server.MCPServer {
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_list_focus_blocks",
-		mcp.WithDescription("List the focus time blocks scheduled in the 7 days from today (today included), not every block"),
+		mcp.WithDescription("List the focus time blocks scheduled in the 7 days from today (server date, today included), not every block"),
 	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		res, err := c.get(ctx, "/api/focus/blocks", nil)
 		return jsonResult(res, err)
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_clear_focus_blocks",
-		mcp.WithDescription("Delete the focus time blocks of the current week (Monday to Sunday) from the calendar; blocks in other weeks are kept. Reports how many were deleted."),
+		mcp.WithDescription("Delete the focus time blocks of the current week (Monday to Sunday, by the server date) from the calendar; blocks in other weeks are kept. Reports how many were deleted."),
 	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		res, err := c.delete(ctx, "/api/focus/blocks")
 		if err != nil {
@@ -148,10 +148,26 @@ func buildServer(c *backendClient) *server.MCPServer {
 		if err != nil {
 			return jsonResult(nil, err)
 		}
+		if len(proposals) == 0 {
+			// An empty plan, as an object or an array, moves nothing and
+			// is not sent.
+			return mcp.NewToolResultText("Nothing to apply: the plan has no proposals."), nil
+		}
 		res, err := c.post(ctx, "/api/schedule/compress/apply", map[string]any{
 			"proposals": proposals,
 		})
-		return jsonResult(res, err)
+		if err != nil {
+			return toolError(err), nil
+		}
+		// A 200 that moved nothing and lists failures is not a success.
+		var outcome struct {
+			Applied []json.RawMessage `json:"applied"`
+			Failed  []json.RawMessage `json:"failed"`
+		}
+		if json.Unmarshal(res, &outcome) == nil && len(outcome.Applied) == 0 && len(outcome.Failed) > 0 {
+			return mcp.NewToolResultError("Error: no proposal was applied: " + string(res)), nil
+		}
+		return mcp.NewToolResultText(string(res)), nil
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_parse_command",
@@ -303,9 +319,6 @@ func decodeCompressionProposals(raw string) ([]compressionProposal, error) {
 		}
 		for _, result := range results {
 			plan = append(plan, result.Proposals...)
-		}
-		if plan == nil {
-			return nil, fmt.Errorf("plan does not contain proposals")
 		}
 	}
 	proposals := make([]compressionProposal, 0, len(plan))
