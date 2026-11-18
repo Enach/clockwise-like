@@ -8,9 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
+	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 )
@@ -117,4 +121,106 @@ func TestPAC125_RequestUnitNamesPattern(t *testing.T) {
 	}
 	release()
 	g.Wait(context.Background())
+}
+
+// Review minor 3: chi routes on the escaped path when the request has one
+// (an encoded "/" inside the parameter), so the label must too; otherwise
+// such a request reads as unmatched while its handler runs.
+func TestPAC125_EncodedSlashParamNamesPattern(t *testing.T) {
+	l := captureAccessLog(t)
+	r := pac125Router(t)
+	serveAt(r, http.MethodDelete, "/api/manager/team/members/a%2Fpac125.member%40example.test", "")
+	serveAt(r, http.MethodGet, "/api/teams/invites/PAC125%2FTOKEN", "")
+	all := strings.Join(l.lines, "\n")
+	for _, want := range []string{"DELETE /api/manager/team/members/{email} ", "GET /api/teams/invites/{token} "} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no %q line:\n%s", want, all)
+		}
+	}
+	if strings.Contains(all, "pac125.member") || strings.Contains(all, "TOKEN") {
+		t.Errorf("access log carries a parameter:\n%s", all)
+	}
+	for _, c := range []struct{ method, target, want string }{
+		{http.MethodDelete, "/api/manager/team/members/a%2Fb%40example.test", "/api/manager/team/members/{email}"},
+		{http.MethodGet, "/api/teams/invites/PAC125%2FTOKEN", "/api/teams/invites/{token}"},
+	} {
+		if got := requestRoute(httptest.NewRequest(c.method, c.target, nil)); got != c.want {
+			t.Errorf("requestRoute(%s %s) = %q, want %q", c.method, c.target, got, c.want)
+		}
+	}
+}
+
+// Review minor 4: signInRefused names the route pattern. The SSO callback
+// carries the domain in its path; a refused sign-in (an account already
+// carries the address) is logged without it.
+func TestPAC125_SignInRefusedNamesPattern(t *testing.T) {
+	withRouteMux(t, nil) // the pattern chi recorded on ssoRouter
+	db := openTestDB(t)
+	const d = "pac125-refused.test"
+	idp := newFakeIdP(t, "client-"+d)
+	seedOIDCProvider(t, d, idp)
+	if _, err := storage.UpsertUser(db, "taken@"+d, "Taken", "", "google", "sub-pac125-taken"); err != nil {
+		t.Fatal(err)
+	}
+	idp.email = "taken@" + d
+	logs := pac71Logs(t)
+	rec := httptest.NewRecorder()
+	ssoRouter(&authHandlers{db: db, jwtSecret: "secret", frontendURL: pac35Frontend}).
+		ServeHTTP(rec, oidcCallbackRequest(d, &http.Cookie{Name: "sso_state", Value: "s1|" + d}))
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusFound || !strings.HasSuffix(loc, signInRefusedPath) {
+		t.Fatalf("not refused: %d %q", rec.Code, loc)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "pac71: GET /api/auth/callback/oidc/{domain}: ") || strings.Contains(got, "/api/auth/callback/oidc/"+d) {
+		t.Fatalf("refusal line does not name the pattern alone: %q", got)
+	}
+}
+
+// Review minor 4: RegisterRoutes wires budget.WithRoute(routeOf), so the
+// late-panic line names the route pattern, never the path.
+func TestPAC125_BudgetLatePanicNamesPattern(t *testing.T) {
+	withBudget(t, 30*time.Millisecond)
+	var buf lockedBuf
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	r := pac125Router(t)
+	done := make(chan struct{})
+	r.Get("/api/pac125-late/{token}", func(_ http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		<-r.Context().Done()
+		for !budget.Expired(r.Context()) {
+			time.Sleep(time.Millisecond)
+		}
+		panic("pac125 late")
+	})
+	if rec := serveAt(r, http.MethodGet, "/api/pac125-late/PAC125-LATE-TOKEN", ""); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want the budget's 503", rec.Code)
+	}
+	<-done
+	for i := 0; i < 200 && !strings.Contains(buf.String(), "pac125 late"); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "budget: GET /api/pac125-late/{token} panicked after the budget answered: pac125 late") || strings.Contains(got, "PAC125-LATE-TOKEN") {
+		t.Fatalf("log %q", got)
+	}
+}
+
+// lockedBuf is a log writer safe for the handler goroutine's late line.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

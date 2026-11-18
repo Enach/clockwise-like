@@ -342,14 +342,24 @@ func RouteLabel(method, path string) string {
 	return noRoute
 }
 
+// routingPath is the path chi routes r on: the escaped path when the
+// request spelled it differently from the decoded one (an encoded "/" in a
+// parameter), else the decoded path.
+func routingPath(r *http.Request) string {
+	if r.URL.RawPath != "" {
+		return r.URL.RawPath
+	}
+	return r.URL.Path
+}
+
 // routeOf is r's route label for the access log and the request unit.
-func routeOf(r *http.Request) string { return RouteLabel(r.Method, r.URL.Path) }
+func routeOf(r *http.Request) string { return RouteLabel(r.Method, routingPath(r)) }
 
 // requestRoute is r's route label for a line its handler writes: the
 // registered router's pattern, else the pattern chi recorded while routing r
 // (a handler tested on a router of its own), else the placeholder.
 func requestRoute(r *http.Request) string {
-	if p, ok := matchRoute(r.Method, r.URL.Path); ok {
+	if p, ok := matchRoute(r.Method, routingPath(r)); ok {
 		return p
 	}
 	if rctx := chi.RouteContext(r.Context()); rctx != nil {
