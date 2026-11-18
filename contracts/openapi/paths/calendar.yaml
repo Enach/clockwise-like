@@ -647,6 +647,22 @@ paths:
         configurable and Truncate operates on the Unix epoch, so the start is a UTC
         midnight regardless of the caller's timezone. Returns `[]` rather than null
         when the provider yields nothing.
+
+        For a webcal feed, since PAC-122 (SF-044): an event with no DTEND is read
+        through its DURATION (or, with neither, as one day for a date and an
+        instant for a date-time) instead of being left out; a recurring event
+        (RRULE, with RDATE, EXDATE and per-instance overrides) is listed once
+        per instance in the window, each with `id` `<UID>/<instance start in UTC,
+        YYYYMMDDTHHMMSSZ>` (a non-recurring event keeps its UID), local times
+        following the event's TZID across DST changes, and a comma-separated
+        EXDATE or RDATE list read value by value with its TZID and VALUE; and an
+        event whose time or recurrence cannot be read is not listed (the sync
+        keeps any blocker it has rather than reading it as gone). Expansion is
+        bounded: FREQ=SECONDLY and MINUTELY are unreadable, a series needing
+        more than 100000 occurrences to reach the end of the window is
+        unreadable, and a series with more than 500 instances in the window
+        lists its first 500 and is otherwise treated as unreadable (the sync
+        keeps the blockers of its other instances).
       responses:
         "200":
           description: >-
@@ -731,7 +747,13 @@ paths:
             The blocker's Sync returned an error other than "no stored Google
             credential" (for example the personal feed could not be read, or
             reading the credential store failed), or the last_synced_at update
-            failed. Body `{"error":"internal error"}`. Verified by
+            failed. Since PAC-122 also: the user's settings could not be read
+            (SF-021; before, every event was treated as inside work hours), a
+            blocker lookup failed (SF-021; before, read as "no blocker" and a
+            duplicate was created), or a stale blocker's work-calendar event could
+            not be deleted (SF-020; its row is kept so a later sync retries it,
+            where before the row was dropped and the event stayed). Body
+            `{"error":"internal error"}`. Verified by
             TestPersonalCalendarSyncPropagatesBlockerError.
             "The personal feed could not be read" includes, since PAC-81 (spec
             AC-A17), a feed fetch over its 15 s limit or a feed over 10 MiB: no
@@ -1345,13 +1367,17 @@ components:
         is_personal_block:
           type: boolean
           description: >-
-            Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO,
-            so it is always omitted from every response that carries this schema
-            (the events list and, since PAC-29, PATCH /api/events/{id},
-            POST /api/schedule/create and POST /api/nlp/confirm).
-          x-uncertain: >-
-            Dead field on this path. Either the personal-block tagging logic is
-            missing, or the field should be dropped from the DTO.
+            `true` when the event is a "[Personal] Busy" blocker that the
+            personal-calendar sync put on the work calendar: it carries the
+            private extended property `paceday_personal_blocker=1` (set on every
+            blocker since PAC-122), or, for a blocker created before that, both
+            the blocker's title `[Personal] Busy` and its description
+            `Auto-created personal time blocker`. Omitted otherwise (`omitempty`;
+            never `false`), on every response that carries this schema (the
+            events list, PATCH /api/events/{id}, POST /api/schedule/create and
+            POST /api/nlp/confirm). Before PAC-122 (SF-035, API-076) the field was
+            never set, so it was always omitted and the web gave blockers meeting
+            controls; that resolves the x-uncertain this property carried.
         description:
           type: string
           description: Omitted when empty.
@@ -1999,56 +2025,46 @@ components:
 
             Whether the text inside parses as JSON depends on which `action` produced
             it, so the useful statement is per-writer rather than a blanket warning.
-            ALWAYS VALID JSON: `focus_created` and `focus_cleared` marshal a map
-            with `encoding/json` (`FocusTimeEngine.RunForUser` in
+            ALWAYS VALID JSON, for every action. `focus_created` and `focus_cleared`
+            marshal a map with `encoding/json` (`FocusTimeEngine.RunForUser` in
             backend/engine/focus_time.go, `FocusTimeEngine.ClearWeek` in
-            backend/engine/focus_time_cleaner.go); `nlp_parsed` uses
-            `fmt.Sprintf` with `%q`, which escapes (`NLPService.Parse`,
-            backend/nlp/parser.go); and the three PAC-67 connection kinds, which
-            marshal a struct with `encoding/json` and hold only server-chosen values:
+            backend/engine/focus_time_cleaner.go). Since PAC-122 (SF-070)
+            `meeting_scheduled` (`{"event_id","title"}`, `SmartScheduler.CreateMeeting`
+            in backend/engine/smart_schedule.go), `meeting_created`
+            (`{"event_id","title"}`, `scheduleHandlers.createMeeting` in
+            backend/api/handlers_schedule.go), `meeting_moved`
+            (`{"event_id","new_start"}`, `CompressionEngine.Apply` in
+            backend/engine/compression.go), `nlp_confirmed` (`{"event_id"}`,
+            `nlpHandlers.confirm` in backend/api/handlers_nlp.go) and `nlp_parsed`
+            (`{"text","intent"}`, `NLPService.Parse` in backend/nlp/parser.go) are
+            encoded with `encoding/json` too (`storage.AuditJSON`), so a title or
+            text containing `"`, `\`, a newline or a control character is escaped.
+            Before PAC-122 the first four were built by concatenating values into a
+            JSON literal with no escaping, and `nlp_parsed` used `fmt.Sprintf` with
+            `%q`, whose escapes (`\x01`, `\a`) are not JSON; rows written then
+            stay as they were written. The three PAC-67 connection kinds marshal a
+            struct with `encoding/json` and hold only server-chosen values:
             `connection_lost` is `{"provider":"outlook"|"zoom"|"google"}`,
             `provider_disconnected` is `{"provider":"outlook"|"zoom","revocation":
             "confirmed"|"unconfirmed"|"not_offered"}` (the `revocation` vocabulary of
             `ProviderDisconnectResult`), and `revocation_unconfirmed` is
             `{"provider":"zoom"}`. No token material and no actor-supplied text ever
-            appears in them. Also ALWAYS VALID JSON: PAC-40's
-            `scheduling_link_bookers_erased` marshals a struct with `encoding/json`:
+            appears in them. PAC-40's `scheduling_link_bookers_erased` marshals a
+            struct with `encoding/json`:
             `{"link_id":"<uuid>","link_title":"<the owner's title>","bookings_erased":<n>,
             "last_booking_end_at":"<RFC3339>","ran_at":"<RFC3339>"}`. It never carries a
             booker's name or email (AC-31); `link_title` is the subject's own text.
-            NOT GUARANTEED: `meeting_scheduled`,
-            `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by
-            concatenating values into a JSON literal with no escaping
-            (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go,
-            `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go,
-            `CompressionEngine.Apply` in backend/engine/compression.go,
-            `nlpHandlers.confirm` in backend/api/handlers_nlp.go). Sites are cited
-            by enclosing function, not line, for the reason given in the operation
-            description; `grep -rn 'WriteAuditLog(' --include='*.go' backend/`
-            shows all seven argument expressions on one line each.
+            Sites are cited by enclosing function, not line, for the reason given in
+            the operation description.
 
 
-            The interpolated value differs by site and so does the severity. In
-            `SmartScheduler.CreateMeeting` and `scheduleHandlers.createMeeting` it is
-            a meeting title from the request body, so a title containing `"`, `\` or
-            a newline yields malformed JSON. In `CompressionEngine.Apply` there is no
-            title: the values are a client-supplied `event_id`, copied unvalidated
-            from the request body (`scheduleHandlers.applyCompress`,
-            backend/api/handlers_schedule.go:80-93 — the timestamps are parsed, the
-            id is not touched), and an RFC3339 timestamp — so a caller can write JSON
-            STRUCTURE, not merely a stray quote, into its own row. In
-            `nlpHandlers.confirm` the value is a Google-issued event id, which in
-            practice contains no JSON metacharacter; the construction is the same
-            defect, the input simply is not attacker-controlled.
-
-
-            Consequence for a consumer: parse the four safe actions if you want to;
-            for the other four, treat the value as opaque text, as the shipped client
-            does (`formatAuditDetails`, smart-calendar-flow/src/api/client.ts:426-435,
-            never calls JSON.parse). PAC-23 does not fix the concatenation — it is
-            docs/specs/PAC-23.md OQ-6, and the spec challenge argues for splitting the
-            escaping defect out of it. When that lands, the NOT GUARANTEED list
-            empties and this description loses two paragraphs.
+            Consequence for a consumer: an entry written since PAC-122 parses; one
+            written before it by `meeting_scheduled`, `meeting_created`,
+            `meeting_moved`, `nlp_confirmed` or `nlp_parsed` may not, so a consumer
+            reading history should still treat a value that does not parse as
+            opaque text, as the shipped client does (`formatAuditDetails`,
+            smart-calendar-flow/src/api/client.ts, never calls JSON.parse). This
+            resolves docs/specs/PAC-23.md OQ-6.
         created_at:
           type: string
           format: date-time
