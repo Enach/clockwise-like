@@ -36,7 +36,11 @@ paths:
       description: |
         Spawns `HabitsEngine.ReoptimizeAll` on a detached context (14-day horizon) and
         returns immediately. The request body is never read. Errors from the background
-        job are swallowed and are not observable through this endpoint.
+        job are not observable through this endpoint; they are logged and reported to
+        error monitoring with the user id (PAC-122 SF-096), including every day the job
+        could not schedule (SF-015): a day whose calendar read fails gets no new
+        occurrence (SF-013), and an occurrence that moves or is missed has its old
+        calendar event deleted first (SF-014).
       responses:
         '500':
           $ref: '#/components/responses/SessionGenerationUnavailable'
@@ -337,7 +341,11 @@ paths:
         "500":
           description: >-
             Compute failed. Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21). There is no 404 (PAC-42, audit U-01): the
+            server log and Sentry only (PAC-21). A failed read of the calendar (for a user
+            who has a calendar credential), of the focus blocks or of the habit occurrences
+            is this 500, and nothing is stored: before PAC-122 (SF-017) it was stored as a
+            week with no meetings and served from the cache for 24h. A user with no
+            connected calendar still gets a week with no meetings. There is no 404 (PAC-42, audit U-01): the
             week is either served from a stored row or computed and upserted, and the
             upsert's `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` yields a row on both
             the insert and the conflict path (observed, contracts/features/PAC-42.md
@@ -423,7 +431,8 @@ paths:
         "500":
           description: >-
             The calendar read failed for a user who HAS a stored Google credential (a user
-            with none gets the 401 `calendar not connected`). Before PAC-21 was finished a
+            with none gets the 401 `calendar not connected`), or the user's focus blocks or
+            habit occurrences could not be read (PAC-122 SF-017). Before PAC-21 was finished a
             user with no credential got this 500 (API-054). Body: `{"error":"internal
             error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
@@ -439,7 +448,10 @@ paths:
       description: |
         Spawns `AnalyticsEngine.ForceCompute` for the week containing `time.Now()` on a
         detached context and returns immediately. The request body is never read, and no
-        parameters select the week. Errors from the background job are swallowed.
+        parameters select the week. Errors from the background job are not observable
+        through this endpoint; they are logged and reported to error monitoring with the
+        user id (PAC-122 SF-096), and a week computed from a failed read is not stored
+        (SF-017).
       responses:
         '500':
           $ref: '#/components/responses/SessionGenerationUnavailable'
@@ -1129,8 +1141,9 @@ components:
           description: |
             The DB column is a DATE, but the Go field is `time.Time`, so it serialises as a
             full RFC3339 timestamp at midnight UTC (e.g. "2026-03-04T00:00:00Z"), NOT as
-            "2026-03-04". Parsed from the DB with a failure-swallowing `time.Parse`, so a
-            malformed stored value would surface as the zero time "0001-01-01T00:00:00Z".
+            "2026-03-04". Before PAC-122 (SF-080) the column was read through a
+            failure-swallowing `time.Parse` that always failed, so every occurrence
+            surfaced as the zero time "0001-01-01T00:00:00Z"; it is now the stored date.
         start_time:
           type: string
           format: date-time
@@ -1142,12 +1155,14 @@ components:
           description: |
             Written by the engine as well as by the API. "scheduled" (placed), "completed"
             (user-confirmed; survives reoptimization), "displaced" (its slot was taken and
-            rescheduling is being attempted), "missed" (no slot fit in the window).
+            rescheduling is being attempted; also left by a run that could not delete its
+            old calendar event, which then keeps its `calendar_event_id`, or could not
+            create the new one, PAC-122 SF-014/SF-015), "missed" (no slot fit in the window).
             Only "scheduled" and "completed" are settable via the API.
           enum: [scheduled, completed, displaced, missed]
         calendar_event_id:
           type: string
-          description: Google Calendar event id for the mirrored event. Empty string when no calendar is connected or event creation failed. Never null.
+          description: Google Calendar event id for the mirrored event. Empty string when no calendar is connected, and on a "missed" or "displaced" occurrence whose event was deleted. A "scheduled" occurrence of a user with a connected calendar always carries its event (PAC-122 SF-015; before, a failed event creation was stored as "scheduled" with an empty id). Never null.
         created_at:
           type: string
           format: date-time
@@ -1404,7 +1419,7 @@ components:
           type: integer
         top_meeting_titles:
           type: array
-          description: '`[]` when the week has no titles, including when the JSONB column holds `null` or fails to unmarshal (PAC-28).'
+          description: '`[]` when the week has no titles, including when the JSONB column holds `null` (PAC-28). A stored value that does not decode is the operation''s 500, not `[]` (PAC-122 SF-080).'
           maxItems: 5
           items:
             $ref: '#/components/schemas/MeetingTitle'

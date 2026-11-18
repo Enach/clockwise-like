@@ -3,8 +3,8 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
@@ -47,6 +47,8 @@ type HabitsEngine struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
 	Clock       Clock
+
+	calOps calendarOps // test seam: used instead of the user's calendar when set
 }
 
 func (e *HabitsEngine) now() time.Time {
@@ -57,89 +59,159 @@ func (e *HabitsEngine) now() time.Time {
 }
 
 // ReoptimizeAll schedules all active habits for the next 14 days.
+//
+// PAC-122 SF-015: every day that fails is part of the returned error
+// (errors.Join, naming the user and the day; ids only), so the tracked unit
+// that runs it reports it (SF-096). A day that fails places what it could,
+// and the other days still run. A failed read of the habits, the user's
+// settings or the user's calendar credential fails the whole run before
+// anything is written. A user with no connected calendar is not a failure:
+// occurrences are stored without a calendar event, as before.
 func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) error {
 	habits, err := storage.ListActiveHabitsByUser(e.DB, userID)
 	if err != nil {
 		return fmt.Errorf("list habits: %w", err)
 	}
 
-	calOps, calErr := e.calOpsForUser(ctx, userID)
-	// calOps may be nil if not connected — we degrade gracefully.
-
-	now := e.now()
-	if settings, settingsErr := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID); settingsErr == nil {
-		if loc, locErr := time.LoadLocation(settings.Timezone); locErr == nil {
-			now = now.In(loc)
-		}
+	calOps, err := e.calendarFor(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("habits: user %s: calendar: %w", userID, err)
 	}
+
+	settings, err := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID)
+	if err != nil {
+		return fmt.Errorf("habits: user %s: read settings: %w", userID, err)
+	}
+	now := e.now()
+	if loc, locErr := time.LoadLocation(settings.Timezone); locErr == nil {
+		now = now.In(loc)
+	}
+	var failed []error
 	for i := 0; i < 14; i++ {
 		day := now.AddDate(0, 0, i)
-		if err := e.scheduleDay(ctx, userID, habits, day, calOps, calErr == nil); err != nil {
-			log.Printf("habits: schedule day %s: %v", day.Format("2006-01-02"), err)
+		if err := e.scheduleDay(ctx, userID, habits, settings, day, calOps); err != nil {
+			failed = append(failed, fmt.Errorf("habits: user %s day %s: %w", userID, day.Format("2006-01-02"), err))
 		}
 	}
-	return nil
+	return errors.Join(failed...)
 }
 
-// scheduleDay places habit occurrences for one day, processing habits in priority order.
+// calendarFor returns the user's calendar, or nil when the user has no
+// connected calendar. A failure to read the credential is an error: it used
+// to read as "not connected", and occurrences were stored with no event.
+func (e *HabitsEngine) calendarFor(ctx context.Context, userID uuid.UUID) (calendarOps, error) {
+	if e.calOps != nil {
+		return e.calOps, nil
+	}
+	token, err := LoadCalendarTokenCtx(ctx, e.DB, userID)
+	if errors.Is(err, ErrCalendarNotConnected) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, userID, token)
+	client, err := calendar.NewClient(ctx, ts)
+	if err != nil {
+		return nil, err
+	}
+	return realOps{c: client}, nil
+}
+
+// scheduleDay places habit occurrences for one day, processing habits in
+// priority order. calOps is nil when the user has no connected calendar.
+//
+// PAC-122: a failed read places nothing that day (SF-013: a failed calendar
+// read left the busy list empty and habits were created over meetings). An
+// occurrence that moves or is missed has its old calendar event deleted
+// first (SF-014: it was left behind). With a connected calendar an
+// occurrence is stored as scheduled only with its calendar event, and every
+// write is checked (SF-015). The returned error joins every failure of the
+// day, by habit id.
 func (e *HabitsEngine) scheduleDay(
 	ctx context.Context,
 	userID uuid.UUID,
 	habits []*storage.Habit,
+	settings *storage.Settings,
 	day time.Time,
 	calOps calendarOps,
-	calConnected bool,
 ) error {
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dayEnd := dayStart.Add(24 * time.Hour)
+	loc, err := time.LoadLocation(settings.Timezone)
+	if err != nil || loc == nil {
+		loc = time.UTC
+	}
+	weekday := habitWeekday(day)
 
-	settings, _ := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID)
-
-	// Fetch calendar busy intervals once for the day.
-	var calBusy []interval
-	if calConnected {
-		events, err := calOps.listEvents(ctx, dayStart, dayEnd)
-		if err == nil {
-			for _, ev := range events {
-				if ev.Transparency == "transparent" {
-					continue
-				}
-				s, e2 := parseEventTime(ev)
-				if !s.IsZero() && !e2.IsZero() {
-					calBusy = append(calBusy, interval{start: s, end: e2})
-				}
-			}
-			if settings != nil {
-				loc, _ := time.LoadLocation(settings.Timezone)
-				if loc == nil {
-					loc = time.UTC
-				}
-				workStartRaw, workEndRaw, workEnabled := settings.WorkWindow(day.In(loc))
-				if workEnabled {
-					workStart := parseHHMM(workStartRaw, day, loc)
-					workEnd := parseHHMM(workEndRaw, day, loc)
-					calBusy = append(calBusy, ComputeBufferBlocks(events, settings, workStart, workEnd)...)
-				}
+	// Every read comes before any write: the day's existing occurrences
+	// (whose own calendar events are theirs, not something they collide
+	// with), the calendar, and the focus blocks.
+	existing := make(map[uuid.UUID]*storage.HabitOccurrence, len(habits))
+	ownEvents := map[string]struct{}{}
+	for _, h := range habits {
+		if !containsInt(h.DaysOfWeek, weekday) {
+			continue
+		}
+		occ, err := e.existingOccurrence(h.ID, day)
+		if err != nil {
+			return fmt.Errorf("habit %s: read occurrence: %w", h.ID, err)
+		}
+		if occ != nil {
+			existing[h.ID] = occ
+			if occ.CalendarEventID != "" {
+				ownEvents[occ.CalendarEventID] = struct{}{}
 			}
 		}
 	}
 
-	if settings != nil {
-		loc, err := time.LoadLocation(settings.Timezone)
+	var calBusy []interval
+	// onCalendar is every event id the day's calendar read returned: a
+	// scheduled occurrence whose event is not among them is re-placed.
+	onCalendar := map[string]struct{}{}
+	if calOps != nil {
+		listed, err := calOps.listEvents(ctx, dayStart, dayEnd)
 		if err != nil {
-			loc = time.UTC
+			return fmt.Errorf("read calendar: %w", err)
 		}
-		lunchStartRaw, lunchEndRaw, lunchEnabled := settings.LunchWindow(day.In(loc))
-		if lunchEnabled {
-			calBusy = append(calBusy, interval{
-				start: parseHHMM(lunchStartRaw, day, loc),
-				end:   parseHHMM(lunchEndRaw, day, loc),
-			})
+		events := make([]*googlecalendar.Event, 0, len(listed))
+		for _, ev := range listed {
+			onCalendar[ev.Id] = struct{}{}
+			if _, own := ownEvents[ev.Id]; own || isHabitEvent(ev) {
+				continue
+			}
+			events = append(events, ev)
 		}
+		for _, ev := range events {
+			if ev.Transparency == "transparent" {
+				continue
+			}
+			s, e2 := parseEventTime(ev)
+			if !s.IsZero() && !e2.IsZero() {
+				calBusy = append(calBusy, interval{start: s, end: e2})
+			}
+		}
+		workStartRaw, workEndRaw, workEnabled := settings.WorkWindow(day.In(loc))
+		if workEnabled {
+			workStart := parseHHMM(workStartRaw, day, loc)
+			workEnd := parseHHMM(workEndRaw, day, loc)
+			calBusy = append(calBusy, ComputeBufferBlocks(events, settings, workStart, workEnd)...)
+		}
+	}
+
+	lunchStartRaw, lunchEndRaw, lunchEnabled := settings.LunchWindow(day.In(loc))
+	if lunchEnabled {
+		calBusy = append(calBusy, interval{
+			start: parseHHMM(lunchStartRaw, day, loc),
+			end:   parseHHMM(lunchEndRaw, day, loc),
+		})
 	}
 
 	// Focus blocks.
-	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, userID, day)
+	focusBlocks, err := storage.ListFocusBlocksForUserWeek(e.DB, userID, day)
+	if err != nil {
+		return fmt.Errorf("read focus blocks: %w", err)
+	}
 	for _, fb := range focusBlocks {
 		if fb.StartTime.Year() == day.Year() &&
 			fb.StartTime.Month() == day.Month() &&
@@ -150,8 +222,10 @@ func (e *HabitsEngine) scheduleDay(
 
 	// Habits already scheduled for this day — accumulated as we place each habit.
 	placedBusy := calBusy
-
-	weekday := habitWeekday(day)
+	var failed []error
+	fail := func(h *storage.Habit, what string, err error) {
+		failed = append(failed, fmt.Errorf("habit %s: %s: %w", h.ID, what, err))
+	}
 
 	for _, h := range habits {
 		if !containsInt(h.DaysOfWeek, weekday) {
@@ -161,61 +235,101 @@ func (e *HabitsEngine) scheduleDay(
 		windowStart := parseHabitTime(h.WindowStart, day)
 		windowEnd := parseHabitTime(h.WindowEnd, day)
 		dur := time.Duration(h.DurationMinutes) * time.Minute
-
-		// Check existing occurrence for this day.
-		existing, _ := e.existingOccurrence(h.ID, day)
+		prev := existing[h.ID]
 
 		// Completed occurrences are user-confirmed and must survive reoptimization.
-		if existing != nil && existing.Status == "completed" {
-			placedBusy = append(placedBusy, interval{start: existing.StartTime, end: existing.EndTime})
+		if prev != nil && prev.Status == "completed" {
+			placedBusy = append(placedBusy, interval{start: prev.StartTime, end: prev.EndTime})
 			continue
 		}
 
-		// If already scheduled and not displaced, verify it still fits.
-		if existing != nil && existing.Status == "scheduled" {
-			iv := interval{start: existing.StartTime, end: existing.EndTime}
-			if !overlapsMerged(iv, mergeIntervals(placedBusy)) {
-				// Still valid — add it to placedBusy and move on.
+		// If already scheduled, verify it still fits. With a connected
+		// calendar it also needs its event on the calendar: a row with no
+		// event id, or one whose event the day's read did not return (a
+		// store that failed after its old event was deleted, PAC-122 SF-014
+		// review M1), is re-placed rather than kept.
+		if prev != nil && prev.Status == "scheduled" {
+			iv := interval{start: prev.StartTime, end: prev.EndTime}
+			_, present := onCalendar[prev.CalendarEventID]
+			hasEvent := calOps == nil || (prev.CalendarEventID != "" && present)
+			if hasEvent && !overlapsMerged(iv, mergeIntervals(placedBusy)) {
 				placedBusy = append(placedBusy, iv)
 				continue
 			}
-			// Mark displaced and try to reschedule below.
-			existing.Status = "displaced"
-			_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, existing)
+		}
+
+		// The occurrence is (re)placed: its old calendar event goes first
+		// (SF-014). When that delete fails the event stays, so the row keeps
+		// its id as displaced (the next run retries the delete) and its slot
+		// stays busy for the other habits.
+		if prev != nil && prev.CalendarEventID != "" && calOps != nil {
+			if err := calOps.deleteEvent(ctx, prev.CalendarEventID); err != nil && !calendar.IsEventGone(err) {
+				fail(h, "delete old event", err)
+				kept := *prev
+				kept.Status = "displaced"
+				if _, err := storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &kept); err != nil {
+					fail(h, "store displaced", err)
+				}
+				placedBusy = append(placedBusy, interval{start: prev.StartTime, end: prev.EndTime})
+				continue
+			}
 		}
 
 		// Find a slot.
-		merged := mergeIntervals(placedBusy)
-		slot := findFirstSlot(windowStart, windowEnd, dur, merged)
-
+		slot := findFirstSlot(windowStart, windowEnd, dur, mergeIntervals(placedBusy))
 		if slot == nil {
-			_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
+			if _, err := storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
 				HabitID:       h.ID,
 				ScheduledDate: day,
 				StartTime:     windowStart,
 				EndTime:       windowStart.Add(dur),
 				Status:        "missed",
-			})
+			}); err != nil {
+				fail(h, "store missed", err)
+			}
 			continue
 		}
 
 		calEventID := ""
-		if calConnected {
-			calEventID = e.createHabitEvent(ctx, calOps, h, slot.start, slot.end)
+		if calOps != nil {
+			id, err := e.createHabitEvent(ctx, calOps, h, slot.start, slot.end)
+			if err != nil {
+				// SF-015: never "scheduled" without its event. A row that
+				// existed no longer has one (deleted above): displaced.
+				fail(h, "create event", err)
+				if prev != nil {
+					gone := *prev
+					gone.Status, gone.CalendarEventID = "displaced", ""
+					if _, err := storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &gone); err != nil {
+						fail(h, "store displaced", err)
+					}
+				}
+				continue
+			}
+			calEventID = id
 		}
 
-		_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
+		if _, err := storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
 			HabitID:         h.ID,
 			ScheduledDate:   day,
 			StartTime:       slot.start,
 			EndTime:         slot.end,
 			Status:          "scheduled",
 			CalendarEventID: calEventID,
-		})
+		}); err != nil {
+			fail(h, "store scheduled", err)
+			// No row points at the new event: it is removed again.
+			if calEventID != "" {
+				if err := calOps.deleteEvent(ctx, calEventID); err != nil && !calendar.IsEventGone(err) {
+					fail(h, "delete unrecorded event", err)
+				}
+			}
+			continue
+		}
 
 		placedBusy = append(placedBusy, *slot)
 	}
-	return nil
+	return errors.Join(failed...)
 }
 
 func (e *HabitsEngine) existingOccurrence(habitID uuid.UUID, day time.Time) (*storage.HabitOccurrence, error) {
@@ -231,32 +345,38 @@ func (e *HabitsEngine) createHabitEvent(
 	calOps calendarOps,
 	h *storage.Habit,
 	start, end time.Time,
-) string {
+) (string, error) {
 	ev := &googlecalendar.Event{
 		Summary:      h.Title,
 		Transparency: "opaque",
 		Start:        &googlecalendar.EventDateTime{DateTime: start.Format(time.RFC3339)},
 		End:          &googlecalendar.EventDateTime{DateTime: end.Format(time.RFC3339)},
 		ColorId:      habitColorID(h.Color),
+		// PAC-122 SF-014: the event says which habit it belongs to, so a
+		// later run never counts it as a meeting even when no row points
+		// at it.
+		ExtendedProperties: &googlecalendar.EventExtendedProperties{
+			Private: map[string]string{habitEventMarker: h.ID.String()},
+		},
 	}
 	created, err := calOps.createEvent(ctx, ev)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return created.Id
+	if created == nil || created.Id == "" {
+		return "", errors.New("calendar returned no event id")
+	}
+	return created.Id, nil
 }
 
-func (e *HabitsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (calendarOps, error) {
-	token, err := auth.LoadUserTokenCtx(ctx, e.DB, userID)
-	if err != nil || token == nil {
-		return nil, fmt.Errorf("no token for user %s", userID)
-	}
-	ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, userID, token)
-	client, err := calendar.NewClient(ctx, ts)
-	if err != nil {
-		return nil, err
-	}
-	return realOps{c: client}, nil
+// habitEventMarker is the private extended property a habit event carries:
+// the id of its habit (PAC-122 SF-014).
+const habitEventMarker = "paceday_habit_id"
+
+// isHabitEvent reports whether ev is a habit event Paceday created (one
+// created before the marker existed is not recognised: PAC-137).
+func isHabitEvent(ev *googlecalendar.Event) bool {
+	return ev.ExtendedProperties != nil && ev.ExtendedProperties.Private[habitEventMarker] != ""
 }
 
 // findFirstSlot returns the first 15-min-aligned slot within [windowStart, windowEnd]

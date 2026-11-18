@@ -114,7 +114,14 @@ func TestPAC122_RecapSendFailureReported(t *testing.T) {
 func TestPAC122_RecapInsertFailureReported(t *testing.T) {
 	rec := lifecycletest.Record(t)
 	svc, user, posts := pac122Recap(t, true)
-	if _, err := svc.DB.Exec(`ALTER TABLE recap_sends RENAME TO recap_sends_pac122`); err != nil {
+	// The record's write fails while its read works (PAC-122 batch 5: a
+	// failed read of whether the recap was sent now stops the send, SF-082).
+	if _, err := svc.DB.Exec(`CREATE FUNCTION pac122_refuse_recap_send() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'recap_sends write refused'; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DB.Exec(`CREATE TRIGGER pac122_refuse_recap_send BEFORE INSERT OR UPDATE ON recap_sends
+		FOR EACH ROW EXECUTE FUNCTION pac122_refuse_recap_send()`); err != nil {
 		t.Fatal(err)
 	}
 	svc.RunForUser(context.Background(), user, "R")

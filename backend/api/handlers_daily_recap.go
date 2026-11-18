@@ -141,7 +141,12 @@ func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 
 	svc := &engine.DailyRecapService{DB: h.db}
 	now := time.Now().In(recapLocation(s))
-	blocks := svc.BuildMessage(r.Context(), userID, userName, now, s)
+	blocks, err := svc.BuildMessage(r.Context(), userID, userName, now, s)
+	if err != nil { // PAC-122 SF-046: a failed read of the day is the documented 500, not "a clear calendar"
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"blocks": blocks})
@@ -174,7 +179,12 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 
 	svc := &engine.DailyRecapService{DB: h.db}
 	now := time.Now().In(recapLocation(s))
-	blocks := svc.BuildMessage(r.Context(), userID, userName, now, s)
+	blocks, err := svc.BuildMessage(r.Context(), userID, userName, now, s)
+	if err != nil { // PAC-122 SF-046: a failed read of the day is the documented 500, not "a clear calendar"
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
