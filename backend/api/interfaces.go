@@ -53,7 +53,7 @@ type ManagerWorkflow interface {
 // analytics handlers.
 type TeamAvailability interface {
 	FindSlots(ctx context.Context, teamID uuid.UUID, day time.Time, durationMinutes int) ([]engine.TeamSlot, error)
-	GetTeamAnalytics(ctx context.Context, teamID uuid.UUID, weekStart time.Time) (*engine.TeamAnalytics, error)
+	GetTeamAnalytics(ctx context.Context, teamID uuid.UUID, weekStart time.Time, viewerIsOwner bool) (*engine.TeamAnalytics, error)
 }
 
 type BookingFlow interface {

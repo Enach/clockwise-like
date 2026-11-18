@@ -344,3 +344,36 @@ func InstallInviteSweep(tb TB, fn func() error) (uninstall func()) {
 	tb.Helper()
 	return inviteSweep.install(tb, fn)
 }
+
+// PAC-129 (contract §11): the team-write seams.
+var (
+	afterTeamLock             seam[func(op string, teamID uuid.UUID) error]
+	afterAcceptMembershipStep seam[func(inviteID uuid.UUID) error]
+	teamMembersListRead       seam[func(teamID uuid.UUID) error]
+)
+
+// InstallAfterTeamLock installs the seam that runs inside every PAC-129
+// membership write right after the team row is locked (op is "add",
+// "remove", "invite", "accept" or "manager-remove"), so a test can force the
+// order of two racing writes (AC-23, AC-24, AC-30). A non-nil error rolls the
+// write back.
+func InstallAfterTeamLock(tb TB, fn func(op string, teamID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return afterTeamLock.install(tb, fn)
+}
+
+// InstallAfterAcceptMembershipStep installs the seam that runs inside the
+// acceptance transaction after the membership insert and before the status
+// update (AC-19). A non-nil error rolls the acceptance back.
+func InstallAfterAcceptMembershipStep(tb TB, fn func(inviteID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return afterAcceptMembershipStep.install(tb, fn)
+}
+
+// InstallTeamMembersListRead installs the seam that runs before
+// ListTeamMembers and ListAddedMembers read; a non-nil error is the read's
+// error (AC-6).
+func InstallTeamMembersListRead(tb TB, fn func(teamID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return teamMembersListRead.install(tb, fn)
+}

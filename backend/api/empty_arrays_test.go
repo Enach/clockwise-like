@@ -71,15 +71,14 @@ func TestApplyCompress_NothingToApply_EncodesEmptyArrays(t *testing.T) {
 	}
 }
 
-// getTeam only reaches an empty member list when ListTeamMembers fails (the
-// caller is always a member), which cannot be provoked through the handler,
-// so the response body builder is tested directly.
+// Since PAC-129 a failed member read is the 500 (SF-039), so the builder's
+// nil lists are tested directly: they encode as [], never null.
 func TestTeamDetailBody_NoMembers_EncodesEmptyArray(t *testing.T) {
-	raw, err := json.Marshal(teamDetailBody(&storage.Team{Name: "Empty"}, nil))
+	raw, err := json.Marshal(teamDetailBody(&storage.Team{Name: "Empty"}, nil, nil))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !strings.Contains(string(raw), `"members":[]`) {
-		t.Errorf("body = %s, want \"members\":[]", raw)
+	if !strings.Contains(string(raw), `"members":[]`) || !strings.Contains(string(raw), `"people":[]`) {
+		t.Errorf("body = %s, want \"members\":[] and \"people\":[]", raw)
 	}
 }

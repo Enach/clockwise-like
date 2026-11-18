@@ -242,15 +242,6 @@ func RemoveMicrosoftCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID
 	return r0, err
 }
 
-// RemoveManagerTeamMemberFromTeamCtx is RemoveManagerTeamMemberFromTeam under the in-request re-check (PAC-71, contract §5).
-// Its writes run in one transaction with or without a session guard (PAC-122 SF-001).
-func RemoveManagerTeamMemberFromTeamCtx(ctx context.Context, db DBTX, managerID uuid.UUID, teamID uuid.UUID, email string, memberIDs []uuid.UUID) (err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		return RemoveManagerTeamMemberFromTeam(q, managerID, teamID, email, memberIDs)
-	})
-	return err
-}
-
 // RemoveTeamMemberCtx is RemoveTeamMember under the in-request re-check (PAC-71, contract §5).
 func RemoveTeamMemberCtx(ctx context.Context, db DBTX, teamID uuid.UUID, userID uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {

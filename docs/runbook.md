@@ -195,6 +195,17 @@ they saw and change nothing. There is no override.
   Docker retries it a moment later, so a single `refusing to start` line
   followed by a normal start is harmless.
 
+- **PAC-129 (migration 041).** Before stopping the backend, count the team
+  invitations whose address is empty once trimmed. The migration deletes them and
+  logs the number; the count tells you what to expect:
+
+  ```sql
+  SELECT count(*) FROM team_invites
+   WHERE btrim(invitee_email, chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || chr(32) || chr(133) || chr(160) || chr(5760) || chr(8192) || chr(8193) || chr(8194) || chr(8195) || chr(8196) || chr(8197) || chr(8198) || chr(8199) || chr(8200) || chr(8201) || chr(8202) || chr(8232) || chr(8233) || chr(8239) || chr(8287) || chr(12288) || chr(65279)) = '';
+  ```
+
+  Any number is safe to deploy: such an invitation cannot be accepted.
+
 ### PAC-71 release: sign every session out once (release step)
 
 The PAC-71 release has one extra step, decided by the owner (OQ-6, 2026-11-01:
@@ -885,6 +896,34 @@ then leave the archive and are never erased. Before any rollback that crosses
 037, record the deleted link ids
 (`SELECT id FROM scheduling_links WHERE deleted_at IS NOT NULL`, or
 `booker-erasure status` for those with bookings awaiting erasure).
+
+## Erasing an address
+
+Use this when someone asks to be erased and Paceday holds their address as
+**team or Manager data** of other people's accounts. It does not delete any
+account; account deletion is separate. A person **with** a Paceday account
+must be searched by address too: entries added to a team by address are not
+linked to their account, so deleting the account does not reach them.
+
+Stop nothing; run in one transaction, with the address lowercased:
+
+```sql
+BEGIN;
+DELETE FROM team_added_members              WHERE email = lower(:addr);
+DELETE FROM team_invites                    WHERE lower(invitee_email) = lower(:addr);
+DELETE FROM manager_team_member_assignments WHERE lower(member_email) = lower(:addr);
+DELETE FROM one_on_one_occurrences          WHERE lower(member_email) = lower(:addr);
+DELETE FROM team_analytics_cache            WHERE lower(member_email) = lower(:addr);
+DELETE FROM manager_team_members            WHERE lower(member_email) = lower(:addr);
+COMMIT;
+```
+
+This covers: people added to teams; invitations of every status; Manager roster
+rows and their team assignments; 1:1 occurrences; cached Manager figures. It
+does not reach calendar events on other people's calendars, emails already
+sent, or backups taken before the erasure (kept until their retention deletes
+them). The cross-cutting "erase address" tool that will replace this procedure
+is tracked in PAC-134.
 
 ## Account recovery
 

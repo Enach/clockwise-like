@@ -96,7 +96,7 @@ func TestGetTeamAnalytics_NoMembers_EncodesEmptyArray(t *testing.T) {
 	db := openTestDB(t)
 	eng := &TeamAvailabilityEngine{DB: db}
 
-	analytics, err := eng.GetTeamAnalytics(context.Background(), uuid.New(), time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
+	analytics, err := eng.GetTeamAnalytics(context.Background(), uuid.New(), time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC), true)
 	if err != nil {
 		t.Fatalf("GetTeamAnalytics: %v", err)
 	}

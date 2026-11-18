@@ -72,6 +72,10 @@ type FreeBusyService struct {
 	// newOutlook builds the Outlook free/busy reader over a token source; a
 	// test seam, nil means calendar.NewOutlookClient.
 	newOutlook func(oauth2.TokenSource) outlookFreeBusy
+
+	// team is the PAC-129 team path's batching (team_freebusy.go); the zero
+	// value is production's.
+	team teamBatching
 }
 
 type cacheItem struct {

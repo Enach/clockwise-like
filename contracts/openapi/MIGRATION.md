@@ -41,8 +41,8 @@ from the contract and any edit is reported as drift.
 ## Progress
 
 - operations: **134**
-- generated: **12**
-- handwritten: **122**
+- generated: **14**
+- handwritten: **120**
 
 ## Register
 
@@ -180,5 +180,5 @@ from the contract and any edit is reported as drift.
 | createNoMeetingZone               | POST   | /api/teams/{id}/no-meeting-zones                | teams            | handwritten | |
 | deleteNoMeetingZone               | DELETE | /api/teams/{id}/no-meeting-zones/{zoneId}       | teams            | handwritten | |
 | updateNoMeetingZone               | PATCH  | /api/teams/{id}/no-meeting-zones/{zoneId}       | teams            | handwritten | |
-| addTeamPerson                     | POST   | /api/teams/{id}/people                          | teams            | handwritten | PAC-129: new; its implementation uses the generated server interface (factory §4), called from a chi handler that answers 400 "invalid team id" first, and flips this row to `generated` in the same PR. `handwritten` here only means no handler exists yet. |
-| removeTeamPerson                  | DELETE | /api/teams/{id}/people/{email}                  | teams            | handwritten | PAC-129: new; its implementation uses the generated server interface (factory §4), called from a chi handler that answers 400 "invalid team id" and 400 "invalid email" first, and flips this row to `generated` in the same PR. `handwritten` here only means no handler exists yet. |
+| addTeamPerson                     | POST   | /api/teams/{id}/people                          | teams            | generated   | PAC-129: generatedServer.AddTeamPerson (backend/api/handlers_team_people.go), mounted by teamHandlers.addTeamPerson, which answers 400 "invalid team id" first. |
+| removeTeamPerson                  | DELETE | /api/teams/{id}/people/{email}                  | teams            | generated   | PAC-129: generatedServer.RemoveTeamPerson (backend/api/handlers_team_people.go), mounted by teamHandlers.removeTeamPerson, which answers 400 "invalid team id" first and path-unescapes {email}; the handler normalises it (400 "invalid email"). |

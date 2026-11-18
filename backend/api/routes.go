@@ -263,6 +263,8 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Patch("/{id}", th.patchTeam)
 			r.Delete("/{id}", th.deleteTeam)
 			r.Post("/{id}/members/invite", th.inviteMember)
+			r.Post("/{id}/people", th.addTeamPerson)              // PAC-129
+			r.Delete("/{id}/people/{email}", th.removeTeamPerson) // PAC-129
 			r.Delete("/{id}/members/{userId}", th.removeMember)
 			r.Post("/{id}/no-meeting-zones", th.createZone)
 			r.Get("/{id}/no-meeting-zones", th.listZones)
