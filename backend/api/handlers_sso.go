@@ -56,7 +56,11 @@ func (h *ssoHandlers) detect(w http.ResponseWriter, r *http.Request) {
 func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 	d := chi.URLParam(r, "domain")
 	provider, err := storage.GetSSOProviderByDomain(h.ah.db, d)
-	if err != nil || provider == nil {
+	if err != nil { // PAC-122 SF-072: a failed lookup is not "not configured"
+		writeServerError(w, r, "SSO provider lookup", err, http.StatusInternalServerError)
+		return
+	}
+	if provider == nil {
 		writeError(w, "SSO not configured for this domain", http.StatusNotFound)
 		return
 	}
@@ -126,7 +130,11 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	setCookie(w, &http.Cookie{Name: "sso_state", MaxAge: -1, Path: "/"})
 
 	provider, err := storage.GetSSOProviderByDomain(db, d)
-	if err != nil || provider == nil {
+	if err != nil { // PAC-122 SF-072: a failed lookup is not "not configured"
+		writeServerError(w, r, "SSO provider lookup", err, http.StatusInternalServerError)
+		return
+	}
+	if provider == nil {
 		writeError(w, "SSO not configured for this domain", http.StatusNotFound)
 		return
 	}
@@ -196,7 +204,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := res.User
-	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, user.Email)
+	associateOrg(h.ah.db, user.ID, user.Email)
 
 	if err := h.ah.issueJWT(w, user, res.Gen); err != nil {
 		h.ah.signInFailed(w, r, "issue session", err)

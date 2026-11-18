@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/Enach/paceday/backend/storage"
@@ -20,8 +21,12 @@ func (h *meHandlers) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := storage.GetUserByID(h.db, userID)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil { // PAC-122 SF-072: a failed read is not "user not found"
+		writeServerError(w, r, "current user", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
