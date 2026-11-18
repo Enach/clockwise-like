@@ -153,7 +153,7 @@ func TestDelete_Success(t *testing.T) {
 	defer srv.Close()
 
 	c := newClient(srv.URL)
-	if err := c.delete(context.Background(), "/events/123"); err != nil {
+	if _, err := c.delete(context.Background(), "/events/123"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -165,7 +165,7 @@ func TestDelete_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := newClient(srv.URL)
-	if err := c.delete(context.Background(), "/events/123"); err == nil {
+	if _, err := c.delete(context.Background(), "/events/123"); err == nil {
 		t.Fatal("expected error for 403")
 	}
 }
