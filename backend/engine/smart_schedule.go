@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -36,7 +37,15 @@ type SuggestedSlot struct {
 
 type ScheduleSuggestions struct {
 	Slots []SuggestedSlot `json:"slots"`
+	// UnknownAttendees names the requested attendees whose availability was
+	// not checked (PAC-133 §3.5 item 2); always present, [] when all were.
+	UnknownAttendees []string `json:"unknown_attendees"`
 }
+
+// ErrOwnCalendarUnknown means the provider could not read the requester's own
+// calendar, so no slot can be offered to them (PAC-133 §3.5 item 3). It is a
+// server failure (the 500), never "not connected".
+var ErrOwnCalendarUnknown = errors.New("own calendar availability unknown")
 
 // ErrOutOfHoursAllowance is CreateMeeting's policy refusal once the weekly
 // out-of-hours allowance is spent. Its text is the documented 500 body of
@@ -67,19 +76,29 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 		return nil, err
 	}
 
-	allEmails := append([]string{client.calendarID()}, req.Attendees...)
+	ownID := client.calendarID()
+	allEmails := append([]string{ownID}, req.Attendees...)
 	busyMap, err := client.getFreeBusy(ctx, allEmails, req.RangeStart, req.RangeEnd)
 	if err != nil {
 		return nil, fmt.Errorf("freebusy: %w", err)
 	}
+	// Slots built on a calendar Paceday could not read are not offered to the
+	// person they are for (PAC-133 §3.5 item 3): the operation's 500.
+	if own := busyMap[ownID]; !own.Known {
+		return nil, ErrOwnCalendarUnknown
+	}
 
+	// The busy set (D-11): every window reported for anyone, readable or
+	// not, a group's members included. An unknown attendee's missing time
+	// constrains nothing.
 	var allBusy []interval
-	for _, slots := range busyMap {
-		for _, s := range slots {
+	for _, entry := range busyMap {
+		for _, s := range entry.Busy {
 			allBusy = append(allBusy, interval{s.Start, s.End})
 		}
 	}
 	allBusy = mergeIntervals(allBusy)
+	unknown := unknownAttendees(req.Attendees, busyMap)
 
 	freeBlocks := subtractIntervals(interval{req.RangeStart, req.RangeEnd}, allBusy)
 
@@ -139,7 +158,26 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 	sortSlotsByScore(candidates)
 	top := pickTopUnique(candidates, 3, time.Hour)
 
-	return &ScheduleSuggestions{Slots: top}, nil
+	return &ScheduleSuggestions{Slots: top, UnknownAttendees: unknown}, nil
+}
+
+// unknownAttendees names every requested attendee whose outcome is unknown,
+// spelled as sent, once each, in request order; [] when everyone was read
+// (PAC-133 §3.5 item 2). A group is named by the group address; its members
+// never by their own ids.
+func unknownAttendees(attendees []string, answer map[string]calendar.FreeBusyEntry) []string {
+	out := make([]string, 0)
+	seen := make(map[string]bool, len(attendees))
+	for _, a := range attendees {
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		if !answer[a].Known {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func canScheduleOutOfHours(ctx context.Context, client calendarOps, settings *storage.Settings, anchor time.Time) (bool, error) {
@@ -328,6 +366,6 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 		return nil, err
 	}
 
-	storage.WriteAuditLogCtx(ctx, e.DB, auth.UserIDFromContext(ctx), "meeting_scheduled", `{"event_id":"`+created.Id+`","title":"`+req.Title+`"}`)
+	storage.WriteAuditLogCtx(ctx, e.DB, auth.UserIDFromContext(ctx), "meeting_scheduled", storage.AuditJSON(map[string]string{"event_id": created.Id, "title": req.Title}))
 	return created, nil
 }

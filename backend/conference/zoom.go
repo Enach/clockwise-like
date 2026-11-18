@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Enach/paceday/backend/internal/outbound"
@@ -72,4 +73,13 @@ func (z *ZoomProvider) CreateMeeting(ctx context.Context, title string, start, e
 		MeetingID: fmt.Sprintf("%d", result.ID),
 		Password:  result.Password,
 	}, nil
+}
+
+// DeleteMeeting deletes a meeting this provider created (PAC-122 SF-069).
+func (z *ZoomProvider) DeleteMeeting(ctx context.Context, meetingID string) error {
+	accessToken, err := bearer(z.Tokens, z.AccessToken)
+	if err != nil {
+		return err
+	}
+	return deleteAt(ctx, ZoomAPIBase+"/meetings/"+url.PathEscape(meetingID), accessToken, "zoom")
 }

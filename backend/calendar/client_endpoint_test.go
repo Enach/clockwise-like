@@ -152,7 +152,7 @@ func TestCalendarClient_GetFreeBusyReachesConfiguredEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFreeBusy: %v", err)
 	}
-	if len(fb["a@x.test"]) != 1 {
+	if e := fb["a@x.test"]; !e.Known || len(e.Busy) != 1 {
 		t.Errorf("busy slots did not decode: %+v", fb)
 	}
 	got := reqs()

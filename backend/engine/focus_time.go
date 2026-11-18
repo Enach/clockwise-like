@@ -113,7 +113,13 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 }
 
 func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, userID uuid.UUID, s *storage.Settings, day time.Time, dateStr string, result *FocusRunResult) error {
-	existingMinutes, _ := storage.FocusMinutesForDay(e.DB, userID, dateStr)
+	// PAC-122 SF-019: an unreadable total is the day's error, never 0. Read
+	// as 0, the day's existing (transparent) focus events were skipped by
+	// buildBusy and new blocks were created over them.
+	existingMinutes, err := storage.FocusMinutesForDay(e.DB, userID, dateStr)
+	if err != nil {
+		return fmt.Errorf("read existing focus minutes: %w", err)
+	}
 	if existingMinutes >= s.FocusDailyTargetMinutes {
 		result.SkippedDays = append(result.SkippedDays, dateStr)
 		return nil

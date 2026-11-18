@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log"
 	"time"
@@ -72,6 +73,19 @@ func FocusMinutesForDay(db DBTX, userID uuid.UUID, date string) (int, error) {
 	var total int
 	err := row.Scan(&total)
 	return total, err
+}
+
+// AuditJSON encodes an audit entry's details as JSON (PAC-122 SF-070:
+// details built by concatenation became invalid JSON as soon as a title
+// carried a quote). v is a map or struct of plain values, which always
+// encodes; "{}" stands in if one ever does not.
+func AuditJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		log.Printf("audit: details not encodable: %v", err)
+		return "{}"
+	}
+	return string(b)
 }
 
 // WriteAuditLog records an activity entry about userID's calendar (PAC-23):

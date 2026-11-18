@@ -106,3 +106,50 @@ func TestDelete_RemovesOnlyThatEvent(t *testing.T) {
 		t.Fatalf("after delete got %v", got)
 	}
 }
+
+// PAC-133 AC-37: a fixture credential's calendar is readable with no busy
+// windows even when it holds no events or was cleared; an id with no events,
+// metadata or credential is still unknown.
+func TestBusy_FixtureCalendarIsKnownWhenEmpty(t *testing.T) {
+	s := NewStore()
+	s.SetTokens([]Credential{{Token: "tok-a", Label: "a-work", Calendar: "A@example.test"}})
+	from, to := mustTime(t, "2030-01-07T09:00:00Z"), mustTime(t, "2030-01-07T17:00:00Z")
+
+	check := func(when string) {
+		t.Helper()
+		busy, known := s.Busy("a@example.test", from, to)
+		if !known || busy == nil || len(busy) != 0 {
+			t.Errorf("%s: busy=%v known=%v, want readable with no windows", when, busy, known)
+		}
+	}
+	check("no events ever")
+	s.Insert("a@example.test", ev("x", "2030-01-07T10:00:00Z", "2030-01-07T11:00:00Z"))
+	s.ClearCalendar("a@example.test")
+	check("after ClearCalendar")
+
+	if _, known := s.Busy("stranger@example.test", from, to); known {
+		t.Error("an id with no events, metadata or credential must stay unknown")
+	}
+}
+
+// AC-37 through the product surface: primary and the calendar's own id are
+// readable for an empty fixture calendar; an unknown id answers notFound.
+func TestFreeBusy_EmptyFixtureCalendarIsReadable(t *testing.T) {
+	_, srv := newTestServer(t)
+	resp, err := client(t, srv.URL, "tok-a").Freebusy.Query(&googlecalendar.FreeBusyRequest{
+		TimeMin: "2030-01-07T09:00:00Z",
+		TimeMax: "2030-01-07T17:00:00Z",
+		Items:   []*googlecalendar.FreeBusyRequestItem{{Id: "primary"}, {Id: "a@example.test"}, {Id: "nobody@example.test"}},
+	}).Do()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"primary", "a@example.test"} {
+		if c, ok := resp.Calendars[id]; !ok || len(c.Errors) != 0 || len(c.Busy) != 0 {
+			t.Errorf("%s = %+v, want readable with no windows", id, c)
+		}
+	}
+	if c := resp.Calendars["nobody@example.test"]; len(c.Errors) != 1 || c.Errors[0].Reason != "notFound" {
+		t.Errorf("unknown id = %+v, want notFound", c)
+	}
+}

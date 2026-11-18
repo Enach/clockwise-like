@@ -236,6 +236,14 @@ type pac67Calendar struct {
 	puts    int
 	inserts int
 	failAll bool
+	// failPut answers every event update with a 503 (PAC-122 SF-069).
+	failPut bool
+	// dropPut closes the connection of every event update without an
+	// answer; with applyPut the update is applied first, and the event read
+	// then returns it; with failGetAfterPut an event read after an update
+	// answers 503 (PAC-122 SF-069 review).
+	dropPut, applyPut, failGetAfterPut bool
+	applied                            []byte
 }
 
 func newPAC67Calendar(t *testing.T) *pac67Calendar {
@@ -244,15 +252,39 @@ func newPAC67Calendar(t *testing.T) *pac67Calendar {
 		c.mu.Lock()
 		c.bearers = append(c.bearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		busy := c.busyFor[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
-		fail := c.failAll
+		fail := c.failAll || (c.failPut && (r.Method == http.MethodPut || r.Method == http.MethodPatch))
 		if r.Method == http.MethodPut {
 			c.puts++
 		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/events") {
 			c.inserts++
 		}
+		isPut := r.Method == http.MethodPut || r.Method == http.MethodPatch
+		drop, apply, applied := c.dropPut && isPut, c.applyPut && isPut, c.applied
+		failGet := c.failGetAfterPut && c.puts > 0 && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/events/")
 		c.mu.Unlock()
+		if drop {
+			body, _ := io.ReadAll(r.Body)
+			if apply {
+				c.mu.Lock()
+				c.applied = body
+				c.mu.Unlock()
+			}
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hj.Hijack(); err == nil {
+					_ = conn.Close()
+				}
+			}
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
+		if failGet {
+			fail = true
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/events/") && applied != nil && !fail {
+			_, _ = w.Write(applied)
+			return
+		}
 		if fail {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":{"code":503,"message":"backend error"}}`))
@@ -332,4 +364,3 @@ func (c *pac67Calendar) insertCount() int {
 	defer c.mu.Unlock()
 	return c.inserts
 }
-

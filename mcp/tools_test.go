@@ -7,8 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -258,5 +261,331 @@ func TestTools_BackendError(t *testing.T) {
 	})
 	if !strings.Contains(resp, "Error:") {
 		t.Errorf("expected error text in response, got: %s", resp)
+	}
+}
+
+// --- PAC-133 -------------------------------------------------------------------
+
+// recordedCall is one request the PAC-133 fake backend received.
+type recordedCall struct {
+	method, path string
+	query        url.Values
+	body         map[string]any
+}
+
+// pac133Backend records every request and answers each with answer.
+type pac133Backend struct {
+	mu     sync.Mutex
+	calls  []recordedCall
+	answer func(c recordedCall) (int, string)
+	srv    *httptest.Server
+}
+
+func newPAC133Backend(t *testing.T, answer func(c recordedCall) (int, string)) *pac133Backend {
+	t.Helper()
+	b := &pac133Backend{answer: answer}
+	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := recordedCall{method: r.Method, path: r.URL.Path, query: r.URL.Query()}
+		if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
+			_ = json.Unmarshal(raw, &c.body)
+		}
+		b.mu.Lock()
+		b.calls = append(b.calls, c)
+		b.mu.Unlock()
+		status, body := b.answer(c)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(b.srv.Close)
+	return b
+}
+
+func (b *pac133Backend) to(path string) []recordedCall {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []recordedCall
+	for _, c := range b.calls {
+		if c.path == path {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (b *pac133Backend) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.calls)
+}
+
+// resultText is the text of a tools/call answer.
+func resultText(t *testing.T, raw string) string {
+	t.Helper()
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil || len(resp.Result.Content) == 0 {
+		t.Fatalf("not a tool result: %s (%v)", raw, err)
+	}
+	return resp.Result.Content[0].Text
+}
+
+func toolDescription(t *testing.T, name string) string {
+	t.Helper()
+	s := buildServer(newClient("http://unused.invalid"))
+	resp := s.HandleMessage(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	b, _ := json.Marshal(resp)
+	var list struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(b, &list)
+	for _, tool := range list.Result.Tools {
+		if tool.Name == name {
+			return tool.Description
+		}
+	}
+	t.Fatalf("tool %s not listed", name)
+	return ""
+}
+
+// AC-19: the named attendees pass through, trimmed; none means no attendees
+// parameter, and the tool never names the user's own calendar.
+func TestPAC133_AC19_FindFreeSlotsPassesAttendees(t *testing.T) {
+	b := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, `{"own":{"status":"known","busy":[]},"calendars":[]}` })
+	s := buildServer(newClient(b.srv.URL))
+	callTool(t, s, "clockwise_find_free_slots", map[string]any{"start": "2030-01-07T00:00:00Z", "end": "2030-01-08T00:00:00Z", "attendees": " a@x.test, b@x.test ,"})
+	callTool(t, s, "clockwise_find_free_slots", map[string]any{"start": "2030-01-07T00:00:00Z", "end": "2030-01-08T00:00:00Z"})
+	callTool(t, s, "clockwise_find_free_slots", map[string]any{"start": "2030-01-07T00:00:00Z", "end": "2030-01-08T00:00:00Z", "attendees": " , "})
+	calls := b.to("/api/calendar/freebusy")
+	if len(calls) != 3 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if got := calls[0].query["attendees"]; len(got) != 1 || got[0] != "a@x.test,b@x.test" {
+		t.Errorf("attendees = %v, want exactly a@x.test,b@x.test", got)
+	}
+	for _, c := range calls[1:] {
+		if _, ok := c.query["attendees"]; ok {
+			t.Errorf("attendees sent without any named: %v", c.query)
+		}
+		if strings.Contains(c.query.Encode(), "primary") {
+			t.Errorf("the tool named the user's own calendar: %v", c.query)
+		}
+	}
+}
+
+// AC-20: the unknown marker is relayed, an unknown calendar never shows an
+// empty window list, and the description says unknown means not checked.
+func TestPAC133_AC20_FindFreeSlotsRendersUnknown(t *testing.T) {
+	answer := `{"own":{"status":"known","busy":[]},"calendars":[{"address":"a@x.test","status":"unknown"},{"address":"b@x.test","status":"known","busy":[{"start":"2030-01-07T10:00:00Z","end":"2030-01-07T11:00:00Z"}]}]}`
+	b := newPAC133Backend(t, func(recordedCall) (int, string) { return 200, answer })
+	text := resultText(t, callTool(t, buildServer(newClient(b.srv.URL)), "clockwise_find_free_slots", map[string]any{"start": "2030-01-07T00:00:00Z", "end": "2030-01-08T00:00:00Z", "attendees": "a@x.test,b@x.test"}))
+	var got struct {
+		Calendars []map[string]json.RawMessage `json:"calendars"`
+	}
+	if err := json.Unmarshal([]byte(text), &got); err != nil || len(got.Calendars) != 2 {
+		t.Fatalf("text = %s", text)
+	}
+	if string(got.Calendars[0]["status"]) != `"unknown"` {
+		t.Errorf("A = %v, want the unknown marker", got.Calendars[0])
+	}
+	if _, ok := got.Calendars[0]["busy"]; ok {
+		t.Errorf("A carries a window list: %s", text)
+	}
+	if !strings.Contains(string(got.Calendars[1]["busy"]), "2030-01-07T10:00:00Z") {
+		t.Errorf("B's window missing: %s", text)
+	}
+	if desc := toolDescription(t, "clockwise_find_free_slots"); !strings.Contains(desc, "Unknown means not checked, never free") {
+		t.Errorf("description = %q", desc)
+	}
+	if d := toolDescription(t, "clockwise_suggest_meeting"); !strings.Contains(d, "unknown_attendees") || !strings.Contains(d, "Unknown means not checked, never free.") {
+		t.Errorf("suggest_meeting description = %q", d)
+	}
+	// The window rule reaches the model as the usual Error text.
+	refusing := newPAC133Backend(t, func(recordedCall) (int, string) { return 400, "end must be after start" })
+	text = resultText(t, callTool(t, buildServer(newClient(refusing.srv.URL)), "clockwise_find_free_slots", map[string]any{"start": "2030-01-07T10:00:00Z", "end": "2030-01-07T10:00:00Z"}))
+	if !strings.HasPrefix(text, "Error: ") || !strings.Contains(text, "end must be after start") {
+		t.Errorf("text = %q", text)
+	}
+}
+
+// createEventBackend answers suggest calls: a re-check (a range exactly as
+// long as the duration) with recheck, any other with fresh; create with an
+// event.
+func createEventBackend(t *testing.T, fresh string, recheck func() (int, string)) *pac133Backend {
+	t.Helper()
+	return newPAC133Backend(t, func(c recordedCall) (int, string) {
+		switch c.path {
+		case "/api/schedule/suggest":
+			start, _ := time.Parse(time.RFC3339, c.body["range_start"].(string))
+			end, _ := time.Parse(time.RFC3339, c.body["range_end"].(string))
+			if end.Sub(start) == time.Duration(c.body["duration_minutes"].(float64))*time.Minute {
+				return recheck()
+			}
+			return 200, fresh
+		case "/api/schedule/create":
+			return 200, `{"id":"evt-new"}`
+		}
+		return 404, `{"error":"not found"}`
+	})
+}
+
+const (
+	slotS       = "2030-01-07T10:00:00Z"
+	slotE       = "2030-01-07T10:30:00Z"
+	freshWithU  = `{"slots":[{"start":"` + slotS + `","end":"` + slotE + `","score":1,"reasons":[]}],"unknown_attendees":["u@x.test"]}`
+	freshMoved  = `{"slots":[{"start":"2030-01-07T15:00:00Z","end":"2030-01-07T15:30:00Z","score":1,"reasons":[]}],"unknown_attendees":["u@x.test"]}`
+	recheckOkU  = `{"slots":[{"start":"` + slotS + `","end":"` + slotE + `","score":1,"reasons":[]}],"unknown_attendees":["u@x.test"]}`
+	recheckNone = `{"slots":[],"unknown_attendees":[]}`
+	noLonger    = "Not booked: that time is no longer available — ask again (call clockwise_create_event without start)."
+	notChecked  = "Not booked: that time could not be checked — ask again (call clockwise_create_event without start)."
+)
+
+func createArgs(extra map[string]any) map[string]any {
+	args := map[string]any{"title": "Sync", "attendees": "b@x.test,u@x.test", "duration": "30", "preferred_date": "2030-01-07"}
+	for k, v := range extra {
+		args[k] = v
+	}
+	return args
+}
+
+func runCreate(t *testing.T, b *pac133Backend, args map[string]any) string {
+	t.Helper()
+	return resultText(t, callTool(t, buildServer(newClient(b.srv.URL)), "clockwise_create_event", args))
+}
+
+// AC-26: create_event takes two explicit steps past an unknown attendee and
+// re-checks exactly the slot shown before booking it.
+func TestPAC133_AC26_CreateEventTwoSteps(t *testing.T) {
+	ok := func() (int, string) { return 200, recheckOkU }
+	accept := map[string]any{"start": slotS, "accept_unknown": "true", "accepted_unknown": "u@x.test"}
+
+	t.Run("a first call books nothing and says how to accept", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, ok)
+		text := runCreate(t, b, createArgs(nil))
+		if len(b.to("/api/schedule/create")) != 0 {
+			t.Fatal("a create request was made")
+		}
+		for _, want := range []string{"u@x.test", "start " + slotS, "end " + slotE, `start="` + slotS + `"`, `accept_unknown="true"`, `accepted_unknown="u@x.test"`} {
+			if !strings.Contains(text, want) {
+				t.Errorf("text lacks %q: %s", want, text)
+			}
+		}
+	})
+
+	t.Run("b acceptance books exactly the slot shown", func(t *testing.T) {
+		b := createEventBackend(t, freshMoved, ok)
+		runCreate(t, b, createArgs(map[string]any{"start": slotS, "accept_unknown": "TRUE ", "accepted_unknown": "U@x.test"}))
+		creates := b.to("/api/schedule/create")
+		if len(creates) != 1 || creates[0].body["start"] != slotS || creates[0].body["end"] != slotE {
+			t.Fatalf("creates = %+v, want one at %s-%s", creates, slotS, slotE)
+		}
+		sugg := b.to("/api/schedule/suggest")
+		if len(sugg) != 1 || sugg[0].body["range_start"] != slotS || sugg[0].body["range_end"] != slotE {
+			t.Errorf("re-check = %+v, want one suggest over exactly [S, E]", sugg)
+		}
+	})
+
+	t.Run("c a readable person is now busy", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, func() (int, string) { return 200, recheckNone })
+		if text := runCreate(t, b, createArgs(accept)); len(b.to("/api/schedule/create")) != 0 || text != noLonger {
+			t.Errorf("text = %q", text)
+		}
+	})
+
+	t.Run("c the requester's own calendar became unknown", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, func() (int, string) { return 500, `{"error":"internal error"}` })
+		if text := runCreate(t, b, createArgs(accept)); len(b.to("/api/schedule/create")) != 0 || text != notChecked {
+			t.Errorf("text = %q", text)
+		}
+	})
+
+	t.Run("d the unknown set grew", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, func() (int, string) {
+			return 200, `{"slots":[{"start":"` + slotS + `","end":"` + slotE + `"}],"unknown_attendees":["u@x.test","v@x.test"]}`
+		})
+		want := "Not booked: the availability of v@x.test could not be checked — ask again (call clockwise_create_event without start)."
+		if text := runCreate(t, b, createArgs(accept)); len(b.to("/api/schedule/create")) != 0 || text != want {
+			t.Errorf("text = %q", text)
+		}
+	})
+
+	t.Run("e accept_unknown without start is a first call", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, ok)
+		text := runCreate(t, b, createArgs(map[string]any{"accept_unknown": "true", "accepted_unknown": "u@x.test"}))
+		if len(b.to("/api/schedule/create")) != 0 || !strings.HasPrefix(text, "Not booked yet:") {
+			t.Errorf("text = %q", text)
+		}
+	})
+
+	t.Run("accepted names but accept_unknown is not the string true", func(t *testing.T) {
+		for _, v := range []any{true, "yes", ""} {
+			b := createEventBackend(t, freshWithU, ok)
+			text := runCreate(t, b, createArgs(map[string]any{"start": slotS, "accept_unknown": v, "accepted_unknown": "u@x.test"}))
+			if len(b.to("/api/schedule/create")) != 0 || !strings.HasPrefix(text, "Not booked yet:") || !strings.Contains(text, "start "+slotS) {
+				t.Errorf("accept_unknown=%v: text = %q", v, text)
+			}
+		}
+	})
+
+	t.Run("f no unknown attendee books the first slot as today", func(t *testing.T) {
+		b := createEventBackend(t, `{"slots":[{"start":"`+slotS+`","end":"`+slotE+`"}],"unknown_attendees":[]}`, ok)
+		runCreate(t, b, createArgs(nil))
+		if creates := b.to("/api/schedule/create"); len(creates) != 1 || creates[0].body["start"] != slotS {
+			t.Errorf("creates = %+v", creates)
+		}
+	})
+
+	t.Run("g a start over lunch is refused", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, func() (int, string) { return 200, recheckNone })
+		text := runCreate(t, b, map[string]any{"title": "x", "attendees": "b@x.test", "start": "2030-01-07T12:00:00Z", "duration": "60"})
+		if len(b.to("/api/schedule/create")) != 0 || text != noLonger {
+			t.Errorf("text = %q", text)
+		}
+		if s := b.to("/api/schedule/suggest"); len(s) != 1 || s[0].body["range_end"] != "2030-01-07T13:00:00Z" {
+			t.Errorf("re-check = %+v, want [12:00, 13:00]", s)
+		}
+	})
+
+	t.Run("a first slot other than the start is refused", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, func() (int, string) {
+			return 200, `{"slots":[{"start":"2030-01-07T10:30:00Z","end":"2030-01-07T11:00:00Z"}],"unknown_attendees":[]}`
+		})
+		if text := runCreate(t, b, createArgs(map[string]any{"start": slotS})); len(b.to("/api/schedule/create")) != 0 || text != noLonger {
+			t.Errorf("text = %q", text)
+		}
+	})
+
+	t.Run("an unparseable start", func(t *testing.T) {
+		b := createEventBackend(t, freshWithU, ok)
+		if text := runCreate(t, b, createArgs(map[string]any{"start": "tomorrow"})); b.count() != 0 || text != "Error: start must be RFC3339" {
+			t.Errorf("text = %q after %d calls", text, b.count())
+		}
+	})
+
+	if d := toolDescription(t, "clockwise_create_event"); !strings.Contains(d, `accept_unknown="true"`) || !strings.Contains(d, "nothing is booked") {
+		t.Errorf("description = %q", d)
+	}
+}
+
+// PAC-133 §10 (m-6): clockwise_parse_command relays NLP parse's answer as
+// text, so the model sees the suggestion-failure sentence in error.
+func TestPAC133_ParseCommandRelaysTheSuggestionFailure(t *testing.T) {
+	const sentence = "Paceday could not suggest meeting times for this request. Try again later."
+	b := newPAC133Backend(t, func(recordedCall) (int, string) {
+		return 200, `{"intent":"schedule_meeting","title":"Sync","error":"` + sentence + `"}`
+	})
+	text := resultText(t, callTool(t, buildServer(newClient(b.srv.URL)), "clockwise_parse_command", map[string]any{"command": "meet bob tomorrow"}))
+	if !strings.Contains(text, sentence) {
+		t.Errorf("text = %q, want the error sentence relayed", text)
 	}
 }

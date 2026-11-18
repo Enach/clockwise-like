@@ -66,6 +66,12 @@ func (h *freeBusyHandlers) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "end_time must be RFC3339", http.StatusBadRequest)
 		return
 	}
+	// Last of the 400s, before the cache and any provider call (PAC-133
+	// §2.1, API-077, SF-034).
+	if !end.After(start) {
+		writeError(w, "end_time must be after start_time", http.StatusBadRequest)
+		return
+	}
 
 	results, err := h.svc.Query(r.Context(), userID, body.Emails, start, end)
 	if err != nil {

@@ -17,3 +17,10 @@ type Details struct {
 type Provider interface {
 	CreateMeeting(ctx context.Context, title string, start, end time.Time) (*Details, error)
 }
+
+// MeetingDeleter is a Provider that can delete a meeting it created, by
+// Details.MeetingID. A caller that could not attach a new meeting uses it so
+// the meeting is not left orphaned at the provider (PAC-122 SF-069).
+type MeetingDeleter interface {
+	DeleteMeeting(ctx context.Context, meetingID string) error
+}

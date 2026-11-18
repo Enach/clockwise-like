@@ -31,53 +31,17 @@ func buildServer(c *backendClient) *server.MCPServer {
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_create_event",
-		mcp.WithDescription("Schedule a meeting using the smart scheduler (finds a free slot and creates the event)"),
+		mcp.WithDescription(createEventDescription),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Meeting title")),
 		mcp.WithString("attendees", mcp.Required(), mcp.Description("Comma-separated attendee emails")),
 		mcp.WithString("duration", mcp.Description("Duration in minutes (default 30)")),
 		mcp.WithString("preferred_date", mcp.Description("Preferred date in YYYY-MM-DD format")),
 		mcp.WithString("location", mcp.Description("Meeting location or conferencing URL")),
+		mcp.WithString("start", mcp.Description("Book exactly this start (RFC3339), as given in a previous answer; it is checked again before booking")),
+		mcp.WithString("accept_unknown", mcp.Description(`"true" to book past the attendees named in accepted_unknown, whose availability could not be checked`)),
+		mcp.WithString("accepted_unknown", mcp.Description("Comma-separated attendees whose unknown availability is accepted, as listed in the previous answer")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		duration := parseDuration(strArg(req, "duration"), 30)
-		rangeStart, rangeEnd, err := schedulingRange(strArg(req, "preferred_date"))
-		if err != nil {
-			return jsonResult(nil, err)
-		}
-		attendees := splitEmails(strArg(req, "attendees"))
-		suggestionPayload := map[string]any{
-			"title":            strArg(req, "title"),
-			"attendees":        attendees,
-			"duration_minutes": duration,
-			"range_start":      rangeStart,
-			"range_end":        rangeEnd,
-		}
-		suggestions, err := c.post(ctx, "/api/schedule/suggest", suggestionPayload)
-		if err != nil {
-			return jsonResult(nil, err)
-		}
-		var result struct {
-			Slots []struct {
-				Start time.Time `json:"start"`
-				End   time.Time `json:"end"`
-			} `json:"slots"`
-		}
-		if err := json.Unmarshal(suggestions, &result); err != nil {
-			return jsonResult(nil, fmt.Errorf("decode schedule suggestions: %w", err))
-		}
-		if len(result.Slots) == 0 {
-			return jsonResult(nil, fmt.Errorf("no available slot found"))
-		}
-		createPayload := map[string]any{
-			"title":     strArg(req, "title"),
-			"attendees": attendees,
-			"start":     result.Slots[0].Start,
-			"end":       result.Slots[0].End,
-		}
-		if v := strArg(req, "location"); v != "" {
-			createPayload["location"] = v
-		}
-		created, err := c.post(ctx, "/api/schedule/create", createPayload)
-		return jsonResult(created, err)
+		return createEvent(ctx, c, req)
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_update_event",
@@ -127,13 +91,19 @@ func buildServer(c *backendClient) *server.MCPServer {
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_find_free_slots",
-		mcp.WithDescription("Find free/busy windows in the calendar for a date range"),
+		mcp.WithDescription(findFreeSlotsDescription),
 		mcp.WithString("start", mcp.Required(), mcp.Description("Range start in RFC3339")),
 		mcp.WithString("end", mcp.Required(), mcp.Description("Range end in RFC3339")),
+		mcp.WithString("attendees", mcp.Description("Comma-separated attendee emails (optional); the user's own calendar is always read")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		q := url.Values{}
 		q.Set("start", strArg(req, "start"))
 		q.Set("end", strArg(req, "end"))
+		// PAC-133 §6.1: the named attendees pass through; the user's own
+		// calendar is never named here, the backend always adds it.
+		if attendees := splitEmails(strArg(req, "attendees")); len(attendees) > 0 {
+			q.Set("attendees", strings.Join(attendees, ","))
+		}
 		res, err := c.get(ctx, "/api/calendar/freebusy", q)
 		return jsonResult(res, err)
 	})
@@ -245,7 +215,7 @@ func buildServer(c *backendClient) *server.MCPServer {
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_suggest_meeting",
-		mcp.WithDescription("Find the best meeting slot for a set of attendees without creating the event"),
+		mcp.WithDescription(suggestMeetingDescription),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Meeting title")),
 		mcp.WithString("attendees", mcp.Required(), mcp.Description("Comma-separated attendee emails")),
 		mcp.WithString("duration", mcp.Description("Duration in minutes (default 30)")),
@@ -344,4 +314,130 @@ func jsonResult(data []byte, err error) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText(fmt.Sprintf("Error: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// PAC-133 §6: the tool texts are binding (contracts/features/PAC-133.md).
+
+const findFreeSlotsDescription = `Read free/busy for a date range: the user's own calendar (always) and any attendees given. Each calendar is "known" (its busy windows are complete) or "unknown". Unknown means not checked, never free: the person may be busy at times not listed. Busy windows shown for an unknown calendar are real and still block.`
+
+const createEventDescription = `Schedule a meeting with the smart scheduler. If every attendee's calendar was checked, the first suggested slot is booked. If some attendees' availability is unknown (their calendar could not be checked), nothing is booked: the answer gives the exact proposed start and end and the unknown attendees. To book that slot anyway, call again with the same title, attendees and duration, plus start (the proposed start), accept_unknown="true" and accepted_unknown (the unknown attendees listed). Pass only a start (and the duration) from a previous answer: the slot is checked again before booking, and a start the scheduler would not propose is refused.`
+
+const suggestMeetingDescription = `Find the best meeting slots for a set of attendees without creating the event. The answer lists unknown_attendees: attendees whose calendars could not be checked. Unknown means not checked, never free.`
+
+const (
+	refuseCouldNotCheck = "Not booked: that time could not be checked — ask again (call clockwise_create_event without start)."
+	refuseNoLongerFree  = "Not booked: that time is no longer available — ask again (call clockwise_create_event without start)."
+)
+
+func refuseUnknownGrew(names []string) string {
+	return "Not booked: the availability of " + strings.Join(names, ", ") + " could not be checked — ask again (call clockwise_create_event without start)."
+}
+
+// firstCallText is the answer that books nothing past unknown attendees: the
+// exact slot, the names, and how to accept (PAC-133 §6.2 A.3).
+func firstCallText(unknown []string, start, end time.Time) string {
+	s, e := start.Format(time.RFC3339), end.Format(time.RFC3339)
+	return "Not booked yet: the availability of these attendees could not be checked (unknown, not free): " + strings.Join(unknown, ", ") + ".\n" +
+		"Proposed slot: start " + s + ", end " + e + ".\n" +
+		`To book this exact slot anyway, call clockwise_create_event again with the same title, attendees and duration, start="` + s +
+		`", accept_unknown="true" and accepted_unknown="` + strings.Join(unknown, ",") + `".`
+}
+
+// suggestions is the part of POST /api/schedule/suggest's answer the tool reads.
+type suggestions struct {
+	Slots []struct {
+		Start time.Time `json:"start"`
+		End   time.Time `json:"end"`
+	} `json:"slots"`
+	UnknownAttendees []string `json:"unknown_attendees"`
+}
+
+// createEvent is clockwise_create_event (PAC-133 §6.2). Without start it
+// books the first slot only when every attendee was checked; otherwise it
+// books nothing and says how to accept. With start it re-checks exactly
+// [start, start+duration] through the scheduler and books that slot only if
+// the scheduler still offers it first, the unknown attendees are all
+// accepted, and accept_unknown is "true".
+func createEvent(ctx context.Context, c *backendClient, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	title := strArg(req, "title")
+	attendees := splitEmails(strArg(req, "attendees"))
+	duration := parseDuration(strArg(req, "duration"), 30)
+	suggest := func(rangeStart, rangeEnd time.Time) (suggestions, error) {
+		var out suggestions
+		res, err := c.post(ctx, "/api/schedule/suggest", map[string]any{
+			"title":            title,
+			"attendees":        attendees,
+			"duration_minutes": duration,
+			"range_start":      rangeStart,
+			"range_end":        rangeEnd,
+		})
+		if err != nil {
+			return out, err
+		}
+		if err := json.Unmarshal(res, &out); err != nil {
+			return out, fmt.Errorf("decode schedule suggestions: %w", err)
+		}
+		return out, nil
+	}
+	book := func(start, end time.Time) (*mcp.CallToolResult, error) {
+		payload := map[string]any{"title": title, "attendees": attendees, "start": start, "end": end}
+		if v := strArg(req, "location"); v != "" {
+			payload["location"] = v
+		}
+		created, err := c.post(ctx, "/api/schedule/create", payload)
+		return jsonResult(created, err)
+	}
+
+	startArg := strings.TrimSpace(strArg(req, "start"))
+	if startArg == "" {
+		// A: whatever accept_unknown says, nothing is booked past an unknown
+		// attendee without the exact start.
+		rangeStart, rangeEnd, err := schedulingRange(strArg(req, "preferred_date"))
+		if err != nil {
+			return jsonResult(nil, err)
+		}
+		got, err := suggest(rangeStart, rangeEnd)
+		if err != nil {
+			return jsonResult(nil, err)
+		}
+		if len(got.Slots) == 0 {
+			return jsonResult(nil, fmt.Errorf("no available slot found"))
+		}
+		first := got.Slots[0]
+		if len(got.UnknownAttendees) > 0 {
+			return mcp.NewToolResultText(firstCallText(got.UnknownAttendees, first.Start, first.End)), nil
+		}
+		return book(first.Start, first.End)
+	}
+
+	// B: re-check exactly the slot given.
+	start, err := time.Parse(time.RFC3339, startArg)
+	if err != nil {
+		return jsonResult(nil, fmt.Errorf("start must be RFC3339"))
+	}
+	end := start.Add(time.Duration(duration) * time.Minute)
+	got, err := suggest(start, end)
+	if err != nil {
+		return mcp.NewToolResultText(refuseCouldNotCheck), nil
+	}
+	if len(got.Slots) == 0 || !got.Slots[0].Start.Equal(start) {
+		return mcp.NewToolResultText(refuseNoLongerFree), nil
+	}
+	accepted := map[string]bool{}
+	for _, a := range splitEmails(strArg(req, "accepted_unknown")) {
+		accepted[strings.ToLower(a)] = true
+	}
+	var notAccepted []string
+	for _, u := range got.UnknownAttendees {
+		if !accepted[strings.ToLower(u)] {
+			notAccepted = append(notAccepted, u)
+		}
+	}
+	if len(notAccepted) > 0 {
+		return mcp.NewToolResultText(refuseUnknownGrew(notAccepted)), nil
+	}
+	if len(got.UnknownAttendees) > 0 && !strings.EqualFold(strings.TrimSpace(strArg(req, "accept_unknown")), "true") {
+		return mcp.NewToolResultText(firstCallText(got.UnknownAttendees, start, end)), nil
+	}
+	return book(start, end)
 }

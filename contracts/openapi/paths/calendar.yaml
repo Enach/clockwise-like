@@ -84,20 +84,54 @@ paths:
     get:
       operationId: getCalendarFreeBusy
       tags: [calendar]
-      summary: Raw Google free/busy lookup for a comma-separated attendee list
+      summary: Raw Google free/busy lookup for the caller's own calendar and a comma-separated attendee list
       description: >-
-        Thin passthrough over calendar.CalendarClient.GetFreeBusy. The response is
-        `map[string][]calendar.TimeSlot`. calendar.TimeSlot (backend/calendar/freebusy.go)
-        carries explicit json tags since PAC-26 (API-029), so each window is
-        `{"start","end"}`, the same window shape as POST /api/freebusy. Before PAC-26
-        the struct had no tags and the keys were `Start` / `End`. The map wrapper is
-        unchanged and is still NOT the POST /api/freebusy envelope.
-        No frontend code calls this endpoint, but it is NOT dead: the MCP server's
-        `clockwise_find_free_slots` tool (mcp/tools.go) calls it and relays the body
-        to the model as text without parsing it, so the key casing change reaches the
-        MCP client unchanged and breaks no code. U-03 stays resolved as "keep" (assumed
-        by the factory for PAC-21, pending owner confirmation); PAC-26 changes only the
-        window key casing, not the envelope.
+        Google only (an Outlook-only user gets the 401 `calendar not connected`).
+        One Google `freebusy.query` call covers the caller's own calendar (Google's
+        `primary`), which the server ALWAYS adds, plus every element of `attendees`
+        (PAC-133 §3.3 item 1, D-6). A request therefore never asks the provider
+        about zero calendars.
+
+
+        **Outcomes (PAC-133 §3.1, D-1).** Every calendar in the answer is either
+        `known` (readable: its busy windows are complete, possibly none) or
+        `unknown` (the provider reported an error for it, did not mention it, or
+        its group expansion failed). An `unknown` calendar carries the busy
+        windows the provider DID report for it, when there are any, and no `busy`
+        member otherwise: an unknown calendar is never shown with an empty busy
+        list, so `[]` always means "readable and free". `unknown` means "not
+        checked", never "free". A Google group address is answered with its
+        expansion: `group.members` lists the calendars it expanded into with
+        their own outcomes, and the group's own `busy` carries every window its
+        members reported. The group is `known` only when its expansion has no
+        error and every member is `known`.
+
+
+        **The blocking rule (PAC-133 D-11, binding on every consumer).** A
+        reported busy window blocks wherever it appears, whatever the outcome of
+        the calendar that carries it (known, unknown, or a group's member). An
+        `unknown` calendar with no reported windows blocks nothing, and is never
+        presented or used as free.
+
+
+        **Order of answers.** `start` and `end` must parse as RFC3339 (400
+        `invalid start param` / `invalid end param`), then `end` must be after
+        `start` (400 `end must be after start`, PAC-133 D-4, API-077/SF-034).
+        All three 400s come BEFORE the credential is loaded, so a caller with no
+        Google credential sending a bad or inverted window gets the 400, not the
+        401. Then the credential (401 / 500), then the one provider call (a
+        failed call is the 500). The caller's own calendar being unknown is NOT
+        a 500: it is `own.status: unknown` in a 200.
+
+
+        Consumer: the MCP tool `clockwise_find_free_slots`, which relays the
+        body as text (contracts/features/PAC-133.md §6.1). No web code calls
+        this operation. PAC-133 changed the 200 shape (it was
+        `map[string][]calendar.TimeSlot` keyed by the id Google echoed, with an
+        unreadable address shown as `[]` and an unmentioned one absent; SF-032,
+        SF-102). Window keys stay `start` / `end` (PAC-26). U-03 stays resolved
+        as "keep" (assumed by the factory for PAC-21, pending owner
+        confirmation; PAC-133 OQ-2).
       parameters:
         - name: start
           in: query
@@ -109,7 +143,10 @@ paths:
         - name: end
           in: query
           required: true
-          description: RFC3339. Missing or unparseable -> 400.
+          description: >-
+            RFC3339. Missing or unparseable -> 400. Not after `start` (equal or
+            earlier) -> 400 `end must be after start`, before the credential is
+            loaded and with no provider call (PAC-133).
           schema:
             type: string
             format: date-time
@@ -117,23 +154,31 @@ paths:
           in: query
           required: false
           description: >-
-            Comma-separated email addresses, split on "," with no trimming and no
-            validation. An empty or absent value produces an empty email list, which
-            is forwarded to Google as a free/busy query with zero items.
+            Comma-separated addresses, split on "," with no trimming, no
+            lowercasing and no validation. Each distinct element is asked of
+            Google and appears once in `calendars`, in first-appearance order,
+            spelled exactly as sent. Absent or empty: no attendee, and the answer
+            still carries `own`. Never needed for the caller's own calendar: the
+            server adds it.
           schema:
             type: string
           example: alice@example.com,bob@example.com
       responses:
         "200":
           description: >-
-            Object keyed by the calendar id echoed back by Google (normally the email).
-            Emails that Google does not return are simply absent from the map.
+            The caller's own calendar under `own`, and one entry per requested
+            attendee under `calendars` (none absent, none added: a calendar
+            Google answered that is neither requested nor a member of a
+            requested group is dropped).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RawGoogleFreeBusyMap"
+                $ref: "#/components/schemas/RawFreeBusyAnswer"
         "400":
-          description: "`invalid start param` / `invalid end param` (plain text)."
+          description: >-
+            Plain text (http.Error), in this order: `invalid start param`,
+            `invalid end param`, `end must be after start`. All three come
+            before the credential is loaded and before any provider call.
           content:
             text/plain:
               schema:
@@ -142,9 +187,10 @@ paths:
           $ref: "#/components/responses/CalendarNotConnected"
         "500":
           description: >-
-            Google Calendar API error, or the stored credential could not be read. Body:
-            `{"error":"internal error"}`. The detail is written to the server log and Sentry
-            only (PAC-21).
+            The Google free/busy call failed as a whole, or the stored credential could
+            not be read. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21). A per-calendar error, including on the
+            caller's own calendar, is never this 500: it is `unknown` in the 200.
           content:
             application/json:
               schema:
@@ -156,13 +202,39 @@ paths:
       tags: [calendar]
       summary: Participant free/busy with coverage classification
       description: >-
-        Backed by engine.FreeBusyService. Emails on known consumer domains
-        (gmail.com, googlemail.com, outlook.com, hotmail.com, yahoo.com, icloud.com,
-        live.com, msn.com, proton.me, protonmail.com) are never queried and come back
-        with coverage/status "unknown" and an empty busy list. Emails are lowercased
-        and trimmed before lookup. Results are cached for 15 minutes per
-        (userID, email, UTC date of start). External lookups run under a 5s timeout;
-        a timeout or provider failure degrades to "unknown" rather than an error.
+        Backed by engine.FreeBusyService, with the requester's own Google or Outlook
+        credential (PAC-67). Emails on known consumer domains (gmail.com,
+        googlemail.com, outlook.com, hotmail.com, yahoo.com, icloud.com, live.com,
+        msn.com, proton.me, protonmail.com) are never queried and come back with
+        coverage/status "unknown" and an empty busy list. Emails are lowercased and
+        trimmed before lookup. One provider call per request, under a 5 s timeout;
+        a timeout or a failed call makes every queried address "unknown" rather
+        than an error.
+
+
+        **Coverage (PAC-133 §3.2, SF-032).** An address is `known` only when the
+        provider answered it without error (a Google group: its expansion and
+        every member). It is `unknown` when the provider reported an error for
+        it, did not mention it, or the call failed. An `unknown` address carries
+        the busy windows the provider DID report for it (a partial answer, or a
+        group's readable members), possibly none; those windows block like any
+        other (PAC-133 D-11). `unknown` never means free. The same status and
+        windows appear in all three views (`participants`, `busy`, `results`).
+
+
+        **Cache (PAC-133 §3.2 items 2-4, D-2, D-3; SF-033).** A result is reused
+        only for the same requester, the same (lowercased) address and the same
+        range, start and end both equal as instants; any other range is asked of
+        the provider. Entries live 15 minutes, `unknown` cached exactly as
+        `known`. Nothing is cached from a call made while the requester's
+        credential is recorded as lost (PAC-67 AC-20). A lookup cut short by its
+        own request's deadline (budget expiry, or the client gone) is outside
+        this contract (PAC-133 spec §5): PAC-129 §6 rules it, and under that
+        rule such a lookup is never cached. The cache is
+        a least-recently-used cache of at most 10,000 entries per server process:
+        adding one past the maximum evicts the least recently used; an expired
+        entry is never served and is removed when found or evicted. Personal
+        domains are never cached (no call is made for them).
         The response carries the same data three times for backwards compatibility.
       requestBody:
         required: true
@@ -179,10 +251,12 @@ paths:
                 $ref: "#/components/schemas/FreeBusyQueryResponse"
         "400":
           description: >-
-            JSON error (writeError). One of: `invalid JSON` (fixed text: the decoder's
-            error is not appended, PAC-21),
-            `emails is required` (empty or missing array), `max 20 emails per request`,
-            `start_time must be RFC3339`, `end_time must be RFC3339`.
+            JSON error (writeError). In this order: `invalid JSON` (fixed text: the
+            decoder's error is not appended, PAC-21), `emails is required` (empty or
+            missing array), `max 20 emails per request`, `start_time must be RFC3339`,
+            `end_time must be RFC3339`, `end_time must be after start_time` (PAC-133:
+            the end equal to or before the start; API-077, SF-034). Every 400 comes
+            before the cache and before any provider call.
           content:
             application/json:
               schema:
@@ -200,7 +274,8 @@ paths:
           description: >-
             engine.FreeBusyService.Query failed - in practice only a settings-read failure.
             Body: `{"error":"internal error"}`. The detail is written to the server log and
-            Sentry only (PAC-21).
+            Sentry only (PAC-21). A provider failure is never this 500 (every queried
+            address is `unknown` instead).
           content:
             application/json:
               schema:
@@ -647,6 +722,22 @@ paths:
         configurable and Truncate operates on the Unix epoch, so the start is a UTC
         midnight regardless of the caller's timezone. Returns `[]` rather than null
         when the provider yields nothing.
+
+        For a webcal feed, since PAC-122 (SF-044): an event with no DTEND is read
+        through its DURATION (or, with neither, as one day for a date and an
+        instant for a date-time) instead of being left out; a recurring event
+        (RRULE, with RDATE, EXDATE and per-instance overrides) is listed once
+        per instance in the window, each with `id` `<UID>/<instance start in UTC,
+        YYYYMMDDTHHMMSSZ>` (a non-recurring event keeps its UID), local times
+        following the event's TZID across DST changes, and a comma-separated
+        EXDATE or RDATE list read value by value with its TZID and VALUE; and an
+        event whose time or recurrence cannot be read is not listed (the sync
+        keeps any blocker it has rather than reading it as gone). Expansion is
+        bounded: FREQ=SECONDLY and MINUTELY are unreadable, a series needing
+        more than 100000 occurrences to reach the end of the window is
+        unreadable, and a series with more than 500 instances in the window
+        lists its first 500 and is otherwise treated as unreadable (the sync
+        keeps the blockers of its other instances).
       responses:
         "200":
           description: >-
@@ -731,7 +822,13 @@ paths:
             The blocker's Sync returned an error other than "no stored Google
             credential" (for example the personal feed could not be read, or
             reading the credential store failed), or the last_synced_at update
-            failed. Body `{"error":"internal error"}`. Verified by
+            failed. Since PAC-122 also: the user's settings could not be read
+            (SF-021; before, every event was treated as inside work hours), a
+            blocker lookup failed (SF-021; before, read as "no blocker" and a
+            duplicate was created), or a stale blocker's work-calendar event could
+            not be deleted (SF-020; its row is kept so a later sync retries it,
+            where before the row was dropped and the event stayed). Body
+            `{"error":"internal error"}`. Verified by
             TestPersonalCalendarSyncPropagatesBlockerError.
             "The personal feed could not be read" includes, since PAC-81 (spec
             AC-A17), a feed fetch over its 15 s limit or a feed over 10 MiB: no
@@ -1345,13 +1442,17 @@ components:
         is_personal_block:
           type: boolean
           description: >-
-            Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO,
-            so it is always omitted from every response that carries this schema
-            (the events list and, since PAC-29, PATCH /api/events/{id},
-            POST /api/schedule/create and POST /api/nlp/confirm).
-          x-uncertain: >-
-            Dead field on this path. Either the personal-block tagging logic is
-            missing, or the field should be dropped from the DTO.
+            `true` when the event is a "[Personal] Busy" blocker that the
+            personal-calendar sync put on the work calendar: it carries the
+            private extended property `paceday_personal_blocker=1` (set on every
+            blocker since PAC-122), or, for a blocker created before that, both
+            the blocker's title `[Personal] Busy` and its description
+            `Auto-created personal time blocker`. Omitted otherwise (`omitempty`;
+            never `false`), on every response that carries this schema (the
+            events list, PATCH /api/events/{id}, POST /api/schedule/create and
+            POST /api/nlp/confirm). Before PAC-122 (SF-035, API-076) the field was
+            never set, so it was always omitted and the web gave blockers meeting
+            controls; that resolves the x-uncertain this property carried.
         description:
           type: string
           description: Omitted when empty.
@@ -1509,21 +1610,197 @@ components:
 
     # ------------------------------------------------------------- free/busy
 
-    RawGoogleFreeBusyMap:
+    RawFreeBusyAnswer:
       type: object
       description: >-
-        Response of GET /api/calendar/freebusy: `map[string][]calendar.TimeSlot`
-        keyed by the calendar id Google echoed back (normally the attendee email).
-      additionalProperties:
-        type: array
-        items:
-          $ref: "#/components/schemas/RawGoogleBusyWindow"
+        200 of GET /api/calendar/freebusy (PAC-133). `own` is the caller's own
+        calendar (Google `primary`), always read and identified by its key, never
+        by an address. `calendars` has exactly one entry per distinct requested
+        attendee, in first-appearance order. Outcome and blocking rules: the
+        operation's description (PAC-133 §3.1, D-11).
+      required: [own, calendars]
+      additionalProperties: false
+      properties:
+        own:
+          $ref: "#/components/schemas/RawFreeBusyOwnCalendar"
+        calendars:
+          type: array
+          items:
+            $ref: "#/components/schemas/RawFreeBusyCalendar"
+
+    RawFreeBusyOwnCalendar:
+      description: >-
+        The caller's own calendar. Exactly one variant applies, told apart by
+        `status` alone (disjoint enums; the PublicBookingConflict pattern).
+      oneOf:
+        - $ref: "#/components/schemas/RawFreeBusyOwnKnown"
+        - $ref: "#/components/schemas/RawFreeBusyOwnUnknown"
+
+    RawFreeBusyOwnKnown:
+      type: object
+      description: The caller's own calendar, readable. `busy` is complete; `[]` means free.
+      required: [status, busy]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [known]
+          x-enum-varnames: [RawFreeBusyOwnStatusKnown]
+        busy:
+          type: array
+          items:
+            $ref: "#/components/schemas/RawGoogleBusyWindow"
+
+    RawFreeBusyOwnUnknown:
+      type: object
+      description: >-
+        The caller's own calendar, not readable (Google reported an error for
+        it, or did not mention it). Not checked, never free. `busy` is present
+        only when Google reported windows anyway, and then is non-empty; those
+        windows block.
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [unknown]
+          x-enum-varnames: [RawFreeBusyOwnStatusUnknown]
+        busy:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/RawGoogleBusyWindow"
+
+    RawFreeBusyCalendar:
+      description: >-
+        One requested attendee. Exactly one variant applies, told apart by
+        `status` alone (disjoint enums). Group members use RawFreeBusyMember.
+      oneOf:
+        - $ref: "#/components/schemas/RawFreeBusyCalendarKnown"
+        - $ref: "#/components/schemas/RawFreeBusyCalendarUnknown"
+
+    RawFreeBusyCalendarKnown:
+      type: object
+      description: >-
+        A readable calendar: `busy` is complete, `[]` means free. For a group,
+        its expansion had no error and every member is known; `busy` is every
+        window its members reported.
+      required: [address, status, busy]
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+          description: The attendee exactly as sent (an element of `attendees`).
+        status:
+          type: string
+          enum: [known]
+          x-enum-varnames: [RawFreeBusyCalendarStatusKnown]
+        busy:
+          type: array
+          items:
+            $ref: "#/components/schemas/RawGoogleBusyWindow"
+        group:
+          $ref: "#/components/schemas/RawFreeBusyGroup"
+
+    RawFreeBusyCalendarUnknown:
+      type: object
+      description: >-
+        A calendar Google could not read: an error was reported for it, it was
+        not mentioned in the answer, or (a group) its expansion failed or one of
+        its members is unknown. Not checked, never free. `busy` is present only
+        when windows were reported (a partial answer, or a group's members), and
+        then is non-empty; those windows block (PAC-133 D-11). An unknown
+        calendar is never shown with an empty busy list.
+      required: [address, status]
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+          description: As on RawFreeBusyCalendarKnown.
+        status:
+          type: string
+          enum: [unknown]
+          x-enum-varnames: [RawFreeBusyCalendarStatusUnknown]
+        busy:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/RawGoogleBusyWindow"
+        group:
+          $ref: "#/components/schemas/RawFreeBusyGroup"
+
+    RawFreeBusyGroup:
+      type: object
+      description: >-
+        Present only on an address Google answered as a group (its `groups`
+        expansion). `members` are the calendars it expanded into, each with its
+        own outcome, in Google's order; `[]` when the expansion failed. Members
+        are RawFreeBusyMember, which has no `group` property. A member is part of the group's answer,
+        not an unrequested extra.
+      required: [members]
+      additionalProperties: false
+      properties:
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/RawFreeBusyMember"
+
+    RawFreeBusyMember:
+      description: >-
+        One calendar a group expanded into. Exactly one variant applies, told
+        apart by `status` alone (disjoint enums). Neither variant has a `group`
+        property, so a nested group cannot be expressed (PAC-133 revision 1.1,
+        challenge m-5).
+      oneOf:
+        - $ref: "#/components/schemas/RawFreeBusyMemberKnown"
+        - $ref: "#/components/schemas/RawFreeBusyMemberUnknown"
+
+    RawFreeBusyMemberKnown:
+      type: object
+      description: A readable group member. `busy` is complete; `[]` means free.
+      required: [address, status, busy]
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+          description: The calendar id Google listed in the group's expansion.
+        status:
+          type: string
+          enum: [known]
+          x-enum-varnames: [RawFreeBusyMemberStatusKnown]
+        busy:
+          type: array
+          items:
+            $ref: "#/components/schemas/RawGoogleBusyWindow"
+
+    RawFreeBusyMemberUnknown:
+      type: object
+      description: >-
+        A group member Google could not read (an error for it, or not in the
+        answer). Not checked, never free. `busy` is present only when windows
+        were reported, and then is non-empty; those windows block.
+      required: [address, status]
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+          description: The calendar id Google listed in the group's expansion.
+        status:
+          type: string
+          enum: [unknown]
+          x-enum-varnames: [RawFreeBusyMemberStatusUnknown]
+        busy:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/RawGoogleBusyWindow"
 
     RawGoogleBusyWindow:
       type: object
       description: >-
         calendar.TimeSlot, with explicit json tags `start` / `end` since PAC-26
-        (API-028, API-029). Same keys as FreeBusyWindow; kept as its own schema
+        (API-028, API-029). Used by GET /api/calendar/freebusy (RawFreeBusyAnswer)
+        and by the legacy `results` view of POST /api/freebusy. Same keys as FreeBusyWindow; kept as its own schema
         because it is a different Go type with a different failure mode: a Google
         timestamp that fails to parse becomes the Go zero time
         `0001-01-01T00:00:00Z` because the parse error is discarded. Before PAC-26
@@ -1563,8 +1840,9 @@ components:
           type: string
           format: date-time
           description: >-
-            RFC3339. Must parse or the request is rejected with 400. The handler does
-            NOT check that end_time is after start_time.
+            RFC3339. Must parse or the request is rejected with 400. Must be after
+            `start_time`, else 400 `end_time must be after start_time` (PAC-133,
+            API-077, SF-034).
 
     FreeBusyQueryResponse:
       type: object
@@ -1624,13 +1902,19 @@ components:
         status:
           type: string
           description: >-
-            `known` when the provider returned data for this address; `unknown` when
-            the domain is a known consumer domain, when no calendar credentials are
-            stored, or when the provider call failed or timed out.
+            `known` when the provider answered this address without error (a Google
+            group: its expansion and every member); `unknown` when the domain is a
+            known consumer domain, when no calendar credentials are stored, when the
+            provider call failed or timed out, when the provider reported an error
+            for the address, or when the provider did not mention it (PAC-133,
+            SF-032). Two values only (PAC-41 D-2): a partial answer is `unknown`.
           enum: [known, unknown]
         busy:
           type: array
-          description: Always present; `[]` when the participant is free or status is unknown.
+          description: >-
+            Always present. `known`: complete, `[]` when free. `unknown`: the
+            windows the provider did report for the address (possibly none); they
+            block (PAC-133 D-11), and `[]` here means "not checked", not free.
           items:
             $ref: "#/components/schemas/FreeBusyWindow"
 
@@ -1658,9 +1942,11 @@ components:
           format: email
         coverage:
           type: string
+          description: Same value as `participants[].status` for this address (PAC-133).
           enum: [known, unknown]
         busy:
           type: array
+          description: Same windows as `participants[].busy` (PAC-133, partial windows on `unknown` included).
           items:
             $ref: "#/components/schemas/RawGoogleBusyWindow"
 
@@ -1999,56 +2285,46 @@ components:
 
             Whether the text inside parses as JSON depends on which `action` produced
             it, so the useful statement is per-writer rather than a blanket warning.
-            ALWAYS VALID JSON: `focus_created` and `focus_cleared` marshal a map
-            with `encoding/json` (`FocusTimeEngine.RunForUser` in
+            ALWAYS VALID JSON, for every action. `focus_created` and `focus_cleared`
+            marshal a map with `encoding/json` (`FocusTimeEngine.RunForUser` in
             backend/engine/focus_time.go, `FocusTimeEngine.ClearWeek` in
-            backend/engine/focus_time_cleaner.go); `nlp_parsed` uses
-            `fmt.Sprintf` with `%q`, which escapes (`NLPService.Parse`,
-            backend/nlp/parser.go); and the three PAC-67 connection kinds, which
-            marshal a struct with `encoding/json` and hold only server-chosen values:
+            backend/engine/focus_time_cleaner.go). Since PAC-122 (SF-070)
+            `meeting_scheduled` (`{"event_id","title"}`, `SmartScheduler.CreateMeeting`
+            in backend/engine/smart_schedule.go), `meeting_created`
+            (`{"event_id","title"}`, `scheduleHandlers.createMeeting` in
+            backend/api/handlers_schedule.go), `meeting_moved`
+            (`{"event_id","new_start"}`, `CompressionEngine.Apply` in
+            backend/engine/compression.go), `nlp_confirmed` (`{"event_id"}`,
+            `nlpHandlers.confirm` in backend/api/handlers_nlp.go) and `nlp_parsed`
+            (`{"text","intent"}`, `NLPService.Parse` in backend/nlp/parser.go) are
+            encoded with `encoding/json` too (`storage.AuditJSON`), so a title or
+            text containing `"`, `\`, a newline or a control character is escaped.
+            Before PAC-122 the first four were built by concatenating values into a
+            JSON literal with no escaping, and `nlp_parsed` used `fmt.Sprintf` with
+            `%q`, whose escapes (`\x01`, `\a`) are not JSON; rows written then
+            stay as they were written. The three PAC-67 connection kinds marshal a
+            struct with `encoding/json` and hold only server-chosen values:
             `connection_lost` is `{"provider":"outlook"|"zoom"|"google"}`,
             `provider_disconnected` is `{"provider":"outlook"|"zoom","revocation":
             "confirmed"|"unconfirmed"|"not_offered"}` (the `revocation` vocabulary of
             `ProviderDisconnectResult`), and `revocation_unconfirmed` is
             `{"provider":"zoom"}`. No token material and no actor-supplied text ever
-            appears in them. Also ALWAYS VALID JSON: PAC-40's
-            `scheduling_link_bookers_erased` marshals a struct with `encoding/json`:
+            appears in them. PAC-40's `scheduling_link_bookers_erased` marshals a
+            struct with `encoding/json`:
             `{"link_id":"<uuid>","link_title":"<the owner's title>","bookings_erased":<n>,
             "last_booking_end_at":"<RFC3339>","ran_at":"<RFC3339>"}`. It never carries a
             booker's name or email (AC-31); `link_title` is the subject's own text.
-            NOT GUARANTEED: `meeting_scheduled`,
-            `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by
-            concatenating values into a JSON literal with no escaping
-            (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go,
-            `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go,
-            `CompressionEngine.Apply` in backend/engine/compression.go,
-            `nlpHandlers.confirm` in backend/api/handlers_nlp.go). Sites are cited
-            by enclosing function, not line, for the reason given in the operation
-            description; `grep -rn 'WriteAuditLog(' --include='*.go' backend/`
-            shows all seven argument expressions on one line each.
+            Sites are cited by enclosing function, not line, for the reason given in
+            the operation description.
 
 
-            The interpolated value differs by site and so does the severity. In
-            `SmartScheduler.CreateMeeting` and `scheduleHandlers.createMeeting` it is
-            a meeting title from the request body, so a title containing `"`, `\` or
-            a newline yields malformed JSON. In `CompressionEngine.Apply` there is no
-            title: the values are a client-supplied `event_id`, copied unvalidated
-            from the request body (`scheduleHandlers.applyCompress`,
-            backend/api/handlers_schedule.go:80-93 — the timestamps are parsed, the
-            id is not touched), and an RFC3339 timestamp — so a caller can write JSON
-            STRUCTURE, not merely a stray quote, into its own row. In
-            `nlpHandlers.confirm` the value is a Google-issued event id, which in
-            practice contains no JSON metacharacter; the construction is the same
-            defect, the input simply is not attacker-controlled.
-
-
-            Consequence for a consumer: parse the four safe actions if you want to;
-            for the other four, treat the value as opaque text, as the shipped client
-            does (`formatAuditDetails`, smart-calendar-flow/src/api/client.ts:426-435,
-            never calls JSON.parse). PAC-23 does not fix the concatenation — it is
-            docs/specs/PAC-23.md OQ-6, and the spec challenge argues for splitting the
-            escaping defect out of it. When that lands, the NOT GUARANTEED list
-            empties and this description loses two paragraphs.
+            Consequence for a consumer: an entry written since PAC-122 parses; one
+            written before it by `meeting_scheduled`, `meeting_created`,
+            `meeting_moved`, `nlp_confirmed` or `nlp_parsed` may not, so a consumer
+            reading history should still treat a value that does not parse as
+            opaque text, as the shipped client does (`formatAuditDetails`,
+            smart-calendar-flow/src/api/client.ts, never calls JSON.parse). This
+            resolves docs/specs/PAC-23.md OQ-6.
         created_at:
           type: string
           format: date-time

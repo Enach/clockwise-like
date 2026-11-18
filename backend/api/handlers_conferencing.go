@@ -174,6 +174,10 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 	newGeneratedHandler(h.db, h).CreateConferenceLink(w, r)
 }
 
+// loadGoogleTokenForStatus is auth.LoadUserTokenCtx; a test replaces it to
+// make the read fail (PAC-122 SF-036).
+var loadGoogleTokenForStatus = auth.LoadUserTokenCtx
+
 // providers lists the caller's conferencing rows. Since PAC-67 `connected`
 // means usable: stored, renewable (a refresh token, for Zoom and Teams), and
 // not recorded as lost; Teams' `enabled` follows it exactly.
@@ -189,8 +193,19 @@ func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request)
 		writeServerError(w, r, "credential losses", err, http.StatusInternalServerError)
 		return
 	}
-	googleToken, _ := auth.LoadUserTokenCtx(r.Context(), h.db, userID)
-	microsoftToken, _ := auth.LoadMicrosoftTokenCtx(r.Context(), h.db, userID)
+	// PAC-122 SF-036: a credential that cannot be READ is the 500, not
+	// "disconnected". An undecryptable one still reads as not connected
+	// (PAC-84, pinned by TestPAC84_ConferencingUndecryptableIsTheDocumented500).
+	googleToken, err := loadGoogleTokenForStatus(r.Context(), h.db, userID)
+	if err != nil && !errors.Is(err, secretbox.ErrDecrypt) && !errors.Is(err, auth.ErrNoUser) {
+		writeServerError(w, r, "google credential", err, http.StatusInternalServerError)
+		return
+	}
+	microsoftToken, err := auth.LoadMicrosoftTokenCtx(r.Context(), h.db, userID)
+	if err != nil && !errors.Is(err, secretbox.ErrDecrypt) {
+		writeServerError(w, r, "microsoft credential", err, http.StatusInternalServerError)
+		return
+	}
 	googleUsable := googleToken != nil && !losses[storage.CredentialGoogle]
 	zoomUsable := false
 	if strings.TrimSpace(settings.ZoomTokens) != "" {
