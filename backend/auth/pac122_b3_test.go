@@ -1,11 +1,15 @@
 package auth
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"golang.org/x/oauth2"
 )
 
@@ -65,5 +69,30 @@ func TestPAC122_SF007_StoreWithoutRefreshRefusedOnReadFailure(t *testing.T) {
 	}
 	if got, err := LoadMicrosoftToken(db, uid); err != nil || got.AccessToken != "a3" || got.RefreshToken != "r1" {
 		t.Fatalf("after a store without refresh = %+v, %v; want a3/r1", got, err)
+	}
+}
+
+// PAC-122 SF-007 keeps PAC-84: a store without a refresh token over a stored
+// credential that cannot be decrypted replaces it (the old refresh token is
+// unrecoverable), rather than being refused like a failed read.
+func TestPAC122_SF007_StoreOverUndecryptableReplacesIt(t *testing.T) {
+	db := openTestDB(t)
+	uid := seedUser(t, db, "pac122-sf007-pac84@example.com")
+	if err := SaveMicrosoftToken(db, uid, &oauth2.Token{AccessToken: "a1", RefreshToken: "r1", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	undecryptable := "pdenc:1:2147483000:" + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 48))
+	if _, err := db.Exec(`UPDATE settings SET microsoft_tokens = $2 WHERE user_id = $1`, uid, undecryptable); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadMicrosoftToken(db, uid); !errors.Is(err, secretbox.ErrDecrypt) {
+		t.Fatalf("fixture: load = %v, want a decryption failure", err)
+	}
+	if err := StoreMicrosoftCredential(db, uid, &oauth2.Token{AccessToken: "a2", Expiry: time.Now().Add(time.Hour)}, false); err != nil {
+		t.Fatalf("store over an undecryptable credential = %v, want it replaced", err)
+	}
+	got, err := LoadMicrosoftToken(db, uid)
+	if err != nil || got == nil || got.AccessToken != "a2" || got.RefreshToken != "" {
+		t.Fatalf("stored credential = %+v, %v; want a2 with no refresh token", got, err)
 	}
 }

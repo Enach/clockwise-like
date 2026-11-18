@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Enach/paceday/backend/internal/lifecycle/lifecycletest"
 	"github.com/Enach/paceday/backend/storage"
@@ -231,4 +232,22 @@ func TestPAC122_SF081_NoRedirectURIIsNotConfigured(t *testing.T) {
 			}
 		})
 	}
+}
+
+// SF-045 keeps PAC-84 AC-16b for Notion: a stored connection whose token
+// cannot be decrypted is "connected": false (200), never the 500.
+func TestPAC122_SF045_NotionUndecryptableIsNotConnected(t *testing.T) {
+	db := openTestDB(t)
+	user := createTestUser(t, "pac122-sf045-notion-pac84@example.com")
+	if err := storage.UpsertWorkspaceConnection(db, &storage.WorkspaceConnection{
+		UserID: user, Provider: "notion", AccessToken: "secret_n", WorkspaceID: "W", WorkspaceName: "Docs", Scopes: []string{}, ConnectedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE workspace_connections SET access_token = $2 WHERE user_id = $1 AND provider = 'notion'`, user, undecryptable); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	(&integrationsHandlers{db: db}).notionStatus(rec, withUser(httptest.NewRequest(http.MethodGet, "/api/integrations/notion/status", nil), user))
+	assertBody(t, rec, http.StatusOK, `{"connected":false}`)
 }
