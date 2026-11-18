@@ -58,6 +58,11 @@ func CreateTeam(db Querier, name string, createdBy uuid.UUID) (*Team, error) {
 }
 
 func GetTeam(db *sql.DB, id uuid.UUID) (*Team, error) {
+	if hook, ok := teamRead.get(); ok {
+		if err := hook(id); err != nil {
+			return nil, err
+		}
+	}
 	row := db.QueryRow(`SELECT id, org_id, name, created_by, created_at FROM teams WHERE id = $1`, id)
 	return scanTeam(row)
 }

@@ -54,13 +54,13 @@ func (h *teamHandlers) createTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "name is required", http.StatusBadRequest)
 		return
 	}
+	// The creator is the owner, in the same transaction as the team row
+	// (PAC-122 SF-008): a failed owner insert is the 500 and leaves no team.
 	team, err := storage.CreateTeamCtx(r.Context(), h.db, strings.TrimSpace(body.Name), userID)
 	if err != nil {
 		writeServerError(w, r, "createTeam", err, http.StatusInternalServerError)
 		return
 	}
-	// Creator is owner.
-	_ = storage.AddTeamMemberCtx(r.Context(), h.db, team.ID, userID, "owner")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -164,7 +164,7 @@ func (h *teamHandlers) patchTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.requireOwner(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeOwnerRefusal(w, r, "patchTeam: owner check", err)
 		return
 	}
 	var body struct {
@@ -197,7 +197,7 @@ func (h *teamHandlers) deleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.requireOwner(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeOwnerRefusal(w, r, "deleteTeam: owner check", err)
 		return
 	}
 	if err := storage.DeleteTeamCtx(r.Context(), h.db, teamID); err != nil {
@@ -276,9 +276,21 @@ type teamInviteResult struct {
 // PAC-129. PAC-81 AC-A6/A8: a tracked unit, awaited by the drain; a failure is
 // logged with the invite id and reported, never retried (D-15). Without SMTP
 // the skip is logged with the invite id (PAC-122 SF-066).
+//
+// PAC-122 SF-077: the invitation is committed, so the email still goes out
+// with the generic names when the team or inviter read fails, but the failed
+// read is logged and reported under the unit (ids only, never an address).
+// An absent row (sql.ErrNoRows) is not a failure.
 func (h *teamHandlers) sendInviteEmail(inviterID, teamID uuid.UUID, invite *storage.TeamInvite) {
-	team, _ := storage.GetTeam(h.db, teamID)
-	inviter, _ := storage.GetUserByID(h.db, inviterID)
+	unit := lifecycle.Unit{Kind: "team-invite-email", ID: invite.ID.String()}
+	team, err := storage.GetTeam(h.db, teamID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		lifecycle.Fail(unit, fmt.Errorf("read team %s for the invite email: %w", teamID, err))
+	}
+	inviter, err := storage.GetUserByID(h.db, inviterID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		lifecycle.Fail(unit, fmt.Errorf("read inviter %s for the invite email: %w", inviterID, err))
+	}
 	inviterName := "Someone"
 	if inviter != nil && inviter.Name != "" {
 		inviterName = inviter.Name
@@ -288,7 +300,7 @@ func (h *teamHandlers) sendInviteEmail(inviterID, teamID uuid.UUID, invite *stor
 		teamName = team.Name
 	}
 	inviteID, to, token := invite.ID.String(), invite.InviteeEmail, invite.Token
-	lifecycle.Go(lifecycle.Unit{Kind: "team-invite-email", ID: inviteID}, func(context.Context) {
+	lifecycle.Go(unit, func(context.Context) {
 		if err := sendTeamInviteEmail(to, inviterName, teamName, token); err != nil {
 			reportEmailFailure("team invite", "invite", inviteID, err)
 		}
@@ -419,7 +431,7 @@ func (h *teamHandlers) removeMember(w http.ResponseWriter, r *http.Request) {
 	// Allow owner to remove anyone, or self-removal.
 	if callerID != targetID {
 		if err := h.requireOwner(teamID, callerID); err != nil {
-			writeError(w, "forbidden", http.StatusForbidden)
+			writeOwnerRefusal(w, r, "removeMember: owner check", err)
 			return
 		}
 	}
@@ -445,7 +457,7 @@ func (h *teamHandlers) createZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.requireOwner(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeOwnerRefusal(w, r, "createZone: owner check", err)
 		return
 	}
 	var body struct {
@@ -486,7 +498,7 @@ func (h *teamHandlers) updateZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.requireOwner(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeOwnerRefusal(w, r, "updateZone: owner check", err)
 		return
 	}
 	zoneID, err := uuid.Parse(chi.URLParam(r, "zoneId"))
@@ -561,7 +573,7 @@ func (h *teamHandlers) deleteZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.requireOwner(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeOwnerRefusal(w, r, "deleteZone: owner check", err)
 		return
 	}
 	zoneID, err := uuid.Parse(chi.URLParam(r, "zoneId"))
@@ -673,12 +685,36 @@ func (h *teamHandlers) requireMember(teamID, userID uuid.UUID) (*storage.TeamMem
 	return m, nil
 }
 
+// errNotTeamOwner is requireOwner's refusal: the caller holds no owner
+// membership of the team (the 403).
+var errNotTeamOwner = errors.New("not owner")
+
+// requireOwner refuses with errNotTeamOwner when the caller is not an owner
+// of the team. PAC-122 SF-074: only "no membership row" or a non-owner role
+// is the refusal; a failed membership read is returned as itself, so the
+// caller answers it as the 500, never as "forbidden".
 func (h *teamHandlers) requireOwner(teamID, userID uuid.UUID) error {
 	m, err := storage.GetTeamMember(h.db, teamID, userID)
-	if err != nil || m.Role != "owner" {
-		return fmt.Errorf("not owner")
+	if errors.Is(err, sql.ErrNoRows) {
+		return errNotTeamOwner
+	}
+	if err != nil {
+		return fmt.Errorf("owner check: %w", err)
+	}
+	if m.Role != "owner" {
+		return errNotTeamOwner
 	}
 	return nil
+}
+
+// writeOwnerRefusal answers a failed requireOwner: the 403 for a caller who
+// is not an owner, the 500 for a failed read (PAC-122 SF-074).
+func writeOwnerRefusal(w http.ResponseWriter, r *http.Request, op string, err error) {
+	if errors.Is(err, errNotTeamOwner) {
+		writeError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	writeServerError(w, r, op, err, http.StatusInternalServerError)
 }
 
 func validateNoMeetingZone(dayOfWeek int, startTime, endTime string) error {

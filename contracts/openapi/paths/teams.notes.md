@@ -282,8 +282,9 @@ Pinned by `TestManagerTeam_ScopedDeletePreservesOtherAssignmentAndHistory`.
 1. Non-member of `team_id` → `403 {"error":"forbidden"}` on every scoped route.
 2. Member-but-not-owner → `403` on `detect`, `detect/confirm`, and the three
    `team/members` mutations; `200` on `GET team`, `gaps`, `analytics`, `schedule`.
-3. A syntactically valid UUID that names no team → `403`, not `404` (the membership lookup
-   error and the role mismatch share one branch).
+3. A syntactically valid UUID that names no team → `403`, not `404` (no membership row and
+   the role mismatch share one branch). A failed membership read is the `500`, not the
+   `403` (PAC-122 SF-074; pinned by `TestPAC122_SF074_OwnerCheckReadErrorIs500`).
 4. Unparseable `team_id` → `400 "team_id must be a valid UUID"`, checked **before** any DB
    access.
 

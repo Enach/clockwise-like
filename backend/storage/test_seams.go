@@ -409,3 +409,51 @@ func InstallLinkRosterUser(tb TB, fn func(linkID, userID uuid.UUID) error) (unin
 	tb.Helper()
 	return linkRosterUser.install(tb, fn)
 }
+
+// PAC-122 batch 4 seams (docs/factory/silent-failures.md SF-009, SF-076,
+// SF-077). Each fires at the start of its read or write for every caller; a
+// non-nil error is that call's error, without querying. A test filters on
+// the ids it owns.
+var (
+	teamRead           seam[func(teamID uuid.UUID) error]
+	userRead           seam[func(userID uuid.UUID) error]
+	userProfileUpsert  seam[func(userID uuid.UUID) error]
+	managerRosterCount seam[func(managerID uuid.UUID) error]
+)
+
+// InstallTeamRead installs the seam that runs at the start of GetTeam.
+func InstallTeamRead(tb TB, fn func(teamID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return teamRead.install(tb, fn)
+}
+
+// InstallUserRead installs the seam that runs at the start of GetUserByID.
+func InstallUserRead(tb TB, fn func(userID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return userRead.install(tb, fn)
+}
+
+// InstallUserProfileUpsert installs the seam that runs at the start of
+// UpsertUserProfile.
+func InstallUserProfileUpsert(tb TB, fn func(userID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return userProfileUpsert.install(tb, fn)
+}
+
+// InstallManagerRosterCount installs the seam that runs at the start of
+// CountManagerTeamMembers.
+func InstallManagerRosterCount(tb TB, fn func(managerID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return managerRosterCount.install(tb, fn)
+}
+
+// callerRoleRead fires at the start of the in-transaction owner/membership
+// read of every PAC-129 team write (callerRole); a non-nil error is that
+// read's error, without querying (PAC-122 SF-074).
+var callerRoleRead seam[func(teamID, userID uuid.UUID) error]
+
+// InstallCallerRoleRead installs the callerRole seam.
+func InstallCallerRoleRead(tb TB, fn func(teamID, userID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return callerRoleRead.install(tb, fn)
+}

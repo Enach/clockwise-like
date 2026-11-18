@@ -129,6 +129,11 @@ func withTeamWriteTx(ctx context.Context, db DBTX, op string, teamID uuid.UUID, 
 // callerRole is the caller's role on the team; member is false when they hold
 // no membership.
 func callerRole(ctx context.Context, q Querier, teamID, userID uuid.UUID) (role string, member bool, err error) {
+	if hook, ok := callerRoleRead.get(); ok {
+		if err := hook(teamID, userID); err != nil {
+			return "", false, err
+		}
+	}
 	err = q.QueryRowContext(ctx, `SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2`, teamID, userID).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
@@ -417,9 +422,12 @@ func InviteTeamPersonCtx(ctx context.Context, db DBTX, teamID, caller uuid.UUID,
 	var res *InviteResult
 	err := withTeamWriteTx(ctx, db, "invite", teamID, func(q Querier) error {
 		role, member, err := callerRole(ctx, q, teamID, caller)
-		// A storage error in the owner check is still the 403 on this existing
-		// operation (SF-074 left open here, spec OQ-12).
-		if err != nil || !member || role != "owner" {
+		// PAC-122 SF-074: a storage error in the owner check is the error (the
+		// 500), never ErrNotTeamOwner.
+		if err != nil {
+			return fmt.Errorf("owner check: %w", err)
+		}
+		if !member || role != "owner" {
 			return ErrNotTeamOwner
 		}
 		at, err := pacedayMembersAt(ctx, q, teamID, email)
@@ -558,8 +566,12 @@ func RemoveManagerTeamPersonCtx(ctx context.Context, db DBTX, managerID, teamID 
 	email = NormaliseStoredAddress(email)
 	err := withTeamWriteTx(ctx, db, "manager-remove", teamID, func(q Querier) error {
 		role, member, err := callerRole(ctx, q, teamID, managerID)
-		// The 403 on a storage error in the owner check stays (spec OQ-12).
-		if err != nil || !member || role != "owner" {
+		// PAC-122 SF-074: a storage error in the owner check is the error (the
+		// 500), never ErrNotTeamOwner.
+		if err != nil {
+			return fmt.Errorf("owner check: %w", err)
+		}
+		if !member || role != "owner" {
 			return ErrNotTeamOwner
 		}
 		carriers, err := CarrierIDs(q, []string{email})

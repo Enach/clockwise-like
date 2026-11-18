@@ -2405,7 +2405,7 @@ type ManagerProfileSummary struct {
 	DetectedAt *time.Time `json:"detected_at"`
 	IsManager  bool       `json:"is_manager"`
 
-	// TeamMemberCount COUNT(*) over manager_team_members for this manager — the GLOBAL roster size, not the size of any one team. The query's error is discarded, so a failed count is reported as 0.
+	// TeamMemberCount COUNT(*) over manager_team_members for this manager — the GLOBAL roster size, not the size of any one team. A failed count is the 500 (PAC-122 SF-076); before PAC-122 it was reported as 0.
 	TeamMemberCount int `json:"team_member_count"`
 }
 
@@ -2438,13 +2438,13 @@ type ManagerRosterMember struct {
 	IsPacedayUser  bool       `json:"is_paceday_user"`
 	LastOneOnOneAt *time.Time `json:"last_one_on_one_at"`
 
-	// LastWeek Same nil-substitution as this_week; the week 7 days before `week`.
+	// LastWeek Same nil-substitution and failure rule as this_week; the week 7 days before `week`.
 	LastWeek MemberWeekStats `json:"last_week"`
 
 	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual). "added" (PAC-129) = SYNTHETIC and READ-ONLY, returned only by getManagerRoster with include_added=true, for a person added to the team without Paceday access who has no assignment and is not a formal member. Never persisted, never returned without include_added.
 	Source ManagerMemberSource `json:"source"`
 
-	// ThisWeek Never null — the handler substitutes a zero-valued MemberWeekStats when the engine returns nil or errors (the engine error is discarded).
+	// ThisWeek Never null — the handler substitutes a zero-valued MemberWeekStats when the engine returns nil (a person added to the team: no calendar read). A failed engine read is the 500, never zeroes (PAC-122 SF-040).
 	ThisWeek MemberWeekStats `json:"this_week"`
 }
 

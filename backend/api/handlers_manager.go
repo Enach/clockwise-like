@@ -66,8 +66,12 @@ func (h *managerHandlers) getProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	count := 0
-	_ = h.db.QueryRow(`SELECT COUNT(*) FROM manager_team_members WHERE manager_user_id=$1`, userID).Scan(&count)
+	// PAC-122 SF-076: a failed count is the 500, never team_member_count 0.
+	count, err := storage.CountManagerTeamMembers(h.db, userID)
+	if err != nil {
+		writeServerError(w, r, "getProfile: roster count", err, http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -119,7 +123,12 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.IsManager = body.IsManager
-	_ = storage.UpsertUserProfileCtx(r.Context(), h.db, p)
+	// PAC-122 SF-009: a failed write is the 500, never a 200 echoing a value
+	// that was not stored.
+	if err := storage.UpsertUserProfileCtx(r.Context(), h.db, p); err != nil {
+		writeServerError(w, r, "postProfile", err, http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(p)
@@ -263,8 +272,16 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	for _, m := range members {
 		var thisWeek, lastWeek *engine.MemberWeekStats
 		if m.Source != "added" { // PAC-129: no calendar read, nothing stored
-			thisWeek, _ = eng.GetMemberWeek(r.Context(), userID, m, weekStart)
-			lastWeek, _ = eng.GetMemberWeek(r.Context(), userID, m, priorWeekStart)
+			// PAC-122 SF-040: a failed read is the 500, never zeroes.
+			var err error
+			if thisWeek, err = eng.GetMemberWeek(r.Context(), userID, m, weekStart); err != nil {
+				writeServerError(w, r, "getTeam: member week", err, http.StatusInternalServerError)
+				return
+			}
+			if lastWeek, err = eng.GetMemberWeek(r.Context(), userID, m, priorWeekStart); err != nil {
+				writeServerError(w, r, "getTeam: member week", err, http.StatusInternalServerError)
+				return
+			}
 		}
 		if thisWeek == nil {
 			thisWeek = &engine.MemberWeekStats{}
@@ -338,7 +355,14 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolve member_user_id if they're a Paceday user
 	// PAC-71 granting site: only the one domain-confirmed holder (any case).
-	if uid, ok, err := storage.ConfirmedHolder(h.db, email); err == nil && ok {
+	// PAC-122 SF-010: a failed lookup is the 500, never "not a Paceday user"
+	// (which would store the member as external).
+	uid, holder, err := storage.ConfirmedHolder(h.db, email)
+	if err != nil {
+		writeServerError(w, r, "addMember: holder lookup", err, http.StatusInternalServerError)
+		return
+	}
+	if holder {
 		m.MemberUserID = &uid
 	}
 	if teamID != nil {
@@ -602,7 +626,12 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			ws := weekStart.Add(time.Duration(-i*7) * 24 * time.Hour)
 			var stats *engine.MemberWeekStats
 			if m.Source != "added" { // PAC-129: unmeasured, team_analytics_cache never written
-				stats, _ = eng.GetMemberWeek(r.Context(), userID, m, ws)
+				// PAC-122 SF-040: a failed read is the 500, never "no data".
+				var err error
+				if stats, err = eng.GetMemberWeek(r.Context(), userID, m, ws); err != nil {
+					writeServerError(w, r, "getAnalytics: member week", err, http.StatusInternalServerError)
+					return
+				}
 			}
 			if stats == nil {
 				stats = &engine.MemberWeekStats{}
@@ -653,7 +682,13 @@ func (h *managerHandlers) managerTeamScope(w http.ResponseWriter, r *http.Reques
 		writeError(w, "team_id must be a valid UUID", http.StatusBadRequest)
 		return nil, false
 	}
+	// PAC-122 SF-074: only "no membership row" or a non-owner role (when
+	// ownership is required) is the 403; a failed read is the 500.
 	membership, err := storage.GetTeamMember(h.db, teamID, userID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeServerError(w, r, "manager team scope: membership", err, http.StatusInternalServerError)
+		return nil, false
+	}
 	if err != nil || (requireOwner && membership.Role != "owner") {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return nil, false
