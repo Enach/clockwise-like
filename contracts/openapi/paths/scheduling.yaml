@@ -368,8 +368,10 @@ paths:
         calendar is unknown, the request fails with the 500 `internal error`
         and no slot is offered. Consumers: the web "Suggest a time" modal, the
         MCP tools `clockwise_suggest_meeting` (relays the body) and
-        `clockwise_create_event` (asks before booking past an unknown attendee),
-        and NLP parse (copies only the slots).
+        `clockwise_create_event` (asks before booking past an unknown attendee,
+        and re-checks an exact start with a call whose range is exactly
+        [start, start + duration]), and NLP parse (copies only the slots;
+        relayed as text by the MCP tool `clockwise_parse_command`).
       requestBody:
         required: true
         content:

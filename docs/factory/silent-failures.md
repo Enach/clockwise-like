@@ -88,7 +88,7 @@ below (its error is answered with the right status but never logged). SF-102 and
 | confirmed | 92 |
 | likely | 11 |
 | contract change (`full` process) | 17 |
-| no contract change (`light` process) | 85 |
+| no contract change (`light` process) | 86 |
 
 By shape of failure:
 

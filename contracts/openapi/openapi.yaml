@@ -3826,9 +3826,8 @@ paths:
         a 500: it is `own.status: unknown` in a 200.
 
 
-        Consumers: the MCP tools `clockwise_find_free_slots` (relays the body as text) and `clockwise_create_event`
-        (re-checks one exact slot before booking past an unknown attendee; contracts/features/PAC-133.md
-        §6). No web code calls this operation. PAC-133 changed the 200 shape (it was `map[string][]calendar.TimeSlot`
+        Consumer: the MCP tool `clockwise_find_free_slots`, which relays the body as text (contracts/features/PAC-133.md
+        §6.1). No web code calls this operation. PAC-133 changed the 200 shape (it was `map[string][]calendar.TimeSlot`
         keyed by the id Google echoed, with an unreadable address shown as `[]` and an unmentioned one
         absent; SF-032, SF-102). Window keys stay `start` / `end` (PAC-26). U-03 stays resolved as "keep"
         (assumed by the factory for PAC-21, pending owner confirmation; PAC-133 OQ-2).'
@@ -4529,9 +4528,11 @@ paths:
 
         **Cache (PAC-133 §3.2 items 2-4, D-2, D-3; SF-033).** A result is reused only for the same requester,
         the same (lowercased) address and the same range, start and end both equal as instants; any other
-        range is asked of the provider. Entries live 15 minutes, `unknown` cached exactly as `known`,
-        except that nothing is cached from a call made while the requester''s credential is recorded as
-        lost (PAC-67 AC-20). The cache is a least-recently-used cache of at most 10,000 entries per server
+        range is asked of the provider. Entries live 15 minutes, `unknown` cached exactly as `known`.
+        Nothing is cached from a call made while the requester''s credential is recorded as lost (PAC-67
+        AC-20). A lookup cut short by its own request''s deadline (budget expiry, or the client gone)
+        is outside this contract (PAC-133 spec §5): PAC-129 §6 rules it, and under that rule such a lookup
+        is never cached. The cache is a least-recently-used cache of at most 10,000 entries per server
         process: adding one past the maximum evicts the least recently used; an expired entry is never
         served and is removed when found or evicted. Personal domains are never cached (no call is made
         for them). The response carries the same data three times for backwards compatibility.'
@@ -7642,8 +7643,9 @@ paths:
         An unknown attendee''s missing time does not constrain, and that attendee is named in `unknown_attendees`.
         When the caller''s OWN calendar is unknown, the request fails with the 500 `internal error` and
         no slot is offered. Consumers: the web "Suggest a time" modal, the MCP tools `clockwise_suggest_meeting`
-        (relays the body) and `clockwise_create_event` (asks before booking past an unknown attendee),
-        and NLP parse (copies only the slots).
+        (relays the body) and `clockwise_create_event` (asks before booking past an unknown attendee,
+        and re-checks an exact start with a call whose range is exactly [start, start + duration]), and
+        NLP parse (copies only the slots; relayed as text by the MCP tool `clockwise_parse_command`).
 
         '
       requestBody:
@@ -14094,8 +14096,8 @@ components:
           items:
             $ref: '#/components/schemas/RawFreeBusyCalendar'
     RawFreeBusyCalendar:
-      description: One requested attendee (or one member of a group). Exactly one variant applies, told
-        apart by `status` alone (disjoint enums).
+      description: One requested attendee. Exactly one variant applies, told apart by `status` alone (disjoint
+        enums). Group members use RawFreeBusyMember.
       oneOf:
       - $ref: '#/components/schemas/RawFreeBusyCalendarKnown'
       - $ref: '#/components/schemas/RawFreeBusyCalendarUnknown'
@@ -14111,8 +14113,7 @@ components:
       properties:
         address:
           type: string
-          description: The attendee exactly as sent (an element of `attendees`), or for a group member
-            the calendar id Google listed in the group's expansion.
+          description: The attendee exactly as sent (an element of `attendees`).
         status:
           type: string
           enum:
@@ -14157,8 +14158,8 @@ components:
       type: object
       description: Present only on an address Google answered as a group (its `groups` expansion). `members`
         are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the
-        expansion failed. Members never carry `group` themselves. A member is part of the group's answer,
-        not an unrequested extra.
+        expansion failed. Members are RawFreeBusyMember, which has no `group` property. A member is part
+        of the group's answer, not an unrequested extra.
       required:
       - members
       additionalProperties: false
@@ -14166,7 +14167,60 @@ components:
         members:
           type: array
           items:
-            $ref: '#/components/schemas/RawFreeBusyCalendar'
+            $ref: '#/components/schemas/RawFreeBusyMember'
+    RawFreeBusyMember:
+      description: One calendar a group expanded into. Exactly one variant applies, told apart by `status`
+        alone (disjoint enums). Neither variant has a `group` property, so a nested group cannot be expressed
+        (PAC-133 revision 1.1, challenge m-5).
+      oneOf:
+      - $ref: '#/components/schemas/RawFreeBusyMemberKnown'
+      - $ref: '#/components/schemas/RawFreeBusyMemberUnknown'
+    RawFreeBusyMemberKnown:
+      type: object
+      description: A readable group member. `busy` is complete; `[]` means free.
+      required:
+      - address
+      - status
+      - busy
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+          description: The calendar id Google listed in the group's expansion.
+        status:
+          type: string
+          enum:
+          - known
+          x-enum-varnames:
+          - RawFreeBusyMemberStatusKnown
+        busy:
+          type: array
+          items:
+            $ref: '#/components/schemas/RawGoogleBusyWindow'
+    RawFreeBusyMemberUnknown:
+      type: object
+      description: A group member Google could not read (an error for it, or not in the answer). Not checked,
+        never free. `busy` is present only when windows were reported, and then is non-empty; those windows
+        block.
+      required:
+      - address
+      - status
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+          description: The calendar id Google listed in the group's expansion.
+        status:
+          type: string
+          enum:
+          - unknown
+          x-enum-varnames:
+          - RawFreeBusyMemberStatusUnknown
+        busy:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RawGoogleBusyWindow'
     RawFreeBusyOwnCalendar:
       description: The caller's own calendar. Exactly one variant applies, told apart by `status` alone
         (disjoint enums; the PublicBookingConflict pattern).

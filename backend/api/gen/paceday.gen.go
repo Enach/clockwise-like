@@ -446,6 +446,16 @@ const (
 	RawFreeBusyCalendarStatusUnknown RawFreeBusyCalendarUnknownStatus = "unknown"
 )
 
+// Defines values for RawFreeBusyMemberKnownStatus.
+const (
+	RawFreeBusyMemberStatusKnown RawFreeBusyMemberKnownStatus = "known"
+)
+
+// Defines values for RawFreeBusyMemberUnknownStatus.
+const (
+	RawFreeBusyMemberStatusUnknown RawFreeBusyMemberUnknownStatus = "unknown"
+)
+
 // Defines values for RawFreeBusyOwnKnownStatus.
 const (
 	RawFreeBusyOwnStatusKnown RawFreeBusyOwnKnownStatus = "known"
@@ -3148,18 +3158,18 @@ type RawFreeBusyAnswer struct {
 	Own RawFreeBusyOwnCalendar `json:"own"`
 }
 
-// RawFreeBusyCalendar One requested attendee (or one member of a group). Exactly one variant applies, told apart by `status` alone (disjoint enums).
+// RawFreeBusyCalendar One requested attendee. Exactly one variant applies, told apart by `status` alone (disjoint enums). Group members use RawFreeBusyMember.
 type RawFreeBusyCalendar struct {
 	union json.RawMessage
 }
 
 // RawFreeBusyCalendarKnown A readable calendar: `busy` is complete, `[]` means free. For a group, its expansion had no error and every member is known; `busy` is every window its members reported.
 type RawFreeBusyCalendarKnown struct {
-	// Address The attendee exactly as sent (an element of `attendees`), or for a group member the calendar id Google listed in the group's expansion.
+	// Address The attendee exactly as sent (an element of `attendees`).
 	Address string                `json:"address"`
 	Busy    []RawGoogleBusyWindow `json:"busy"`
 
-	// Group Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members never carry `group` themselves. A member is part of the group's answer, not an unrequested extra.
+	// Group Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members are RawFreeBusyMember, which has no `group` property. A member is part of the group's answer, not an unrequested extra.
 	Group  *RawFreeBusyGroup              `json:"group,omitempty"`
 	Status RawFreeBusyCalendarKnownStatus `json:"status"`
 }
@@ -3173,7 +3183,7 @@ type RawFreeBusyCalendarUnknown struct {
 	Address string                 `json:"address"`
 	Busy    *[]RawGoogleBusyWindow `json:"busy,omitempty"`
 
-	// Group Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members never carry `group` themselves. A member is part of the group's answer, not an unrequested extra.
+	// Group Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members are RawFreeBusyMember, which has no `group` property. A member is part of the group's answer, not an unrequested extra.
 	Group  *RawFreeBusyGroup                `json:"group,omitempty"`
 	Status RawFreeBusyCalendarUnknownStatus `json:"status"`
 }
@@ -3181,10 +3191,37 @@ type RawFreeBusyCalendarUnknown struct {
 // RawFreeBusyCalendarUnknownStatus defines model for RawFreeBusyCalendarUnknown.Status.
 type RawFreeBusyCalendarUnknownStatus string
 
-// RawFreeBusyGroup Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members never carry `group` themselves. A member is part of the group's answer, not an unrequested extra.
+// RawFreeBusyGroup Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members are RawFreeBusyMember, which has no `group` property. A member is part of the group's answer, not an unrequested extra.
 type RawFreeBusyGroup struct {
-	Members []RawFreeBusyCalendar `json:"members"`
+	Members []RawFreeBusyMember `json:"members"`
 }
+
+// RawFreeBusyMember One calendar a group expanded into. Exactly one variant applies, told apart by `status` alone (disjoint enums). Neither variant has a `group` property, so a nested group cannot be expressed (PAC-133 revision 1.1, challenge m-5).
+type RawFreeBusyMember struct {
+	union json.RawMessage
+}
+
+// RawFreeBusyMemberKnown A readable group member. `busy` is complete; `[]` means free.
+type RawFreeBusyMemberKnown struct {
+	// Address The calendar id Google listed in the group's expansion.
+	Address string                       `json:"address"`
+	Busy    []RawGoogleBusyWindow        `json:"busy"`
+	Status  RawFreeBusyMemberKnownStatus `json:"status"`
+}
+
+// RawFreeBusyMemberKnownStatus defines model for RawFreeBusyMemberKnown.Status.
+type RawFreeBusyMemberKnownStatus string
+
+// RawFreeBusyMemberUnknown A group member Google could not read (an error for it, or not in the answer). Not checked, never free. `busy` is present only when windows were reported, and then is non-empty; those windows block.
+type RawFreeBusyMemberUnknown struct {
+	// Address The calendar id Google listed in the group's expansion.
+	Address string                         `json:"address"`
+	Busy    *[]RawGoogleBusyWindow         `json:"busy,omitempty"`
+	Status  RawFreeBusyMemberUnknownStatus `json:"status"`
+}
+
+// RawFreeBusyMemberUnknownStatus defines model for RawFreeBusyMemberUnknown.Status.
+type RawFreeBusyMemberUnknownStatus string
 
 // RawFreeBusyOwnCalendar The caller's own calendar. Exactly one variant applies, told apart by `status` alone (disjoint enums; the PublicBookingConflict pattern).
 type RawFreeBusyOwnCalendar struct {
@@ -7093,6 +7130,68 @@ func (t RawFreeBusyCalendar) MarshalJSON() ([]byte, error) {
 }
 
 func (t *RawFreeBusyCalendar) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRawFreeBusyMemberKnown returns the union data inside the RawFreeBusyMember as a RawFreeBusyMemberKnown
+func (t RawFreeBusyMember) AsRawFreeBusyMemberKnown() (RawFreeBusyMemberKnown, error) {
+	var body RawFreeBusyMemberKnown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyMemberKnown overwrites any union data inside the RawFreeBusyMember as the provided RawFreeBusyMemberKnown
+func (t *RawFreeBusyMember) FromRawFreeBusyMemberKnown(v RawFreeBusyMemberKnown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyMemberKnown performs a merge with any union data inside the RawFreeBusyMember, using the provided RawFreeBusyMemberKnown
+func (t *RawFreeBusyMember) MergeRawFreeBusyMemberKnown(v RawFreeBusyMemberKnown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRawFreeBusyMemberUnknown returns the union data inside the RawFreeBusyMember as a RawFreeBusyMemberUnknown
+func (t RawFreeBusyMember) AsRawFreeBusyMemberUnknown() (RawFreeBusyMemberUnknown, error) {
+	var body RawFreeBusyMemberUnknown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyMemberUnknown overwrites any union data inside the RawFreeBusyMember as the provided RawFreeBusyMemberUnknown
+func (t *RawFreeBusyMember) FromRawFreeBusyMemberUnknown(v RawFreeBusyMemberUnknown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyMemberUnknown performs a merge with any union data inside the RawFreeBusyMember, using the provided RawFreeBusyMemberUnknown
+func (t *RawFreeBusyMember) MergeRawFreeBusyMemberUnknown(v RawFreeBusyMemberUnknown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RawFreeBusyMember) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RawFreeBusyMember) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
