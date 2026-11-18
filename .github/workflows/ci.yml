@@ -143,6 +143,10 @@ jobs:
       - name: Web dependencies (openapi-check runs its generator)
         working-directory: ../smart-calendar-flow
         run: npm ci --legacy-peer-deps
+      # sfguard (in make lint) reports what a branch adds to its baseline
+      # relative to origin/main; the shallow checkout has no origin/main.
+      - name: origin/main for sfguard's baseline-growth report
+        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main || echo "::notice::origin/main not fetched; sfguard will say so"
       - name: make lint
         run: make lint
       # Pushes to main skip the cross-repo half of openapi-check: a paired
