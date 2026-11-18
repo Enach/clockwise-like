@@ -171,13 +171,14 @@ func SendMail(addr string, a smtp.Auth, from string, to []string, msg []byte) er
 	return nil
 }
 
-// RedactAddresses replaces every word containing "@" with "<address>", so an
-// SMTP error quoting a recipient can be logged (PAC-81 AC-A7/A8: log lines
-// never carry an email address).
+// RedactAddresses replaces every word containing "@", or "%40" (an address
+// percent-encoded, as in a URL path or query), with "<address>", so an SMTP
+// or HTTP error quoting a recipient can be logged (PAC-81 AC-A7/A8: log lines
+// never carry an email address; PAC-125 for the encoded form).
 func RedactAddresses(s string) string {
 	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' })
 	for _, f := range fields {
-		if strings.Contains(f, "@") {
+		if strings.Contains(f, "@") || strings.Contains(f, "%40") {
 			s = strings.ReplaceAll(s, f, "<address>")
 		}
 	}

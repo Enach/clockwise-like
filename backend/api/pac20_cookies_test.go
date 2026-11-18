@@ -31,6 +31,9 @@ func cookieEmitters(t *testing.T) map[string]func() *httptest.ResponseRecorder {
 	t.Helper()
 	t.Setenv("SLACK_CLIENT_ID", "slack-client")
 	t.Setenv("NOTION_CLIENT_ID", "notion-client")
+	// PAC-122 SF-081: a connect without a redirect URI is "not configured".
+	t.Setenv("SLACK_REDIRECT_URI", "http://localhost/slack/cb")
+	t.Setenv("NOTION_REDIRECT_URI", "http://localhost/notion/cb")
 	t.Setenv("ZOOM_CLIENT_ID", "zoom-client")
 	t.Setenv("MICROSOFT_CLIENT_ID", "ms-client")
 

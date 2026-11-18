@@ -774,7 +774,7 @@ func reportEmailFailure(what, idKind, id string, err error) {
 func (h *teamHandlers) expireOldInvites(r *http.Request) {
 	if err := storage.ExpireOldInvites(h.db); err != nil {
 		err = fmt.Errorf("invite sweep: %w", err)
-		log.Printf("ERROR %s %s: %v", r.Method, r.URL.Path, err)
+		log.Printf("ERROR %s %s: %v", r.Method, requestRoute(r), err)
 		reportServerError(r, err)
 	}
 }

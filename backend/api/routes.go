@@ -17,9 +17,10 @@ var requestBudget = budget.Default
 
 // trackRequest makes every handler goroutine a shutdown unit, so one still
 // blocked after its response (a context-free database call) is awaited by
-// the drain and logged if abandoned (PAC-81 AC-A7).
+// the drain and logged if abandoned (PAC-81 AC-A7). The unit names the
+// route pattern, never the path (PAC-125).
 func trackRequest(r *http.Request) func() {
-	return lifecycle.Default().Track(lifecycle.Unit{Kind: "request", ID: r.Method + " " + r.URL.Path})
+	return lifecycle.Default().Track(lifecycle.Unit{Kind: "request", ID: r.Method + " " + routeOf(r)})
 }
 
 func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin, frontendURL string) {
@@ -37,7 +38,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 	r.Use(loggingMiddleware)
 	r.Use(corsMiddleware(allowedOrigin))
 	r.Use(bodyCapMiddleware(maxRequestBody))
-	r.Use(budget.Middleware(requestBudget, trackRequest))
+	r.Use(budget.Middleware(requestBudget, trackRequest, budget.WithRoute(routeOf)))
 
 	r.Get("/api/health", healthHandler)
 	// Readiness (getReadiness): no auth, no abuse limit, single-flight ping.

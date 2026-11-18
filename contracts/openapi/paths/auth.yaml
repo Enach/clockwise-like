@@ -941,15 +941,16 @@ paths:
               schema: { type: string }
               description: 'sso_state=<32 hex chars>|<domain>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax'
         '404':
-          description: '"SSO not configured for this domain" — no active provider row: none exists, or it is suspended (PAC-22). Also returned when the lookup errors.'
+          description: '"SSO not configured for this domain" — no active provider row: none exists, or it is suspended (PAC-22). A lookup that fails is the 500 since PAC-122 (SF-072), not this 404.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: >-
-            Issuer discovery failed. Body: `{"error":"internal error"}`. The detail is
-            written to the server log and Sentry only (PAC-21).
+            Issuer discovery failed, or (PAC-122 SF-072) the provider lookup failed. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and
+            Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -1065,14 +1066,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '404':
-          description: '"SSO not configured for this domain" — JSON, unlike the other errors here. No active provider row: none exists, or it is suspended (PAC-22). A sign-in started before a suspension that reaches this callback after it gets this 404 and no session. Also returned when the lookup errors.'
+          description: '"SSO not configured for this domain" — JSON, unlike the other errors here. No active provider row: none exists, or it is suspended (PAC-22). A sign-in started before a suspension that reaches this callback after it gets this 404 and no session. A lookup that fails is the 500 since PAC-122 (SF-072), not this 404.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: >-
-            OIDC setup, code exchange, or account creation (one transaction, nothing kept) failed. Body: `{"error":"internal
+            The provider lookup (PAC-122 SF-072), OIDC setup, code exchange, or account creation (one transaction, nothing kept) failed. Body: `{"error":"internal
             error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -1263,9 +1264,9 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
           description: >-
-            Only (PAC-71) the account's current session generation could not be read.
-            Body `{"error":"internal error"}`; no Set-Cookie (spec AC-48). Other read
-            failures answer as before this change.
+            The account's current session generation could not be read (PAC-71), or
+            (PAC-122 SF-072) the user row could not be read: only a missing row is the
+            404. Body `{"error":"internal error"}`; no Set-Cookie (spec AC-48).
           content:
             application/json:
               schema:
