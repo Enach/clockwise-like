@@ -250,6 +250,14 @@ func fireSeamErr[A any](s *seam[func(A) error], a A) error {
 	return nil
 }
 
+// fireSeamErr2 runs an error-returning seam taking two arguments, if installed.
+func fireSeamErr2[A, B any](s *seam[func(A, B) error], a A, b B) error {
+	if fn, ok := s.get(); ok {
+		return fn(a, b)
+	}
+	return nil
+}
+
 // PAC-119 seams (contract md §6): the keyed link create. The two resolution
 // seams receive the request context, so a test can tell two same-key
 // requests apart by a value it put on one request's context (challenge m-5).
@@ -343,4 +351,28 @@ func InstallTeamMemberRead(tb TB, fn func(teamID, userID uuid.UUID) error) (unin
 func InstallInviteSweep(tb TB, fn func() error) (uninstall func()) {
 	tb.Helper()
 	return inviteSweep.install(tb, fn)
+}
+
+// PAC-132 seams (docs/factory/silent-failures.md SF-029): the strict roster
+// read inside a link create's or PATCH's write transaction. linkRosterHosts
+// fires before the host-rows read and linkRosterUser before each host's user
+// record read; a non-nil error is that read's error, without querying, and
+// rolls the write back. A test filters on the link or user it owns.
+var (
+	linkRosterHosts seam[func(linkID uuid.UUID) error]
+	linkRosterUser  seam[func(linkID, userID uuid.UUID) error]
+)
+
+// InstallLinkRosterHosts installs the seam that runs before the in-write
+// read of a link's host rows; a non-nil error fails that read.
+func InstallLinkRosterHosts(tb TB, fn func(linkID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return linkRosterHosts.install(tb, fn)
+}
+
+// InstallLinkRosterUser installs the seam that runs before the in-write read
+// of one host's user record; a non-nil error fails that read.
+func InstallLinkRosterUser(tb TB, fn func(linkID, userID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return linkRosterUser.install(tb, fn)
 }
