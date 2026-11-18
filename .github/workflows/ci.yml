@@ -57,65 +57,26 @@ jobs:
       ref: ${{ steps.pair.outputs.ref }}
       sha: ${{ steps.sha.outputs.sha }}
     steps:
-      # Paired PRs (factory: the api PR and its web PR land together): use the
-      # web branch naming the same PAC ticket as this branch, else main.
-      # Candidates with an open PR in the web repo win: branches of superseded
-      # PRs linger and would otherwise make the match ambiguous (-> main).
+      # Only scripts/ci is needed: the pairing script and its tests.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/ci
+          sparse-checkout-cone-mode: false
+
+      # Paired PRs (factory: the api PR and its web PR land together) share the
+      # exact branch name: use the web branch with this branch's name (an open
+      # PR first), else main. Never a sibling that merely shares the pac-N
+      # (docs/factory/README.md, "Paired branches"). Same step in both repos.
+      - name: Pairing script tests
+        run: bash scripts/ci/pair-branch.test.sh
       - name: Paired web branch
         id: pair
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           OTHER: Enach/smart-calendar-flow
-        run: |
-          n() { printf '%s\n' "$1" | grep -c . || true; }  # count lines
-          j() { printf '%s\n' "$1" | paste -sd' ' -; }      # join lines
-          ref=main why="no pac-N in branch name"
-          t=$(grep -oiE -- 'pac-[0-9]+' <<<"$BRANCH" | head -1 | tr '[:upper:]' '[:lower:]' || true)
-          if [ -n "$t" ]; then
-            m="" o="" prs=unknown
-            if ! names=$(gh api --paginate "repos/$OTHER/branches" --jq '.[].name'); then
-              why="could not list $OTHER branches"
-              echo "::warning::could not list $OTHER branches; using main"
-            else
-              m=$(printf '%s\n' "$names" | grep -iE -- "(^|[^a-z0-9])$t([^0-9]|$)" || true)
-              why="no web branch for $t"
-            fi
-            if [ -n "$m" ]; then
-              # head.repo is null for a deleted fork; owner/repo names are case-insensitive.
-              if heads=$(gh api --paginate "repos/$OTHER/pulls?state=open&per_page=100" --jq ".[] | select((.head.repo.full_name // \"\" | ascii_downcase) == (\"$OTHER\" | ascii_downcase)) | .head.ref"); then
-                prs=listed
-                o=$(printf '%s\n' "$m" | grep -xF -f <(printf '%s\n' "$heads") -- || true)
-              else
-                echo "::warning::could not list open $OTHER PRs; pairing by branch name only (no open-PR preference, no stale-branch rule)"
-              fi
-            fi
-            echo "candidates for $t: $(j "$m") | with an open PR: $(j "$o")"
-            if [ "$(n "$o")" -eq 1 ]; then ref=$o why="only $t branch with an open PR"
-            else
-              if [ -n "$o" ]; then m=$o src="open-PR candidates"; else src="candidates (none has an open PR)"; fi
-              [ "$prs" = listed ] || src="candidates (open PRs unknown)"
-              # several (factory/pac-N-spec, impl/pac-N-api...): keep this branch's prefix (impl/),
-              # anchored: reimpl/... and factory/impl/... are not impl/ branches
-              if [ "$(n "$m")" -gt 1 ] && [[ $BRANCH == */* ]]; then
-                m=$(printf '%s\n' "$m" | awk -v p="${BRANCH%%/*}/" 'index($0, p) == 1' || true)
-                why="no ${BRANCH%%/*}/ branch among $src"
-              fi
-              # a lone leftover of another stage (factory/pac-N-spec for impl/...) with no open PR
-              # is stale; that is only known when the open PRs could be listed
-              if [ "$(n "$m")" -eq 1 ] && [ -z "$o" ] && [ "$prs" = listed ] && [[ $BRANCH == */* && $m == */* && ${m%%/*} != "${BRANCH%%/*}" ]]; then
-                why="only match $m has another prefix than ${BRANCH%%/*}/ and no open PR"
-                echo "::notice::ignoring $m for $t: prefix differs from ${BRANCH%%/*}/ and no open PR; using main"
-              elif [ "$(n "$m")" -eq 1 ]; then ref=$m why="only match among $src"
-              elif printf '%s\n' "$m" | grep -qxF -- "$BRANCH"; then ref=$BRANCH why="same name as this branch, among $src"
-              elif [ -n "$m" ]; then
-                why="several web branches among $src: $(j "$m")"
-                echo "::warning::several web branches for $t: $(j "$m"); using main"
-              fi
-            fi
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "web ref: $ref ($why)"
+          LABEL: web
+        run: bash scripts/ci/pair-branch.sh
 
       # Pinned once, so the lint job (openapi-check) and the e2e job (frontend
       # build) test the same web commit even if the branch moves meanwhile.
