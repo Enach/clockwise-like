@@ -229,6 +229,36 @@ compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-
   are refused once, because their token response has no ID token. The user
   signs in again.
 
+### PAC-133 release: confirm Google answers the own calendar as `primary` (before deploy)
+
+PAC-133 reads the user's own calendar by asking Google about the id `primary`
+and expects Google's answer under that same key. No test can prove this: the
+e2e Google stand-in answers whatever key it was asked. If Google answered under
+another key, every user's own calendar would be `unknown`, so every meeting
+suggestion would be a 500, every NLP parse would carry "Paceday could not
+suggest meeting times…" and every MCP booking would be refused. So, **before**
+deploying the PAC-133 backend, the release manager (not CI) runs one real
+free/busy call:
+
+1. Start the PAC-133 backend build somewhere it can reach real Google (a
+   staging stack, or a local stack with real Google OAuth settings), and sign
+   in with a real Google account that has a connected calendar.
+2. Call the raw lookup for a short future window, with no attendees:
+
+   ```
+   curl -s -b "auth_token=<session cookie>" \
+     "<backend>/api/calendar/freebusy?start=<now+1h RFC3339>&end=<now+2h RFC3339>"
+   ```
+
+3. Confirm the answer has `"own":{"status":"known",…}`.
+
+- `own.status == "known"`: deploy as usual, and record in the release notes
+  that the check ran and passed.
+- `own.status == "unknown"`, or anything else: **do not deploy**. Report it on
+  PAC-133; the reader's rule for matching the own calendar must change first
+  (contract `contracts/features/PAC-133.md` §3.1 and "Resolution — revision
+  1.1", m-3).
+
 ## Rollback
 
 - **The backend is not ready after a migration** (it exited, or never

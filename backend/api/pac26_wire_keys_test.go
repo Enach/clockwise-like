@@ -195,15 +195,25 @@ func TestPAC26CalendarFreeBusyWindowKeys(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; body %s", w.Code, w.Body.String())
 	}
-	var body map[string][]json.RawMessage
+	// PAC-133 AC-18: the 200 is the RawFreeBusyAnswer envelope; its windows
+	// keep the start/end keys, for the attendee and for the own calendar.
+	var body struct {
+		Own struct {
+			Busy []json.RawMessage `json:"busy"`
+		} `json:"own"`
+		Calendars []struct {
+			Address string            `json:"address"`
+			Busy    []json.RawMessage `json:"busy"`
+		} `json:"calendars"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v; body %s", err, w.Body.String())
 	}
-	windows := body["colleague@corp.example"]
-	if len(windows) != 1 {
+	if len(body.Calendars) != 1 || body.Calendars[0].Address != "colleague@corp.example" || len(body.Calendars[0].Busy) != 1 || len(body.Own.Busy) != 1 {
 		t.Fatalf("windows = %s", w.Body.String())
 	}
-	assertKeySet(t, "RawGoogleBusyWindow", windows[0], "start", "end")
+	assertKeySet(t, "RawGoogleBusyWindow", body.Calendars[0].Busy[0], "start", "end")
+	assertKeySet(t, "RawGoogleBusyWindow (own)", body.Own.Busy[0], "start", "end")
 }
 
 // AC-3, POST half: results[0].busy[0] is {start, end} and byte-equal to

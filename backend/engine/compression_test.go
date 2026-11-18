@@ -173,19 +173,17 @@ func TestOverlapsWith(t *testing.T) {
 
 func TestHasConflict(t *testing.T) {
 	base := time.Date(2025, 1, 6, 9, 0, 0, 0, time.UTC)
-	busyMap := map[string][]calendar.TimeSlot{
-		"user@co.com": {
-			{Start: base.Add(time.Hour), End: base.Add(2 * time.Hour)},
-		},
+	busyMap := map[string]calendar.FreeBusyEntry{
+		"user@co.com": readable(calendar.TimeSlot{Start: base.Add(time.Hour), End: base.Add(2 * time.Hour)}),
 	}
 
-	if !hasConflict(busyMap, base.Add(90*time.Minute), base.Add(150*time.Minute)) {
+	if !hasConflict(busyMap, []interval{{base.Add(90 * time.Minute), base.Add(150 * time.Minute)}}) {
 		t.Error("expected conflict")
 	}
-	if hasConflict(busyMap, base.Add(3*time.Hour), base.Add(4*time.Hour)) {
+	if hasConflict(busyMap, []interval{{base.Add(3 * time.Hour), base.Add(4 * time.Hour)}}) {
 		t.Error("expected no conflict")
 	}
-	if hasConflict(nil, base, base.Add(time.Hour)) {
+	if hasConflict(nil, []interval{{base, base.Add(time.Hour)}}) {
 		t.Error("expected no conflict with nil busy map")
 	}
 }
@@ -336,7 +334,9 @@ func TestCompressionEngine_SuggestForDay_WithAttendees(t *testing.T) {
 		},
 	}
 
-	mock := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{ev}}
+	// PAC-133 AC-38: alice is listed readable and free, so the attendee path
+	// runs as it always did.
+	mock := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{ev}, fb: map[string]calendar.FreeBusyEntry{"alice@co.com": readable()}}
 	eng := &CompressionEngine{DB: db, calOps: mock}
 
 	result, err := eng.SuggestForDay(compressionCtx(t, db), base)

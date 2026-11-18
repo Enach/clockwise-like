@@ -30,6 +30,6 @@ func (e GenericEvent) Unreadable() bool { return e.unreadable }
 // Provider is the unified calendar client interface used for multi-provider support.
 type Provider interface {
 	ListEvents(ctx context.Context, start, end time.Time) ([]GenericEvent, error)
-	GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string][]TimeSlot, error)
+	GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string]FreeBusyEntry, error)
 	CreateEvent(ctx context.Context, e GenericEvent) (string, error)
 }

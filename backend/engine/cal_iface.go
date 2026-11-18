@@ -58,7 +58,9 @@ type calendarOps interface {
 	updateEvent(ctx context.Context, eventID string, event *googlecalendar.Event) (*googlecalendar.Event, error)
 	deleteEvent(ctx context.Context, eventID string) error
 	getEvent(ctx context.Context, eventID string) (*googlecalendar.Event, error)
-	getFreeBusy(ctx context.Context, emails []string, timeMin, timeMax time.Time) (map[string][]calendar.TimeSlot, error)
+	// getFreeBusy answers every distinct requested id with the reader's
+	// outcome (PAC-133 §3); an error means the whole call failed.
+	getFreeBusy(ctx context.Context, emails []string, timeMin, timeMax time.Time) (map[string]calendar.FreeBusyEntry, error)
 }
 
 type realOps struct{ c *calendar.CalendarClient }
@@ -85,7 +87,7 @@ func (r realOps) getEvent(ctx context.Context, eventID string) (*googlecalendar.
 	return r.c.GetEvent(ctx, r.c.CalendarID, eventID)
 }
 
-func (r realOps) getFreeBusy(ctx context.Context, emails []string, tMin, tMax time.Time) (map[string][]calendar.TimeSlot, error) {
+func (r realOps) getFreeBusy(ctx context.Context, emails []string, tMin, tMax time.Time) (map[string]calendar.FreeBusyEntry, error) {
 	return r.c.GetFreeBusy(ctx, emails, tMin, tMax)
 }
 

@@ -45,8 +45,10 @@ func (c *WebcalClient) ListEvents(ctx context.Context, start, end time.Time) ([]
 	return expandICS(all, start, end), nil
 }
 
-func (c *WebcalClient) GetFreeBusy(_ context.Context, emails []string, start, end time.Time) (map[string][]TimeSlot, error) {
-	return map[string][]TimeSlot{}, nil
+// GetFreeBusy reads nothing (a feed has no free/busy for others), so every
+// address is unknown with no windows, never free (PAC-133 §3.3, D-11).
+func (c *WebcalClient) GetFreeBusy(_ context.Context, emails []string, _, _ time.Time) (map[string]FreeBusyEntry, error) {
+	return unknownForAll(emails), nil
 }
 
 func (c *WebcalClient) CreateEvent(_ context.Context, _ GenericEvent) (string, error) {

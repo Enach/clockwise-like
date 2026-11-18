@@ -62,6 +62,7 @@ INFO = {
         "`{\"error\":\"request timed out\"}`. It is listed on the operations that "
         "can reach the budget in normal use (`parseNaturalLanguage`, "
         "`getPublicBookingSlots`, `getTeamAvailability`, `syncPersonalCalendar`, "
+        "`previewCompression` (PAC-133), "
         "`createPublicBooking` before its booking insert is sent); on any other "
         "operation it can occur only under database pool exhaustion and is the "
         "same response. Exceptions: (1) the sign-in branches of the callbacks "

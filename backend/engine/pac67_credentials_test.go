@@ -68,7 +68,7 @@ type recordingOutlook struct {
 }
 
 func (r *recordingOutlook) factory(ts oauth2.TokenSource) outlookFreeBusy {
-	return outlookFunc(func(_ context.Context, emails []string, _, _ time.Time) (map[string][]calendar.TimeSlot, error) {
+	return outlookFunc(func(_ context.Context, emails []string, _, _ time.Time) (map[string]calendar.FreeBusyEntry, error) {
 		tok, err := ts.Token()
 		if err != nil {
 			return nil, fmt.Errorf("outlook: get token: %w", err)
@@ -76,17 +76,17 @@ func (r *recordingOutlook) factory(ts oauth2.TokenSource) outlookFreeBusy {
 		r.mu.Lock()
 		r.tokens = append(r.tokens, tok.AccessToken)
 		r.mu.Unlock()
-		out := map[string][]calendar.TimeSlot{}
+		out := map[string]calendar.FreeBusyEntry{}
 		for _, e := range emails {
-			out[e] = []calendar.TimeSlot{}
+			out[e] = calendar.FreeBusyEntry{Known: true, Busy: []calendar.TimeSlot{}}
 		}
 		return out, nil
 	})
 }
 
-type outlookFunc func(ctx context.Context, emails []string, start, end time.Time) (map[string][]calendar.TimeSlot, error)
+type outlookFunc func(ctx context.Context, emails []string, start, end time.Time) (map[string]calendar.FreeBusyEntry, error)
 
-func (f outlookFunc) GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string][]calendar.TimeSlot, error) {
+func (f outlookFunc) GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string]calendar.FreeBusyEntry, error) {
 	return f(ctx, emails, start, end)
 }
 
