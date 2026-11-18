@@ -111,13 +111,20 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 		SentAt:   s.now().UTC(),
 		Status:   "sent",
 	}
+	// PAC-122 SF-082 (reporting half): a failed send and a failed record
+	// reach error monitoring; what is sent and stored is unchanged.
+	unit := lifecycle.Unit{Kind: "daily-recap", ID: userID.String()}
 	if sendErr != nil {
 		rec.Status = "failed"
 		log.Printf("daily recap send error user=%s: %v", userID, sendErr)
+		lifecycle.Report(unit, fmt.Errorf("daily recap send error user=%s: %w", userID, sendErr))
 	} else {
 		rec.SlackMessageTS = ts
 	}
-	_ = insertRecapSend(s.DB, rec)
+	if err := insertRecapSend(s.DB, rec); err != nil {
+		log.Printf("daily recap: record %s send for user=%s: %v", rec.Status, userID, err)
+		lifecycle.Report(unit, fmt.Errorf("daily recap: record %s send for user=%s: %w", rec.Status, userID, err))
+	}
 }
 
 // recapUserTimeout bounds one user's recap send (a test seam).

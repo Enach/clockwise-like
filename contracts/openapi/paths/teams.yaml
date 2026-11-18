@@ -757,7 +757,9 @@ paths:
           description: >
             The created invite INCLUDING its raw `token`, so the owner can share the link
             out of band. expires_at is now + 7 days. Email delivery is fire-and-forget and
-            silently skipped when SMTP_HOST/SMTP_FROM are unset.
+            skipped when SMTP_HOST/SMTP_FROM are unset; the skip is logged with the
+            invite id, and the server warns at startup that email is off (PAC-122
+            SF-066). The answer is the same either way.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TeamInvite" }

@@ -136,8 +136,9 @@ func (h *habitsHandlers) create(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger background scheduling for the next 14 days.
 	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
-	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) {
-		_ = h.eng.ReoptimizeAll(ctx, userID)
+	// PAC-122 SF-096: its error is logged and reported, not discarded.
+	lifecycle.GoFromErr(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) error {
+		return h.eng.ReoptimizeAll(ctx, userID)
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -238,8 +239,9 @@ func (h *habitsHandlers) update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
-	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) {
-		_ = h.eng.ReoptimizeAll(ctx, userID)
+	// PAC-122 SF-096: its error is logged and reported, not discarded.
+	lifecycle.GoFromErr(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) error {
+		return h.eng.ReoptimizeAll(ctx, userID)
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -381,8 +383,9 @@ func (h *habitsHandlers) updateOccurrence(w http.ResponseWriter, r *http.Request
 func (h *habitsHandlers) reoptimize(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
-	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) {
-		_ = h.eng.ReoptimizeAll(ctx, userID)
+	// PAC-122 SF-096: its error is logged and reported, not discarded.
+	lifecycle.GoFromErr(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) error {
+		return h.eng.ReoptimizeAll(ctx, userID)
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "reoptimization started"})
