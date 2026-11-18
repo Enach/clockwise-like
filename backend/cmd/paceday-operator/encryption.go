@@ -283,9 +283,14 @@ func (r *encryptionRun) dispatch(ctx context.Context, db *sql.DB, cfg secretbox.
 		fmt.Fprintf(r.errw, "encryption %s: %s\n", r.sub, msg)
 		// The audit row is written when operator_audit exists (the down step
 		// keeps it); a database never upgraded has none to write to.
-		var hasAudit bool
-		_ = db.QueryRowContext(ctx, `SELECT to_regclass('public.operator_audit') IS NOT NULL`).Scan(&hasAudit)
-		if !hasAudit {
+		// PAC-140 (SF-108): the audit is skipped only when the probe read
+		// that the table is absent; a failed probe is reported and the
+		// audit row is still attempted (its own failure is reported too).
+		hasAudit, err := auditTableExists(ctx, db)
+		switch {
+		case err != nil:
+			fmt.Fprintf(r.errw, "encryption %s: could not check whether operator_audit exists (%v); attempting the audit row anyway\n", r.sub, err)
+		case !hasAudit:
 			r.audited = true
 		}
 		return exitFailed
@@ -433,16 +438,35 @@ func (r *encryptionRun) printPass(res *storage.PassResult) {
 	}
 }
 
+// flush adds the keyring's seal counts to sealed_count. A failure is
+// reported and makes the run fail (PAC-140, SF-108): sealed_count is the data
+// key's seal budget (automatic rotation at 2^30), and this process ends
+// without another chance to record them.
+func (r *encryptionRun) flush(ctx context.Context, db *sql.DB, k *secretbox.Keyring) bool {
+	counts := k.TakeSealCounts()
+	if err := flushSealCounts(ctx, db, r.sub, counts); err != nil {
+		var n int64
+		for _, c := range counts {
+			n += c
+		}
+		fmt.Fprintf(r.errw, "encryption %s: data key seal counts not recorded (%d seals missing from sealed_count): %v; run the same command again\n", r.sub, n, err)
+		return false
+	}
+	return true
+}
+
 func (r *encryptionRun) convert(ctx context.Context, db *sql.DB, cfg secretbox.KeyConfig) int {
 	k, code := r.operatorKeyring(ctx, db, cfg)
 	if code != exitOK {
 		return code
 	}
 	res, err := storage.RunPass(ctx, db, storage.PassOptions{Kind: storage.PassConvert, Batch: r.batch, Keyring: k})
-	_ = storage.FlushSealCounts(ctx, db, k.TakeSealCounts())
 	code = exitOK
 	if err != nil {
 		fmt.Fprintln(r.errw, "encryption convert:", err)
+		code = exitFailed
+	}
+	if !r.flush(ctx, db, k) {
 		code = exitFailed
 	}
 	if res != nil {
@@ -514,10 +538,12 @@ func (r *encryptionRun) rotate(ctx context.Context, db *sql.DB, cfg secretbox.Ke
 		return r.audit(ctx, db, storage.AuditEncryptionRotate, details, exitFailed)
 	}
 	res, err := storage.RunPass(ctx, db, storage.PassOptions{Kind: storage.PassRotate, Batch: r.batch, Keyring: k, Retire: retire})
-	_ = storage.FlushSealCounts(ctx, db, k.TakeSealCounts())
 	code = exitOK
 	if err != nil {
 		fmt.Fprintln(r.errw, "encryption rotate-data-key:", err)
+		code = exitFailed
+	}
+	if !r.flush(ctx, db, k) {
 		code = exitFailed
 	}
 	if res == nil {
@@ -527,8 +553,23 @@ func (r *encryptionRun) rotate(ctx context.Context, db *sql.DB, cfg secretbox.Ke
 	if res.Partial || len(res.Failures) > 0 {
 		code = exitFailed
 	}
-	left, _ := storage.CountValuesUnder(ctx, db, retire)
-	fmt.Fprintf(r.out, "encryption rotate-data-key: %d values re-encrypted; %d values left under data key %d\n", res.Total("reencrypted"), left, retire)
+	// PAC-140 (SF-108): "0 values left" is printed only after a count that
+	// succeeded and read 0. A failed count, or values still under the
+	// retired key, ends the run with exit 1 and never prints an unread count.
+	done := res.Total("reencrypted")
+	left, err := countValuesUnder(ctx, db, retire)
+	switch {
+	case err != nil:
+		fmt.Fprintf(r.out, "encryption rotate-data-key: %d values re-encrypted\n", done)
+		fmt.Fprintf(r.errw, "encryption rotate-data-key: could not count the values left under data key %d (%v); do not treat it as unused; run the same command again\n", retire, err)
+		code = exitFailed
+	case left > 0:
+		fmt.Fprintf(r.out, "encryption rotate-data-key: %d values re-encrypted\n", done)
+		fmt.Fprintf(r.errw, "encryption rotate-data-key: %d values left under data key %d; run the same command again\n", left, retire)
+		code = exitFailed
+	default:
+		fmt.Fprintf(r.out, "encryption rotate-data-key: %d values re-encrypted; 0 values left under data key %d\n", done, retire)
+	}
 	details.Outcome = outcome(code, res.Partial || len(res.Failures) > 0)
 	details.Counts = res.Counts
 	return r.audit(ctx, db, storage.AuditEncryptionRotate, details, code)

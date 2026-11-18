@@ -674,7 +674,7 @@ run reports 0 changes). Exit codes:
 | Code | Meaning |
 |---|---|
 | 0 | done (including "nothing to do") |
-| 1 | the run failed or ended incomplete (database error, values that could not be processed, rotation wait timed out); the audit row says `failed`/`partial` and a re-run resumes |
+| 1 | the run failed or ended incomplete (database error, values that could not be processed, rotation wait timed out, the data keys' `sealed_count` not recorded, for `rotate-data-key` values still under the retired data key or a count of them that failed); the audit row says `failed`/`partial` and a re-run resumes |
 | 2 | usage: unknown subcommand or flag, missing `--operator`/`--reason`/`--retire`/`--confirm-lost-key`, missing `DATABASE_URL` |
 | 3 | `status --check` only: at least one plain value remains |
 | 4 | key refused: active key missing or malformed, a configured key does not open a data key, a data key wrapped by an unknown key id, `convert`/`rotate-data-key` run with an active key that does not wrap the active data key; for `reset-lost-key`: a configured key **does** open a stored data key (the key is not lost) |
@@ -728,7 +728,13 @@ docker compose -f docker-compose.prod.yml exec backend /paceday-operator encrypt
 
 It creates a new active data key, waits (up to `--wait`, default 5m) until
 every running backend reports it, then re-encrypts the values under the old
-one in batches. Afterwards `status` shows 0 values under it; retired data keys
+one in batches, and counts the values still under it. The rotation is done
+only when the command exits 0 and its last line reads `0 values left under
+data key <id>`: that line is printed only after a count that succeeded and
+read 0. If the count fails, values remain under the old data key, or the
+data keys' `sealed_count` could not be recorded, it says so on stderr and
+exits 1, with no count of values left; run the same command again (it
+resumes). `status` also shows the values per data key. Retired data keys
 are kept (60 bytes each). A backend also rotates by itself when its active
 data key reaches 2^30 encryptions.
 
