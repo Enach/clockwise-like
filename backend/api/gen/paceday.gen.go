@@ -70,6 +70,14 @@ const (
 	AddEventConferenceRequestProviderZoom       AddEventConferenceRequestProvider = "zoom"
 )
 
+// Defines values for AddTeamPersonErrorError.
+const (
+	AddTeamPersonInvalidEmail  AddTeamPersonErrorError = "email must be a valid email address"
+	AddTeamPersonLimitReached  AddTeamPersonErrorError = "this team has reached its limit of 50 members; remove someone before adding another"
+	AddTeamPersonOwnAddress    AddTeamPersonErrorError = "you cannot add your own address"
+	AddTeamPersonPacedayMember AddTeamPersonErrorError = "this address belongs to a Paceday member of this team"
+)
+
 // Defines values for AnalyticsBreakdownEntryCategory.
 const (
 	AnalyticsBreakdownEntryCategoryFocus    AnalyticsBreakdownEntryCategory = "focus"
@@ -310,6 +318,11 @@ const (
 	MissingCredentials IntegrationAvailabilityStatusReason = "missing_credentials"
 )
 
+// Defines values for InvalidEmailErrorError.
+const (
+	InvalidEmailAddress InvalidEmailErrorError = "email must be a valid email address"
+)
+
 // Defines values for LLMDestinationRefusalConfiguration.
 const (
 	LLMDestinationRefusalConfigurationOrganization LLMDestinationRefusalConfiguration = "organization"
@@ -358,9 +371,10 @@ const (
 
 // Defines values for ManagerMemberSource.
 const (
-	Auto   ManagerMemberSource = "auto"
-	Formal ManagerMemberSource = "formal"
-	Manual ManagerMemberSource = "manual"
+	ManagerMemberSourceAdded  ManagerMemberSource = "added"
+	ManagerMemberSourceAuto   ManagerMemberSource = "auto"
+	ManagerMemberSourceFormal ManagerMemberSource = "formal"
+	ManagerMemberSourceManual ManagerMemberSource = "manual"
 )
 
 // Defines values for MeetingBriefResponseStatus.
@@ -745,6 +759,18 @@ const (
 	SsoWriteRequiresAdminStepup SsoWriteStepupRequiredError = "sso_write_requires_admin_stepup"
 )
 
+// Defines values for TeamAnalyticsFigures.
+const (
+	Measured TeamAnalyticsFigures = "measured"
+	NoData   TeamAnalyticsFigures = "no_data"
+	Withheld TeamAnalyticsFigures = "withheld"
+)
+
+// Defines values for TeamFullErrorError.
+const (
+	TeamFull TeamFullErrorError = "this team is full; ask its owner to remove someone before you accept"
+)
+
 // Defines values for TeamInviteStatus.
 const (
 	TeamInviteStatusAccepted TeamInviteStatus = "accepted"
@@ -753,10 +779,40 @@ const (
 	TeamInviteStatusPending  TeamInviteStatus = "pending"
 )
 
+// Defines values for TeamInviteOutcome.
+const (
+	AddedAndInvited TeamInviteOutcome = "added_and_invited"
+	AlreadyMember   TeamInviteOutcome = "already_member"
+	AlreadyPending  TeamInviteOutcome = "already_pending"
+	Invited         TeamInviteOutcome = "invited"
+)
+
 // Defines values for TeamMemberRole.
 const (
-	Member TeamMemberRole = "member"
-	Owner  TeamMemberRole = "owner"
+	TeamMemberRoleMember TeamMemberRole = "member"
+	TeamMemberRoleOwner  TeamMemberRole = "owner"
+)
+
+// Defines values for TeamMemberLimitErrorError.
+const (
+	TeamMemberLimitReached TeamMemberLimitErrorError = "this team has reached its limit of 50 members; remove someone before adding another"
+)
+
+// Defines values for TeamPersonKind.
+const (
+	TeamPersonKindAdded   TeamPersonKind = "added"
+	TeamPersonKindPaceday TeamPersonKind = "paceday"
+)
+
+// Defines values for TeamPersonNotFoundErrorError.
+const (
+	TeamPersonNotFound TeamPersonNotFoundErrorError = "person not found"
+)
+
+// Defines values for TeamPersonRole.
+const (
+	TeamPersonRoleMember TeamPersonRole = "member"
+	TeamPersonRoleOwner  TeamPersonRole = "owner"
 )
 
 // Defines values for UpdateSchedulingLinkRequestRefusalMessage.
@@ -996,6 +1052,24 @@ type AddManagerMemberRequest struct {
 
 	// Email Lowercased and trimmed, then validated with net/mail.ParseAddress; the parsed address must equal the normalized input, so display-name forms like "A <a@b.com>" are rejected.
 	Email                openapi_types.Email    `json:"email"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// AddTeamPersonError PAC-129. The 422 of addTeamPerson; nothing is stored. The values are exact.
+type AddTeamPersonError struct {
+	Error AddTeamPersonErrorError `json:"error"`
+}
+
+// AddTeamPersonErrorError defines model for AddTeamPersonError.Error.
+type AddTeamPersonErrorError string
+
+// AddTeamPersonRequest PAC-129. Unknown keys are ignored (the generated decoder does not refuse them).
+type AddTeamPersonRequest struct {
+	// Email PAC-129 contract 1.1 (challenge B-1): a plain string, deliberately WITHOUT `format: email`, so the generated decoder accepts any JSON string and the server's one address normaliser is the only validator (contract PAC-129 §3.0, revision 1.2): trim the 26 code points of contract §2.2 from both ends (ECMAScript WhiteSpace and LineTerminator plus Go's unicode.IsSpace: U+0009- U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF), lowercase, then net/mail.ParseAddress, whose parsed address must equal the result. Every check of this operation compares that form, and it is the form stored. Blank after trimming: 400 "email is required". Refused by the normaliser: 422 "email must be a valid email address". Stored normalised. A body that is not JSON, or an `email` that is not a JSON string, is the wrapper's 400 "invalid body".
+	Email string `json:"email"`
+
+	// Name Optional display name, trimmed; absent or blank stores "".
+	Name                 *string                `json:"name,omitempty"`
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
@@ -2111,10 +2185,21 @@ type IntegrationStatus struct {
 	WorkspaceName *string `json:"workspace_name,omitempty"`
 }
 
+// InvalidEmailError The address did not validate (normalizeManagerEmail).
+type InvalidEmailError struct {
+	Error InvalidEmailErrorError `json:"error"`
+}
+
+// InvalidEmailErrorError defines model for InvalidEmailError.Error.
+type InvalidEmailErrorError string
+
 // InviteEmailRequest defines model for InviteEmailRequest.
 type InviteEmailRequest struct {
-	// Email Lowercased, trimmed and validated with net/mail.ParseAddress.
-	Email                openapi_types.Email    `json:"email"`
+	// Email Normalised by the one address normaliser of AddTeamPersonRequest.email (PAC-129 revision 1.2: the trim set now includes U+FEFF); every check of inviteTeamMember compares the normalised form, and it is the form stored.
+	Email openapi_types.Email `json:"email"`
+
+	// Name PAC-129 (SF-051). Optional display name, trimmed. Used only when the call adds the address to the team (inviteTeamMember step 3); an existing entry's name is never changed. Absent or blank: "".
+	Name                 *string                `json:"name,omitempty"`
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
@@ -2311,7 +2396,7 @@ type ManagerAnalyticsWeek struct {
 	WeekStart openapi_types.Date `json:"week_start"`
 }
 
-// ManagerMemberSource "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual).
+// ManagerMemberSource "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual). "added" (PAC-129) = SYNTHETIC and READ-ONLY, returned only by getManagerRoster with include_added=true, for a person added to the team without Paceday access who has no assignment and is not a formal member. Never persisted, never returned without include_added.
 type ManagerMemberSource string
 
 // ManagerProfileSummary defines model for ManagerProfileSummary.
@@ -2356,7 +2441,7 @@ type ManagerRosterMember struct {
 	// LastWeek Same nil-substitution as this_week; the week 7 days before `week`.
 	LastWeek MemberWeekStats `json:"last_week"`
 
-	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual).
+	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual). "added" (PAC-129) = SYNTHETIC and READ-ONLY, returned only by getManagerRoster with include_added=true, for a person added to the team without Paceday access who has no assignment and is not a formal member. Never persisted, never returned without include_added.
 	Source ManagerMemberSource `json:"source"`
 
 	// ThisWeek Never null — the handler substitutes a zero-valued MemberWeekStats when the engine returns nil or errors (the engine error is discarded).
@@ -2382,7 +2467,7 @@ type ManagerTeamMemberGoStruct struct {
 	// MemberUserId Set when the email matches a Paceday user; null for external members.
 	MemberUserId *openapi_types.UUID `json:"member_user_id"`
 
-	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual).
+	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual). "added" (PAC-129) = SYNTHETIC and READ-ONLY, returned only by getManagerRoster with include_added=true, for a person added to the team without Paceday access who has no assignment and is not a formal member. Never persisted, never returned without include_added.
 	Source ManagerMemberSource `json:"source"`
 
 	// UpdatedAt Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
@@ -4654,23 +4739,65 @@ type Team struct {
 
 // TeamAnalytics engine.TeamAnalytics.
 type TeamAnalytics struct {
+	// AvgFocusMinutes Same divisor as avg_meeting_minutes.
 	AvgFocusMinutes int `json:"avg_focus_minutes"`
 
-	// AvgMeetingMinutes Integer division by member count (or by 1 for an empty team).
+	// AvgMeetingMinutes PAC-129 (SF-041): integer division over the Paceday members whose figures are `measured` (by 1 when there are none). Added people and `no_data` members are never counted. Before PAC-129 the divisor was every member.
 	AvgMeetingMinutes int `json:"avg_meeting_minutes"`
 
-	// MemberBreakdown `[]` when the team has no members.
+	// MemberBreakdown Kept for clients built before PAC-129: the Paceday members only, today's shape; a member with no stored week still appears with zeroes. `[]` when the team has no Paceday members. New clients read `people`.
 	MemberBreakdown []MemberAnalyticsSummary `json:"member_breakdown"`
+
+	// People PAC-129. One row per member of both kinds, in TeamDetail.people order.
+	People []TeamAnalyticsPerson `json:"people"`
+
+	// WeekStart PAC-129 (SF-053). The Monday of the week these figures are for, YYYY-MM-DD.
+	WeekStart openapi_types.Date `json:"week_start"`
+}
+
+// TeamAnalyticsFigures PAC-129. `measured`: the figures are present. `no_data`: nothing was measured (show "no data", never zero). `withheld`: an added person's figures, hidden from a caller who is not an owner.
+type TeamAnalyticsFigures string
+
+// TeamAnalyticsPerson PAC-129. One member's row. Every figure is null unless `figures` is `measured`; for kind `added`, focus_minutes and focus_score are always null (availability only).
+type TeamAnalyticsPerson struct {
+	// Email As TeamPerson.email (no `format`, contract 1.1 B-1).
+	Email string `json:"email"`
+
+	// Figures PAC-129. `measured`: the figures are present. `no_data`: nothing was measured (show "no data", never zero). `withheld`: an added person's figures, hidden from a caller who is not an owner.
+	Figures      TeamAnalyticsFigures `json:"figures"`
+	FocusMinutes *int                 `json:"focus_minutes"`
+	FocusScore   *int                 `json:"focus_score"`
+
+	// Kind PAC-129 (spec §3.2). `paceday`: joined by accepting an invitation (a team_members row). `added`: added without Paceday access (no account link, whatever account holds the address). The kind depends only on whether the person accepted an invitation.
+	Kind TeamPersonKind `json:"kind"`
+
+	// MeetingMinutes Paceday member: the stored week. Added person: busy minutes from free/busy through the adding owner's credential over the week.
+	MeetingMinutes *int   `json:"meeting_minutes"`
+	Name           string `json:"name"`
+
+	// UserId As TeamPerson.userId.
+	UserId *openapi_types.UUID `json:"userId"`
 }
 
 // TeamDetail defines model for TeamDetail.
 type TeamDetail struct {
-	// Members `[]` when the team has no members or the query failed.
+	// Members The Paceday members only, in today's shape (spec §3.2, AC-8): what a client built before PAC-129 reads. `[]` only when the team has no member rows; since PAC-129 a failed read is the 500 (SF-039).
 	Members []TeamMember `json:"members"`
+
+	// People PAC-129. Every member of both kinds: the Paceday members (in `members` order), then the added people by the time they were added.
+	People []TeamPerson `json:"people"`
 
 	// Team storage.Team. Note the camelCase json tags — unlike the manager domain's snake_case.
 	Team Team `json:"team"`
 }
+
+// TeamFullError PAC-129 (spec §3.7, §3.10, AC-19b). The 422 of acceptTeamInvite for a legacy invitation on a full team.
+type TeamFullError struct {
+	Error TeamFullErrorError `json:"error"`
+}
+
+// TeamFullErrorError defines model for TeamFullError.Error.
+type TeamFullErrorError string
 
 // TeamInvite storage.TeamInvite, returned in full (token included) by inviteTeamMember.
 type TeamInvite struct {
@@ -4690,6 +4817,9 @@ type TeamInvite struct {
 
 // TeamInviteStatus defines model for TeamInvite.Status.
 type TeamInviteStatus string
+
+// TeamInviteOutcome PAC-129. What inviteTeamMember did. `added_and_invited` (201): the address was not on the team; it is now an added person and a new invitation was created. `invited` (201): the address already was an added person; a new invitation was created. `already_pending` (200): a pending invitation existed; no new invitation (the person may have been added by this call, step 3). `already_member` (200): a Paceday member holds the address; nothing written.
+type TeamInviteOutcome string
 
 // TeamInvitePreview A narrow projection of a pending invite, NOT a TeamInvite (no id, token, status, invitedBy or createdAt). The three original keys are camelCase and stay so for existing readers; the three keys added by PAC-34 are snake_case, the spelling the PAC-34 acceptance criteria name and the web normalizer reads (see contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and expires_at come from the invite row itself, so they are always present. The team and inviter rows are read separately and a failed read is not an error: teamName and inviterName become "" and inviter_email becomes null.
 type TeamInvitePreview struct {
@@ -4712,6 +4842,17 @@ type TeamInvitePreview struct {
 	TeamId openapi_types.UUID `json:"team_id"`
 }
 
+// TeamInviteResult PAC-129. The 201 and 200 of inviteTeamMember. `invitation` is null exactly when outcome is `already_member`. The caller is always an owner, so `person.invitation` is shown. Replaces the bare TeamInvite of the 201 (consumers: contract PAC-129 §8).
+type TeamInviteResult struct {
+	Invitation *TeamInvite `json:"invitation"`
+
+	// Outcome PAC-129. What inviteTeamMember did. `added_and_invited` (201): the address was not on the team; it is now an added person and a new invitation was created. `invited` (201): the address already was an added person; a new invitation was created. `already_pending` (200): a pending invitation existed; no new invitation (the person may have been added by this call, step 3). `already_member` (200): a Paceday member holds the address; nothing written.
+	Outcome TeamInviteOutcome `json:"outcome"`
+
+	// Person PAC-129. One member of the team, of either kind, as every member sees it. No timestamp: two adds of different addresses answer bodies that differ only in `email` and `name` (AC-2).
+	Person TeamPerson `json:"person"`
+}
+
 // TeamMember storage.TeamMember, as returned inside TeamDetail.
 type TeamMember struct {
 	// Email Joined from users.email, also omitempty.
@@ -4728,6 +4869,14 @@ type TeamMember struct {
 // TeamMemberRole defines model for TeamMember.Role.
 type TeamMemberRole string
 
+// TeamMemberLimitError PAC-129 (spec §3.10). The cap refusal of inviteTeamMember for an address not yet on the team; the same text as addTeamPerson's limit refusal.
+type TeamMemberLimitError struct {
+	Error TeamMemberLimitErrorError `json:"error"`
+}
+
+// TeamMemberLimitErrorError defines model for TeamMemberLimitError.Error.
+type TeamMemberLimitErrorError string
+
 // TeamNameRequest defines model for TeamNameRequest.
 type TeamNameRequest struct {
 	// Name Trimmed before storage. No maximum length is enforced by the backend.
@@ -4735,13 +4884,62 @@ type TeamNameRequest struct {
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
+// TeamPerson PAC-129. One member of the team, of either kind, as every member sees it. No timestamp: two adds of different addresses answer bodies that differ only in `email` and `name` (AC-2).
+type TeamPerson struct {
+	// Email Lowercase. For a Paceday member, the account's address. No `format: email` (contract 1.1, B-1): an address the server's normaliser accepts (for example `pat@localhost`) must encode, so the generated encoder may not apply a stricter pattern than the one that admitted it.
+	Email string `json:"email"`
+
+	// Invitation For kind `added`, the pending invitation for the address, or null when there is none. Always null for kind `paceday`. Contract 1.1 (challenge m-6): shown ONLY to an owner of the team; for any other member it is always null, so who was invited and when it lapses stay visible only to owners, as before PAC-129.
+	Invitation *TeamPersonInvitation `json:"invitation"`
+
+	// Kind PAC-129 (spec §3.2). `paceday`: joined by accepting an invitation (a team_members row). `added`: added without Paceday access (no account link, whatever account holds the address). The kind depends only on whether the person accepted an invitation.
+	Kind TeamPersonKind `json:"kind"`
+
+	// Name Paceday member: the account's name ("" when it has none). Added person: the name given when they were added ("" when none). Always present, possibly "".
+	Name string `json:"name"`
+
+	// Role The membership role for kind `paceday`; null, always, for kind `added`.
+	Role *TeamPersonRole `json:"role"`
+
+	// UserId The account id for kind `paceday`; null, always, for kind `added`.
+	UserId *openapi_types.UUID `json:"userId"`
+}
+
+// TeamPersonInvitation PAC-129. The address's pending invitation on the team (stored status pending and expiry after now). The token is not listed (it is returned only to the owner, by inviteTeamMember).
+type TeamPersonInvitation struct {
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// TeamPersonKind PAC-129 (spec §3.2). `paceday`: joined by accepting an invitation (a team_members row). `added`: added without Paceday access (no account link, whatever account holds the address). The kind depends only on whether the person accepted an invitation.
+type TeamPersonKind string
+
+// TeamPersonNotFoundError PAC-129. The 404 of removeTeamPerson.
+type TeamPersonNotFoundError struct {
+	Error TeamPersonNotFoundErrorError `json:"error"`
+}
+
+// TeamPersonNotFoundErrorError defines model for TeamPersonNotFoundError.Error.
+type TeamPersonNotFoundErrorError string
+
+// TeamPersonRole PAC-129. A Paceday member's role (team_members.role).
+type TeamPersonRole string
+
 // TeamSlot engine.TeamSlot.
 type TeamSlot struct {
 	End time.Time `json:"end"`
 
-	// QualityScore 100 - (members_with_disrupted_focus / total_members) * 100, integer division.
+	// FreeCount PAC-129 (SF-054). Members of both kinds whose availability is known for the day; since an offered slot never has a busy member, all of them are free in this slot. free_count + unknown_count = total_count.
+	FreeCount int `json:"free_count"`
+
+	// QualityScore 100 - (members_with_disrupted_focus / total_members) * 100, integer division. Focus blocks are a Paceday member's only; the divisor (PAC-129) is the Paceday members, so adding people does not change a slot's score.
 	QualityScore int       `json:"quality_score"`
 	Start        time.Time `json:"start"`
+
+	// TotalCount PAC-129. Members of both kinds on the team when it was read.
+	TotalCount int `json:"total_count"`
+
+	// UnknownCount PAC-129. Members of both kinds whose availability could not be read for the day (the same for every slot of one answer). Unknown is never counted free.
+	UnknownCount int `json:"unknown_count"`
 }
 
 // TeamSlotList defines model for TeamSlotList.
@@ -4844,6 +5042,9 @@ type EventId = string
 // HabitId defines model for HabitId.
 type HabitId = openapi_types.UUID
 
+// IncludeAddedQuery defines model for IncludeAddedQuery.
+type IncludeAddedQuery = bool
+
 // InviteTokenPath defines model for InviteTokenPath.
 type InviteTokenPath = string
 
@@ -4867,6 +5068,9 @@ type SchedulingLinkIdPath = openapi_types.UUID
 
 // TeamIdPath defines model for TeamIdPath.
 type TeamIdPath = openapi_types.UUID
+
+// TeamPersonEmailPath defines model for TeamPersonEmailPath.
+type TeamPersonEmailPath = openapi_types.Email
 
 // BookingCreateRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
 type BookingCreateRateLimited = BookingRateLimitError
@@ -5282,6 +5486,9 @@ type GetManagerAnalyticsParams struct {
 	// TeamId Formal team UUID. Optional on this route. When ABSENT the handler operates on the manager's global (un-scoped) roster and performs NO authorization check beyond JWT. When present it must parse as a UUID and the caller must be a member (reads) or the owner (writes) of that team.
 	TeamId *OptionalTeamIdQuery `form:"team_id,omitempty" json:"team_id,omitempty"`
 
+	// IncludeAdded PAC-129. `true` adds the team's people added without Paceday access who have no roster entry (source "added"); absent or `false` gives exactly the answer of a client built before PAC-129. Only meaningful with `team_id`; ignored without it. Any value other than `true` or `false` is treated as `false`.
+	IncludeAdded *IncludeAddedQuery `form:"include_added,omitempty" json:"include_added,omitempty"`
+
 	// Week Monday of the newest week, YYYY-MM-DD. Defaults to the current UTC ISO week's Monday.
 	Week *openapi_types.Date `form:"week,omitempty" json:"week,omitempty"`
 }
@@ -5311,6 +5518,9 @@ type GetManagerCadenceGapsParams struct {
 type GetManagerRosterParams struct {
 	// TeamId Formal team UUID. Required on this route: a missing or whitespace-only value is 400 "team_id is required".
 	TeamId RequiredTeamIdQuery `form:"team_id" json:"team_id"`
+
+	// IncludeAdded PAC-129. `true` adds the team's people added without Paceday access who have no roster entry (source "added"); absent or `false` gives exactly the answer of a client built before PAC-129. Only meaningful with `team_id`; ignored without it. Any value other than `true` or `false` is treated as `false`.
+	IncludeAdded *IncludeAddedQuery `form:"include_added,omitempty" json:"include_added,omitempty"`
 
 	// Week Monday of the target week, YYYY-MM-DD, parsed as UTC midnight. Defaults to the current ISO week's Monday in UTC. Not validated to actually be a Monday.
 	Week *openapi_types.Date `form:"week,omitempty" json:"week,omitempty"`
@@ -5484,6 +5694,9 @@ type CreateNoMeetingZoneJSONRequestBody = NoMeetingZoneRequest
 // UpdateNoMeetingZoneJSONRequestBody defines body for UpdateNoMeetingZone for application/json ContentType.
 type UpdateNoMeetingZoneJSONRequestBody = NoMeetingZoneRequest
 
+// AddTeamPersonJSONRequestBody defines body for AddTeamPerson for application/json ContentType.
+type AddTeamPersonJSONRequestBody = AddTeamPersonRequest
+
 // Getter for additional properties for AddManagerMemberRequest. Returns the specified
 // element and whether it was found
 func (a AddManagerMemberRequest) Get(fieldName string) (value interface{}, found bool) {
@@ -5584,6 +5797,87 @@ func (a AddManagerMemberRequest) MarshalJSON() ([]byte, error) {
 	object["email"], err = json.Marshal(a.Email)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling 'email': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for AddTeamPersonRequest. Returns the specified
+// element and whether it was found
+func (a AddTeamPersonRequest) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for AddTeamPersonRequest
+func (a *AddTeamPersonRequest) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for AddTeamPersonRequest to handle AdditionalProperties
+func (a *AddTeamPersonRequest) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["email"]; found {
+		err = json.Unmarshal(raw, &a.Email)
+		if err != nil {
+			return fmt.Errorf("error reading 'email': %w", err)
+		}
+		delete(object, "email")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for AddTeamPersonRequest to handle AdditionalProperties
+func (a AddTeamPersonRequest) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["email"], err = json.Marshal(a.Email)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'email': %w", err)
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
 	}
 
 	for fieldName, field := range a.AdditionalProperties {
@@ -5945,6 +6239,14 @@ func (a *InviteEmailRequest) UnmarshalJSON(b []byte) error {
 		delete(object, "email")
 	}
 
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
 	if len(object) != 0 {
 		a.AdditionalProperties = make(map[string]interface{})
 		for fieldName, fieldBuf := range object {
@@ -5967,6 +6269,13 @@ func (a InviteEmailRequest) MarshalJSON() ([]byte, error) {
 	object["email"], err = json.Marshal(a.Email)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling 'email': %w", err)
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
 	}
 
 	for fieldName, field := range a.AdditionalProperties {
@@ -7840,10 +8149,10 @@ type ServerInterface interface {
 	// Aggregate meeting/focus minutes across a formal team for one week.
 	// (GET /api/teams/{id}/analytics)
 	GetFormalTeamAnalytics(w http.ResponseWriter, r *http.Request, id TeamIdPath, params GetFormalTeamAnalyticsParams)
-	// Slots on one day where every team member is free.
+	// Slots on one day where no team member is busy, with free and unknown counts.
 	// (GET /api/teams/{id}/availability)
 	GetTeamAvailability(w http.ResponseWriter, r *http.Request, id TeamIdPath, params GetTeamAvailabilityParams)
-	// Create a 7-day team invite and email it. Owner only.
+	// Invite an address to Paceday on this team; an address not on the team is also added. Owner only.
 	// (POST /api/teams/{id}/members/invite)
 	InviteTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath)
 	// Remove a member by user id. Owner, or the member themselves; never the last owner.
@@ -7861,6 +8170,12 @@ type ServerInterface interface {
 	// Replace a no-meeting zone. Owner only.
 	// (PATCH /api/teams/{id}/no-meeting-zones/{zoneId})
 	UpdateNoMeetingZone(w http.ResponseWriter, r *http.Request, id TeamIdPath, zoneId openapi_types.UUID)
+	// Add a person to the team by email, without an invitation or Paceday access. Owner only.
+	// (POST /api/teams/{id}/people)
+	AddTeamPerson(w http.ResponseWriter, r *http.Request, id TeamIdPath)
+	// Remove a person of either kind from the team, named by address. Owner, or a Paceday member removing themselves.
+	// (DELETE /api/teams/{id}/people/{email})
+	RemoveTeamPerson(w http.ResponseWriter, r *http.Request, id TeamIdPath, email TeamPersonEmailPath)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -8617,13 +8932,13 @@ func (_ Unimplemented) GetFormalTeamAnalytics(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Slots on one day where every team member is free.
+// Slots on one day where no team member is busy, with free and unknown counts.
 // (GET /api/teams/{id}/availability)
 func (_ Unimplemented) GetTeamAvailability(w http.ResponseWriter, r *http.Request, id TeamIdPath, params GetTeamAvailabilityParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Create a 7-day team invite and email it. Owner only.
+// Invite an address to Paceday on this team; an address not on the team is also added. Owner only.
 // (POST /api/teams/{id}/members/invite)
 func (_ Unimplemented) InviteTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -8656,6 +8971,18 @@ func (_ Unimplemented) DeleteNoMeetingZone(w http.ResponseWriter, r *http.Reques
 // Replace a no-meeting zone. Owner only.
 // (PATCH /api/teams/{id}/no-meeting-zones/{zoneId})
 func (_ Unimplemented) UpdateNoMeetingZone(w http.ResponseWriter, r *http.Request, id TeamIdPath, zoneId openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Add a person to the team by email, without an invitation or Paceday access. Owner only.
+// (POST /api/teams/{id}/people)
+func (_ Unimplemented) AddTeamPerson(w http.ResponseWriter, r *http.Request, id TeamIdPath) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Remove a person of either kind from the team, named by address. Owner, or a Paceday member removing themselves.
+// (DELETE /api/teams/{id}/people/{email})
+func (_ Unimplemented) RemoveTeamPerson(w http.ResponseWriter, r *http.Request, id TeamIdPath, email TeamPersonEmailPath) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -10733,6 +11060,14 @@ func (siw *ServerInterfaceWrapper) GetManagerAnalytics(w http.ResponseWriter, r 
 		return
 	}
 
+	// ------------- Optional query parameter "include_added" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "include_added", r.URL.Query(), &params.IncludeAdded)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_added", Err: err})
+		return
+	}
+
 	// ------------- Optional query parameter "week" -------------
 
 	err = runtime.BindQueryParameter("form", true, false, "week", r.URL.Query(), &params.Week)
@@ -10943,6 +11278,14 @@ func (siw *ServerInterfaceWrapper) GetManagerRoster(w http.ResponseWriter, r *ht
 	err = runtime.BindQueryParameter("form", true, true, "team_id", r.URL.Query(), &params.TeamId)
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "team_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "include_added" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "include_added", r.URL.Query(), &params.IncludeAdded)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_added", Err: err})
 		return
 	}
 
@@ -12811,6 +13154,81 @@ func (siw *ServerInterfaceWrapper) UpdateNoMeetingZone(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// AddTeamPerson operation middleware
+func (siw *ServerInterfaceWrapper) AddTeamPerson(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id TeamIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AddTeamPerson(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveTeamPerson operation middleware
+func (siw *ServerInterfaceWrapper) RemoveTeamPerson(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id TeamIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "email" -------------
+	var email TeamPersonEmailPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "email", chi.URLParam(r, "email"), &email, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "email", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveTeamPerson(w, r, id, email)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -13319,6 +13737,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Patch(options.BaseURL+"/api/teams/{id}/no-meeting-zones/{zoneId}", wrapper.UpdateNoMeetingZone)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/teams/{id}/people", wrapper.AddTeamPerson)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/teams/{id}/people/{email}", wrapper.RemoveTeamPerson)
 	})
 
 	return r
@@ -19425,6 +19849,15 @@ func (response AcceptTeamInvite410JSONResponse) VisitAcceptTeamInviteResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
+type AcceptTeamInvite422JSONResponse TeamFullError
+
+func (response AcceptTeamInvite422JSONResponse) VisitAcceptTeamInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type AcceptTeamInvite500JSONResponse struct{ ServerErrorJSONResponse }
 
 func (response AcceptTeamInvite500JSONResponse) VisitAcceptTeamInviteResponse(w http.ResponseWriter) error {
@@ -19656,6 +20089,17 @@ func (response GetFormalTeamAnalytics500JSONResponse) VisitGetFormalTeamAnalytic
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetFormalTeamAnalytics503JSONResponse struct {
+	RequestBudgetExpiredJSONResponse
+}
+
+func (response GetFormalTeamAnalytics503JSONResponse) VisitGetFormalTeamAnalyticsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetTeamAvailabilityRequestObject struct {
 	Id     TeamIdPath `json:"id"`
 	Params GetTeamAvailabilityParams
@@ -19730,7 +20174,16 @@ type InviteTeamMemberResponseObject interface {
 	VisitInviteTeamMemberResponse(w http.ResponseWriter) error
 }
 
-type InviteTeamMember201JSONResponse TeamInvite
+type InviteTeamMember200JSONResponse TeamInviteResult
+
+func (response InviteTeamMember200JSONResponse) VisitInviteTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type InviteTeamMember201JSONResponse TeamInviteResult
 
 func (response InviteTeamMember201JSONResponse) VisitInviteTeamMemberResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -19766,13 +20219,15 @@ func (response InviteTeamMember403JSONResponse) VisitInviteTeamMemberResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type InviteTeamMember422JSONResponse ErrorResponse
+type InviteTeamMember422JSONResponse struct {
+	union json.RawMessage
+}
 
 func (response InviteTeamMember422JSONResponse) VisitInviteTeamMemberResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(422)
 
-	return json.NewEncoder(w).Encode(response)
+	return json.NewEncoder(w).Encode(response.union)
 }
 
 type InviteTeamMember500JSONResponse struct{ ServerErrorJSONResponse }
@@ -20082,6 +20537,149 @@ func (response UpdateNoMeetingZone422JSONResponse) VisitUpdateNoMeetingZoneRespo
 type UpdateNoMeetingZone500JSONResponse struct{ ServerErrorJSONResponse }
 
 func (response UpdateNoMeetingZone500JSONResponse) VisitUpdateNoMeetingZoneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddTeamPersonRequestObject struct {
+	Id   TeamIdPath `json:"id"`
+	Body *AddTeamPersonJSONRequestBody
+}
+
+type AddTeamPersonResponseObject interface {
+	VisitAddTeamPersonResponse(w http.ResponseWriter) error
+}
+
+type AddTeamPerson200JSONResponse TeamPerson
+
+func (response AddTeamPerson200JSONResponse) VisitAddTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddTeamPerson201JSONResponse TeamPerson
+
+func (response AddTeamPerson201JSONResponse) VisitAddTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddTeamPerson400JSONResponse ErrorResponse
+
+func (response AddTeamPerson400JSONResponse) VisitAddTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddTeamPerson401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response AddTeamPerson401JSONResponse) VisitAddTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddTeamPerson403JSONResponse struct{ JsonForbiddenJSONResponse }
+
+func (response AddTeamPerson403JSONResponse) VisitAddTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddTeamPerson422JSONResponse AddTeamPersonError
+
+func (response AddTeamPerson422JSONResponse) VisitAddTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddTeamPerson500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response AddTeamPerson500JSONResponse) VisitAddTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveTeamPersonRequestObject struct {
+	Id    TeamIdPath          `json:"id"`
+	Email TeamPersonEmailPath `json:"email"`
+}
+
+type RemoveTeamPersonResponseObject interface {
+	VisitRemoveTeamPersonResponse(w http.ResponseWriter) error
+}
+
+type RemoveTeamPerson204Response struct {
+}
+
+func (response RemoveTeamPerson204Response) VisitRemoveTeamPersonResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RemoveTeamPerson400JSONResponse ErrorResponse
+
+func (response RemoveTeamPerson400JSONResponse) VisitRemoveTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveTeamPerson401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response RemoveTeamPerson401JSONResponse) VisitRemoveTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveTeamPerson403JSONResponse struct{ JsonForbiddenJSONResponse }
+
+func (response RemoveTeamPerson403JSONResponse) VisitRemoveTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveTeamPerson404JSONResponse TeamPersonNotFoundError
+
+func (response RemoveTeamPerson404JSONResponse) VisitRemoveTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveTeamPerson422JSONResponse ErrorResponse
+
+func (response RemoveTeamPerson422JSONResponse) VisitRemoveTeamPersonResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveTeamPerson500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response RemoveTeamPerson500JSONResponse) VisitRemoveTeamPersonResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
@@ -20465,10 +21063,10 @@ type StrictServerInterface interface {
 	// Aggregate meeting/focus minutes across a formal team for one week.
 	// (GET /api/teams/{id}/analytics)
 	GetFormalTeamAnalytics(ctx context.Context, request GetFormalTeamAnalyticsRequestObject) (GetFormalTeamAnalyticsResponseObject, error)
-	// Slots on one day where every team member is free.
+	// Slots on one day where no team member is busy, with free and unknown counts.
 	// (GET /api/teams/{id}/availability)
 	GetTeamAvailability(ctx context.Context, request GetTeamAvailabilityRequestObject) (GetTeamAvailabilityResponseObject, error)
-	// Create a 7-day team invite and email it. Owner only.
+	// Invite an address to Paceday on this team; an address not on the team is also added. Owner only.
 	// (POST /api/teams/{id}/members/invite)
 	InviteTeamMember(ctx context.Context, request InviteTeamMemberRequestObject) (InviteTeamMemberResponseObject, error)
 	// Remove a member by user id. Owner, or the member themselves; never the last owner.
@@ -20486,6 +21084,12 @@ type StrictServerInterface interface {
 	// Replace a no-meeting zone. Owner only.
 	// (PATCH /api/teams/{id}/no-meeting-zones/{zoneId})
 	UpdateNoMeetingZone(ctx context.Context, request UpdateNoMeetingZoneRequestObject) (UpdateNoMeetingZoneResponseObject, error)
+	// Add a person to the team by email, without an invitation or Paceday access. Owner only.
+	// (POST /api/teams/{id}/people)
+	AddTeamPerson(ctx context.Context, request AddTeamPersonRequestObject) (AddTeamPersonResponseObject, error)
+	// Remove a person of either kind from the team, named by address. Owner, or a Paceday member removing themselves.
+	// (DELETE /api/teams/{id}/people/{email})
+	RemoveTeamPerson(ctx context.Context, request RemoveTeamPersonRequestObject) (RemoveTeamPersonResponseObject, error)
 }
 
 type StrictHandlerFunc = strictnethttp.StrictHTTPHandlerFunc
@@ -24116,6 +24720,66 @@ func (sh *strictHandler) UpdateNoMeetingZone(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateNoMeetingZoneResponseObject); ok {
 		if err := validResponse.VisitUpdateNoMeetingZoneResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AddTeamPerson operation middleware
+func (sh *strictHandler) AddTeamPerson(w http.ResponseWriter, r *http.Request, id TeamIdPath) {
+	var request AddTeamPersonRequestObject
+
+	request.Id = id
+
+	var body AddTeamPersonJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AddTeamPerson(ctx, request.(AddTeamPersonRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AddTeamPerson")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AddTeamPersonResponseObject); ok {
+		if err := validResponse.VisitAddTeamPersonResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RemoveTeamPerson operation middleware
+func (sh *strictHandler) RemoveTeamPerson(w http.ResponseWriter, r *http.Request, id TeamIdPath, email TeamPersonEmailPath) {
+	var request RemoveTeamPersonRequestObject
+
+	request.Id = id
+	request.Email = email
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RemoveTeamPerson(ctx, request.(RemoveTeamPersonRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RemoveTeamPerson")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RemoveTeamPersonResponseObject); ok {
+		if err := validResponse.VisitRemoveTeamPersonResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

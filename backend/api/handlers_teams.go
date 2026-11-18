@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/getsentry/sentry-go"
@@ -31,7 +32,8 @@ type teamHandlers struct {
 }
 
 func newTeamHandlers(db *sql.DB, cfg *oauth2.Config) *teamHandlers {
-	return newTeamHandlersWithAvailabilityEngine(db, &engine.TeamAvailabilityEngine{DB: db, OAuthConfig: cfg})
+	// PAC-129 §6: built once per process, so the free/busy cache is process-wide.
+	return newTeamHandlersWithAvailabilityEngine(db, &engine.TeamAvailabilityEngine{DB: db, OAuthConfig: cfg, FreeBusy: engine.NewFreeBusyService(db, cfg)})
 }
 
 func newTeamHandlersWithAvailabilityEngine(db *sql.DB, availabilityEngine TeamAvailability) *teamHandlers {
@@ -93,7 +95,8 @@ func (h *teamHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.requireMember(teamID, userID); err != nil {
+	caller, err := h.requireMember(teamID, userID)
+	if err != nil {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -110,20 +113,45 @@ func (h *teamHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, "getTeam", err, http.StatusInternalServerError)
 		return
 	}
-	members, _ := storage.ListTeamMembers(h.db, teamID)
+	// PAC-129 (SF-039, AC-6): a failed member read of either kind is the 500,
+	// never a team with an empty list.
+	members, err := storage.ListTeamMembers(h.db, teamID)
+	if err != nil {
+		writeServerError(w, r, "getTeam: members", err, http.StatusInternalServerError)
+		return
+	}
+	added, err := storage.ListAddedMembers(h.db, teamID)
+	if err != nil {
+		writeServerError(w, r, "getTeam: added people", err, http.StatusInternalServerError)
+		return
+	}
+	// Invitations are shown to owners only (contract 1.1, m-6).
+	isOwner := caller.Role == "owner"
+	var pending map[string]time.Time
+	if isOwner && len(added) > 0 {
+		if pending, err = storage.PendingInvitationExpiries(h.db, teamID); err != nil {
+			writeServerError(w, r, "getTeam: invitations", err, http.StatusInternalServerError)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(teamDetailBody(team, members))
+	_ = json.NewEncoder(w).Encode(teamDetailBody(team, members, teamPeople(members, added, pending, isOwner)))
 }
 
-// teamDetailBody is the GET /api/teams/{id} response (TeamDetail).
-// members is nil when ListTeamMembers failed; it still encodes as [].
-func teamDetailBody(team *storage.Team, members []*storage.TeamMember) map[string]interface{} {
+// teamDetailBody is the GET /api/teams/{id} response (TeamDetail): members is
+// the Paceday members only, in the shape a client built before PAC-129 reads
+// (AC-8); people is both kinds (PAC-129).
+func teamDetailBody(team *storage.Team, members []*storage.TeamMember, people []gen.TeamPerson) map[string]interface{} {
 	if members == nil {
 		members = make([]*storage.TeamMember, 0)
+	}
+	if people == nil {
+		people = make([]gen.TeamPerson, 0)
 	}
 	return map[string]interface{}{
 		"team":    team,
 		"members": members,
+		"people":  people,
 	}
 }
 
@@ -179,7 +207,9 @@ func (h *teamHandlers) deleteTeam(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /api/teams/:id/members/invite
+// POST /api/teams/:id/members/invite (PAC-129 contract §3.3): one
+// transaction under the team lock; adds an address not on the team, never
+// duplicates a pending invitation, keeps the name.
 func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	teamID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -187,14 +217,11 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid team id", http.StatusBadRequest)
 		return
 	}
-	if err := h.requireOwner(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
-		return
-	}
 	var body struct {
 		Email string `json:"email"`
+		Name  string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Email) == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || storage.TrimAddressSpace(body.Email) == "" {
 		writeError(w, "email is required", http.StatusBadRequest)
 		return
 	}
@@ -204,14 +231,54 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	invite, err := storage.CreateTeamInviteCtx(r.Context(), h.db, teamID, email, userID)
-	if err != nil {
+	res, err := storage.InviteTeamPersonCtx(r.Context(), h.db, teamID, userID, email, body.Name)
+	switch {
+	case errors.Is(err, storage.ErrNotTeamOwner), errors.Is(err, storage.ErrTeamGone):
+		writeError(w, "forbidden", http.StatusForbidden)
+		return
+	case errors.Is(err, storage.ErrTeamMemberLimit):
+		writeError(w, storage.MsgTeamMemberLimit, http.StatusUnprocessableEntity)
+		return
+	case err != nil:
 		writeServerError(w, r, "inviteMember", err, http.StatusInternalServerError)
 		return
 	}
 
+	var person gen.TeamPerson
+	if res.Member != nil {
+		person = pacedayPerson(res.Member)
+	} else {
+		person = addedPerson(res.Added, res.PendingExpiry)
+	}
+	status := http.StatusOK
+	if res.Outcome == storage.InviteAddedAndInvited || res.Outcome == storage.InviteInvited {
+		status = http.StatusCreated
+		h.sendInviteEmail(userID, teamID, res.Invitation)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(teamInviteResult{
+		Outcome:    gen.TeamInviteOutcome(res.Outcome),
+		Invitation: res.Invitation,
+		Person:     person,
+	})
+}
+
+// teamInviteResult is the TeamInviteResult body: the invitation is the stored
+// row (TeamInvite, token included), or null for already_member.
+type teamInviteResult struct {
+	Outcome    gen.TeamInviteOutcome `json:"outcome"`
+	Invitation *storage.TeamInvite   `json:"invitation"`
+	Person     gen.TeamPerson        `json:"person"`
+}
+
+// sendInviteEmail sends a new invitation's email after its commit, as before
+// PAC-129. PAC-81 AC-A6/A8: a tracked unit, awaited by the drain; a failure is
+// logged with the invite id and reported, never retried (D-15). Without SMTP
+// the skip is logged with the invite id (PAC-122 SF-066).
+func (h *teamHandlers) sendInviteEmail(inviterID, teamID uuid.UUID, invite *storage.TeamInvite) {
 	team, _ := storage.GetTeam(h.db, teamID)
-	inviter, _ := storage.GetUserByID(h.db, userID)
+	inviter, _ := storage.GetUserByID(h.db, inviterID)
 	inviterName := "Someone"
 	if inviter != nil && inviter.Name != "" {
 		inviterName = inviter.Name
@@ -220,18 +287,12 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 	if team != nil {
 		teamName = team.Name
 	}
-	// PAC-81 AC-A6/A8: a tracked unit, awaited by the drain; a failure is
-	// logged with the invite id and reported, never retried (D-15).
 	inviteID, to, token := invite.ID.String(), invite.InviteeEmail, invite.Token
 	lifecycle.Go(lifecycle.Unit{Kind: "team-invite-email", ID: inviteID}, func(context.Context) {
 		if err := sendTeamInviteEmail(to, inviterName, teamName, token); err != nil {
 			reportEmailFailure("team invite", "invite", inviteID, err)
 		}
 	})
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(invite)
 }
 
 // GET /api/teams/invites/:token (authenticated: mounted behind requireAuth; any
@@ -322,15 +383,23 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "this invite is for a different email address", http.StatusForbidden)
 		return
 	}
-	if err := storage.AddTeamMemberCtx(r.Context(), h.db, invite.TeamID, userID, "member"); err != nil {
+	// PAC-129 (contract §3.4): one transaction under the team lock, with the
+	// invitation re-read under it; the upgrade of an added entry, or a capped
+	// legacy create.
+	err = storage.AcceptTeamInviteForUserCtx(r.Context(), h.db, invite.ID, invite.TeamID, userID)
+	var notPending *storage.InviteNotPendingError
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, storage.ErrInviteGone):
+		writeError(w, "invite not found", http.StatusNotFound)
+	case errors.As(err, &notPending):
+		writeError(w, "invite is "+notPending.Status, http.StatusGone)
+	case errors.Is(err, storage.ErrTeamFull):
+		writeError(w, storage.MsgTeamFull, http.StatusUnprocessableEntity)
+	default:
 		writeServerError(w, r, "acceptInvite", err, http.StatusInternalServerError)
-		return
 	}
-	if err := storage.AcceptTeamInviteCtx(r.Context(), h.db, invite.ID); err != nil {
-		writeServerError(w, r, "acceptInvite", err, http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // DELETE /api/teams/:id/members/:userId
@@ -562,7 +631,8 @@ func (h *teamHandlers) analyticsHandler(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "invalid team id", http.StatusBadRequest)
 		return
 	}
-	if _, err := h.requireMember(teamID, userID); err != nil {
+	caller, err := h.requireMember(teamID, userID)
+	if err != nil {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -579,7 +649,12 @@ func (h *teamHandlers) analyticsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	eng := h.availabilityEngine
-	analytics, err := eng.GetTeamAnalytics(r.Context(), teamID, weekStart)
+	// PAC-129 (D-6): added people's figures are read for owners only.
+	analytics, err := eng.GetTeamAnalytics(r.Context(), teamID, weekStart, caller.Role == "owner")
+	if budgetCut(err) {
+		budget.WriteExpired(w) // PAC-129 §6: a budget-cut batch is the 503
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "analyticsHandler", err, http.StatusInternalServerError)
 		return

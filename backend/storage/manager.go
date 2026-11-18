@@ -207,36 +207,6 @@ func UnassignManagerTeamMember(db Querier, managerID, teamID uuid.UUID, email st
 	return err
 }
 
-// RemoveManagerTeamMemberFromTeam is the team-scoped removal of a roster
-// member (DELETE /api/manager/team/members/{email}?team_id=, PAC-122 SF-001):
-// the formal memberships of memberIDs on the team, the manager's assignment
-// of email to the team and the team's pending invites for email, all in one
-// transaction (joined when db is one), so a failure removes nothing.
-func RemoveManagerTeamMemberFromTeam(db Querier, managerID, teamID uuid.UUID, email string, memberIDs []uuid.UUID) (err error) {
-	tx, sc, err := beginOn(db)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = sc.Rollback()
-		}
-	}()
-	for _, id := range memberIDs {
-		if err = RemoveTeamMember(tx, teamID, id); err != nil {
-			return err
-		}
-	}
-	if err = UnassignManagerTeamMember(tx, managerID, teamID, email); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(`DELETE FROM team_invites WHERE team_id=$1 AND lower(invitee_email)=lower($2) AND status='pending'`, teamID, email); err != nil {
-		return err
-	}
-	err = sc.Commit()
-	return err
-}
-
 func DeleteManagerTeamMemberByEmail(db Querier, managerID uuid.UUID, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	_, err := db.Exec(`DELETE FROM manager_team_members WHERE manager_user_id=$1 AND member_email=$2`,

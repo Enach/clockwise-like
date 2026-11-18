@@ -40,8 +40,8 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **132**
-- generated: **12**
+- operations: **134**
+- generated: **14**
 - handwritten: **120**
 
 ## Register
@@ -124,17 +124,17 @@ from the contract and any edit is reported as drift.
 | connectSlack                      | GET    | /api/integrations/slack/connect                 | integrations     | handwritten | |
 | getSlackStatus                    | GET    | /api/integrations/slack/status                  | integrations     | handwritten | |
 | testLLMConnection                 | POST   | /api/llm/test                                   | llm              | handwritten | |
-| getManagerAnalytics               | GET    | /api/manager/analytics                          | manager          | handwritten | |
+| getManagerAnalytics               | GET    | /api/manager/analytics                          | manager          | handwritten | PAC-129: query and response modified (`include_added`), kept handwritten. Moving it is a contract change: the generated binder answers a malformed `team_id` with its own 400 text instead of "team_id must be a valid UUID". |
 | previewManagerDetection           | POST   | /api/manager/detect                             | manager          | handwritten | |
 | confirmManagerDetection           | POST   | /api/manager/detect/confirm                     | manager          | handwritten | |
 | getManagerCadenceGaps             | GET    | /api/manager/gaps                               | manager          | handwritten | |
 | getManagerProfile                 | GET    | /api/manager/profile                            | manager          | handwritten | |
 | setManagerProfile                 | POST   | /api/manager/profile                            | manager          | handwritten | |
-| getManagerRoster                  | GET    | /api/manager/team                               | manager          | handwritten | |
+| getManagerRoster                  | GET    | /api/manager/team                               | manager          | handwritten | PAC-129: query and response modified (`include_added`, source "added"), kept handwritten. Moving it is a contract change: the generated binder answers a malformed `team_id` with its own 400 text instead of "team_id must be a valid UUID", and a missing `team_id` with its own text instead of "team_id is required". |
 | addManagerTeamMember              | POST   | /api/manager/team/members                       | manager          | handwritten | |
-| removeManagerTeamMember           | DELETE | /api/manager/team/members/{email}               | manager          | handwritten | |
-| patchManagerTeamMember            | PATCH  | /api/manager/team/members/{email}               | manager          | handwritten | |
-| scheduleManagerOneOnOne           | POST   | /api/manager/team/members/{email}/schedule      | manager          | handwritten | |
+| removeManagerTeamMember           | DELETE | /api/manager/team/members/{email}               | manager          | handwritten | PAC-129: behaviour modified (one transaction under the team lock; added entry and every invitation deleted), kept handwritten. Moving it is a contract change: the generated binder answers a malformed `team_id` with its own 400 text instead of "team_id must be a valid UUID". |
+| patchManagerTeamMember            | PATCH  | /api/manager/team/members/{email}               | manager          | handwritten | PAC-129: response modified (422 for an added person), kept handwritten. Moving it is a contract change: the generated binder answers a malformed `team_id` with its own 400 text instead of "team_id must be a valid UUID", and an undecodable body with "invalid body" instead of "invalid JSON". |
+| scheduleManagerOneOnOne           | POST   | /api/manager/team/members/{email}/schedule      | manager          | handwritten | PAC-129: response modified (422 for an added person), kept handwritten. Moving it is a contract change: the generated binder answers a malformed `team_id` with its own 400 text instead of "team_id must be a valid UUID"; it also tolerates an empty body (io.EOF), which the wrapper would refuse. |
 | getMeetingBrief                   | GET    | /api/meetings/{event_id}/brief                  | meeting-briefs   | handwritten | |
 | refreshMeetingBrief               | POST   | /api/meetings/{event_id}/brief/refresh          | meeting-briefs   | handwritten | |
 | confirmNaturalLanguage            | POST   | /api/nlp/confirm                                | nlp              | handwritten | |
@@ -168,15 +168,17 @@ from the contract and any edit is reported as drift.
 | listTeams                         | GET    | /api/teams                                      | teams            | handwritten | |
 | createTeam                        | POST   | /api/teams                                      | teams            | handwritten | |
 | getTeamInvite                     | GET    | /api/teams/invites/{token}                      | teams            | handwritten | |
-| acceptTeamInvite                  | POST   | /api/teams/invites/{token}/accept               | teams            | handwritten | |
+| acceptTeamInvite                  | POST   | /api/teams/invites/{token}/accept               | teams            | handwritten | PAC-129: responses modified (422 team full, 404 after a removal), kept handwritten. Its statuses and their order are unchanged apart from the 422; the PAC-71 interleave tests pin the hand-written handler (`api/pac71_interleave_test.go`), and the move is left to a change with no behaviour in it. |
 | deleteTeam                        | DELETE | /api/teams/{id}                                 | teams            | handwritten | |
-| getTeam                           | GET    | /api/teams/{id}                                 | teams            | handwritten | |
+| getTeam                           | GET    | /api/teams/{id}                                 | teams            | handwritten | PAC-129: response modified (`people`, the 500 on a failed member read), kept handwritten. The PAC-71 CONTRACT-9 seam between its two reads (`getTeamAfterMembershipHook`) lives in the hand-written handler; the move is left to a change with no behaviour in it. |
 | renameTeam                        | PATCH  | /api/teams/{id}                                 | teams            | handwritten | |
-| getFormalTeamAnalytics            | GET    | /api/teams/{id}/analytics                       | teams            | handwritten | |
-| getTeamAvailability               | GET    | /api/teams/{id}/availability                    | teams            | handwritten | |
-| inviteTeamMember                  | POST   | /api/teams/{id}/members/invite                  | teams            | handwritten | |
+| getFormalTeamAnalytics            | GET    | /api/teams/{id}/analytics                       | teams            | handwritten | PAC-129: response modified (`week_start`, `people`, averages, 503), kept handwritten. Moving it is a contract change: the generated binder validates `date` before the handler runs and answers with its own 400 text, ahead of the 403. |
+| getTeamAvailability               | GET    | /api/teams/{id}/availability                    | teams            | handwritten | PAC-129: response modified (slot counts), kept handwritten. Moving it is a contract change: the generated binder validates `date` and `duration` before the handler runs and answers with its own 400 text, where the contract pins "date must be YYYY-MM-DD" and "duration must be a positive integer (minutes)" after the 403. |
+| inviteTeamMember                  | POST   | /api/teams/{id}/members/invite                  | teams            | handwritten | PAC-129: request and responses modified (name, outcome body, 200, cap 422), kept handwritten. Moving it is a contract change: the generated wrapper decodes the body before the handler runs and answers an undecodable body with "invalid body", where this operation answers "email is required" (contract PAC-129 §3.3). |
 | removeTeamMember                  | DELETE | /api/teams/{id}/members/{userId}                | teams            | handwritten | |
 | listNoMeetingZones                | GET    | /api/teams/{id}/no-meeting-zones                | teams            | handwritten | |
 | createNoMeetingZone               | POST   | /api/teams/{id}/no-meeting-zones                | teams            | handwritten | |
 | deleteNoMeetingZone               | DELETE | /api/teams/{id}/no-meeting-zones/{zoneId}       | teams            | handwritten | |
 | updateNoMeetingZone               | PATCH  | /api/teams/{id}/no-meeting-zones/{zoneId}       | teams            | handwritten | |
+| addTeamPerson                     | POST   | /api/teams/{id}/people                          | teams            | generated   | PAC-129: generatedServer.AddTeamPerson (backend/api/handlers_team_people.go), mounted by teamHandlers.addTeamPerson, which answers 400 "invalid team id" first. |
+| removeTeamPerson                  | DELETE | /api/teams/{id}/people/{email}                  | teams            | generated   | PAC-129: generatedServer.RemoveTeamPerson (backend/api/handlers_team_people.go), mounted by teamHandlers.removeTeamPerson, which answers 400 "invalid team id" first and path-unescapes {email}; the handler normalises it (400 "invalid email"). |

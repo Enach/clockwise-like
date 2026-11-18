@@ -340,7 +340,7 @@ func (f *fakeTeamAvailabilityEngine) FindSlots(_ context.Context, _ uuid.UUID, d
 	return f.slots, nil
 }
 
-func (f *fakeTeamAvailabilityEngine) GetTeamAnalytics(_ context.Context, _ uuid.UUID, weekStart time.Time) (*engine.TeamAnalytics, error) {
+func (f *fakeTeamAvailabilityEngine) GetTeamAnalytics(_ context.Context, _ uuid.UUID, weekStart time.Time, _ bool) (*engine.TeamAnalytics, error) {
 	f.analyticsCalls++
 	f.lastWeekStart = weekStart
 	return &engine.TeamAnalytics{MemberBreakdown: []engine.MemberAnalyticsSummary{}}, nil

@@ -8,6 +8,9 @@ import (
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
+// maxFreeBusyCalendars is Google's documented per-request limit.
+const maxFreeBusyCalendars = 50
+
 // freeBusy serves POST /freeBusy. Each requested identifier is answered from
 // the stand-in's calendar of that id. An identifier the stand-in holds no
 // calendar for is answered the way the real service answers one it cannot
@@ -25,6 +28,14 @@ func (s *Server) freeBusy(w http.ResponseWriter, r *http.Request, c *call) {
 	}
 	c.entry.TimeMin = req.TimeMin
 	c.entry.TimeMax = req.TimeMax
+
+	// PAC-129 (AC-14): Google documents calendarExpansionMax, "Maximum value
+	// is 50" calendars per request, with the reason tooManyCalendarsRequested.
+	// The stand-in refuses more, so a backend that does not batch fails here.
+	if len(req.Items) > maxFreeBusyCalendars {
+		writeGoogleError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "tooManyCalendarsRequested", "Too many calendars requested.")
+		return
+	}
 
 	tMin, err1 := time.Parse(time.RFC3339, req.TimeMin)
 	tMax, err2 := time.Parse(time.RFC3339, req.TimeMax)
