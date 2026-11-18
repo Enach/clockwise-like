@@ -112,10 +112,14 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 
 		candidates := generateAdjacentPositions(otherMoveable, otherFixed, workStart, workEnd, dur)
 
+		// A position listed twice (two neighbours ending or starting at the
+		// same time) is evaluated once: one check per position (PAC-133 §2.4).
+		evaluated := make(map[int64]bool, len(candidates))
 		for _, candidate := range candidates {
-			if candidate == mv.start {
+			if candidate == mv.start || evaluated[candidate.UnixNano()] {
 				continue
 			}
+			evaluated[candidate.UnixNano()] = true
 
 			proposedEnd := candidate.Add(dur)
 			if proposedEnd.After(workEnd) {
@@ -126,9 +130,14 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 				continue
 			}
 
+			// PAC-133 §2.4: a position is proposed only if every attendee
+			// is readable and no reported window (anyone's, a group's
+			// members' included) overlaps it. A failed check, or an unknown
+			// attendee, rejects the position like a busy one: at most one
+			// free/busy call per evaluated candidate.
 			if len(attendeeEmails) > 0 {
 				busy, err := client.getFreeBusy(ctx, attendeeEmails, candidate, proposedEnd)
-				if err != nil || hasConflict(busy, candidate, proposedEnd) {
+				if err != nil || anyUnknown(busy) || hasConflict(busy, []interval{{candidate, proposedEnd}}) {
 					continue
 				}
 			}
@@ -159,6 +168,19 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 	return result, nil
 }
 
+// Failure reasons in Apply's failed list (CompressionApplyResult.failed), after
+// "<event_id>: ".
+const (
+	reasonAttendeeConflict   = "attendee conflict at proposed time"
+	reasonAttendeeUnverified = "attendee availability unverified"
+)
+
+// Apply moves each proposal's event after re-checking its real attendees
+// (PAC-133 §2.5): read the event once; its non-self, non-declined attendees;
+// none → move with no free/busy call; else one call for them over the
+// proposed interval, checked over the proposed interval minus the event's
+// current one. A reported window there is a conflict; otherwise a failed call
+// or an unknown attendee is unverified (conflict wins); else the move.
 func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal) ([]string, []string, error) {
 	client, err := e.calClient(ctx)
 	if err != nil {
@@ -169,16 +191,26 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 	subject := auth.UserIDFromContext(ctx)
 	var applied, failed []string
 	for _, p := range proposals {
-		busy, err := client.getFreeBusy(ctx, nil, p.ProposedStart, p.ProposedEnd)
-		if err == nil && hasConflict(busy, p.ProposedStart, p.ProposedEnd) {
-			failed = append(failed, p.EventID+": attendee conflict at proposed time")
-			continue
-		}
-
 		existing, err := client.getEvent(ctx, p.EventID)
 		if err != nil {
 			failed = append(failed, p.EventID+": "+err.Error())
 			continue
+		}
+
+		if attendees := extractAttendees(eventInterval{event: existing}); len(attendees) > 0 {
+			check := []interval{{p.ProposedStart, p.ProposedEnd}}
+			if cs, ce, ok := timedBounds(existing); ok {
+				check = subtractIntervals(check[0], []interval{{cs, ce}})
+			}
+			busy, err := client.getFreeBusy(ctx, attendees, p.ProposedStart, p.ProposedEnd)
+			switch {
+			case hasConflict(busy, check):
+				failed = append(failed, p.EventID+": "+reasonAttendeeConflict)
+				continue
+			case err != nil || anyUnknown(busy):
+				failed = append(failed, p.EventID+": "+reasonAttendeeUnverified)
+				continue
+			}
 		}
 
 		existing.Start = &googlecalendar.EventDateTime{DateTime: p.ProposedStart.Format(time.RFC3339)}
@@ -194,6 +226,20 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 	}
 
 	return applied, failed, nil
+}
+
+// timedBounds is an event's current interval; an event with no timed start
+// and end (all-day, or unparseable) has none.
+func timedBounds(ev *googlecalendar.Event) (time.Time, time.Time, bool) {
+	if ev.Start == nil || ev.End == nil || ev.Start.DateTime == "" || ev.End.DateTime == "" {
+		return time.Time{}, time.Time{}, false
+	}
+	start, err1 := time.Parse(time.RFC3339, ev.Start.DateTime)
+	end, err2 := time.Parse(time.RFC3339, ev.End.DateTime)
+	if err1 != nil || err2 != nil || !end.After(start) {
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
 }
 
 type eventInterval struct {
@@ -285,12 +331,27 @@ func overlapsWith(iv interval, others []interval) bool {
 	return false
 }
 
-func hasConflict(busy map[string][]calendar.TimeSlot, start, end time.Time) bool {
-	for _, slots := range busy {
-		for _, s := range slots {
-			if start.Before(s.End) && end.After(s.Start) {
-				return true
+// hasConflict reports whether any reported window, of any address and any
+// outcome (a group's members' included in its Busy), overlaps one of the
+// intervals (D-11: reported windows block whatever the outcome).
+func hasConflict(busy map[string]calendar.FreeBusyEntry, within []interval) bool {
+	for _, entry := range busy {
+		for _, s := range entry.Busy {
+			for _, iv := range within {
+				if iv.start.Before(s.End) && iv.end.After(s.Start) {
+					return true
+				}
 			}
+		}
+	}
+	return false
+}
+
+// anyUnknown reports whether any address in the answer is not readable.
+func anyUnknown(busy map[string]calendar.FreeBusyEntry) bool {
+	for _, entry := range busy {
+		if !entry.Known {
+			return true
 		}
 	}
 	return false

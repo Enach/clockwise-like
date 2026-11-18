@@ -166,9 +166,10 @@ test.describe('calendar — a connected calendar (PAC-43, through the stand-in)'
     apiAs,
   }) => {
     // engine.FreeBusyService caches every answer, an "unknown" one included,
-    // for 15 minutes per (requester, attendee, date) in process memory (spec
-    // §V3-5). So: an attendee no other scenario — and no earlier run against
-    // this stack — uses, seeded BEFORE the first request.
+    // for 15 minutes per (requester, attendee, exact start and end instants)
+    // in process memory (PAC-133 contract §4; before PAC-133 the key was the
+    // start's UTC date). So: an attendee no other scenario — and no earlier
+    // run against this stack — uses, seeded BEFORE the first request.
     //
     // Only the primary-provider case: the deployment's provider setting is
     // google (seed.ts verify checks it). This asserts nothing about a user of

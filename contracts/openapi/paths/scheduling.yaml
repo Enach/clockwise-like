@@ -195,6 +195,27 @@ paths:
         an engine error is the 500.
         A caller with no stored Google credential gets the 401 `calendar not connected`
         in BOTH modes, before any day is computed (PAC-21, API-054).
+
+        **Attendee check (PAC-133 §3.6 item 1, D-7, D-11).** A meeting the user
+        organises is proposed at a candidate position only if every attendee
+        (non-self, not declined) is readable (`known`) and free over it. A
+        position where any attendee is unknown (the provider reported an error
+        for them, did not mention them, or a group of theirs could not be fully
+        read), or where any reported busy window overlaps it (including windows
+        reported for an unknown attendee or a group's members), is not proposed,
+        and the next position is tried, exactly as for a busy attendee. A
+        meeting with an attendee unknown at every position gets no proposal,
+        and the answer does not say why (as for a busy attendee). A position
+        whose free/busy check fails is not proposed either (PAC-133 §5, P2-m2).
+        The handling of the meeting's own current time is unchanged: a position
+        overlapping it is checked like any other, so the attendees' busy time
+        for this very meeting rejects it.
+
+        **Provider calls (PAC-133 §3.6 items 4-5, D-9).** At most one free/busy
+        call per evaluated candidate position per meeting with attendees (today's
+        worst case); week mode repeats it for five days, all on the request's
+        budget. When the budget runs out first, the answer is the 503 below,
+        never a 200 with fewer proposals or fewer days (PAC-36).
       requestBody:
         required: false
         content:
@@ -241,6 +262,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '503':
+          description: >-
+            The request budget (PAC-81, 90 s) ran out before the answer was
+            computed, in either mode: typically a week of meetings with many
+            external or unreadable attendees, whose candidate checks now run to
+            the bound (PAC-133 §3.6 item 5, D-9). Shared body
+            `{"error":"request timed out"}`. Never a partial 200. The preview
+            writes nothing, so a retry is safe.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
 
   /api/schedule/compress/apply:
     post:
@@ -255,6 +288,27 @@ paths:
         A proposal whose start or end fails RFC3339 parsing is NOT an error: it
         is dropped and `"<event_id>: invalid time format"` is appended to
         `failed` (confirmed by TestApplyCompress_InvalidTime, which expects 200).
+
+        **Attendee re-check (PAC-133 §3.6 items 2-3, D-7; SF-103).** For each
+        parsed proposal, in order: (1) the event is read once (a read failure is
+        `"<event_id>: <error>"`, as before); (2) its attendees are taken by the
+        preview's rule (non-self, not declined); with none, the event is moved
+        with no free/busy call; (3) otherwise ONE free/busy call asks about
+        exactly those attendees over [`proposed_start`, `proposed_end`]. The part
+        of the proposed interval that overlaps the meeting's current interval is
+        excluded from the check (the attendees are already committed to this
+        meeting there; a second commitment over that overlap is therefore not
+        detected). Then: any reported busy window, of any attendee, readable or
+        unknown, or of a group's member, overlapping the rest of the proposed
+        interval -> not moved, `"<event_id>: attendee conflict at proposed
+        time"`; else the call failed, or any attendee is unknown -> not moved,
+        `"<event_id>: attendee availability unverified"` (new, OQ-8 default:
+        refuse); else the event is moved and audited as before. The conflict
+        reason wins when both apply. Nothing is written for a proposal that is
+        not moved (no event write, no `meeting_moved` audit row). At most one
+        free/busy call and exactly one event read per proposal (D-9). Before
+        PAC-133 the re-check named no calendar and ignored a failed call, so
+        every proposal was moved unchecked.
       requestBody:
         required: true
         content:
@@ -309,6 +363,20 @@ paths:
         pinned by TestSmartScheduler_Suggest_StepsThirtyMinutes (AC-6, written
         in the backend PR before the code); assumed by the
         factory, pending owner confirmation that no 15-minute rule was intended.
+
+        **Unknown attendees (PAC-133 §3.5 items 1-3, D-7, D-11).** One Google
+        free/busy call covers the caller's own calendar and every attendee. A
+        readable attendee's busy windows constrain the slots, as before; so do
+        windows reported for an unknown attendee (a partial answer, or a group's
+        members). An unknown attendee's missing time does not constrain, and
+        that attendee is named in `unknown_attendees`. When the caller's OWN
+        calendar is unknown, the request fails with the 500 `internal error`
+        and no slot is offered. Consumers: the web "Suggest a time" modal, the
+        MCP tools `clockwise_suggest_meeting` (relays the body) and
+        `clockwise_create_event` (asks before booking past an unknown attendee,
+        and re-checks an exact start with a call whose range is exactly
+        [start, start + duration]), and NLP parse (copies only the slots;
+        relayed as text by the MCP tool `clockwise_parse_command`).
       requestBody:
         required: true
         content:
@@ -335,12 +403,15 @@ paths:
           $ref: '#/components/responses/CalendarNotConnected'
         '500':
           description: >-
-            Engine error (freebusy failure or settings load) for a user who HAS a stored
-            Google credential (a user with none gets the 401 `calendar not connected`):
-            `{"error":"internal error"}`; or the weekly out-of-hours allowance is spent:
-            `{"error":"out-of-hours meeting allowance reached"}` (still a 500, not a 4xx:
-            changing that status is not part of this change). The detail is written to the
-            server log and Sentry only (PAC-21).
+            Engine error for a user who HAS a stored Google credential (a user with none
+            gets the 401 `calendar not connected`): the free/busy call failed as a whole,
+            the caller's own calendar is unknown (PAC-133 §3.5 item 3, OQ-4), settings
+            could not be loaded, or the out-of-hours count failed. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and
+            Sentry only (PAC-21). This operation never answers `out-of-hours meeting
+            allowance reached`: a spent allowance only drops out-of-hours candidates
+            (the text is createScheduledMeeting's; corrected by PAC-133, the previous
+            description claimed it here).
           content:
             application/json:
               schema:
@@ -493,6 +564,22 @@ paths:
         (the model's own, or a fixed sentence). No provider text reaches the
         answer; the extraction's (redacted) failure goes to the server log
         with the user id only.
+
+        **Suggestion failures are reported (PAC-133 §3.5 item 7; SF-037 first
+        clause, backend half).** For a `schedule_meeting` intent with a range,
+        the parser asks for meeting suggestions (the engine behind
+        suggestMeetingSlots). When that step fails (including the caller's own
+        calendar being unknown, or no Google calendar connected), the answer is
+        still 200 with `intent` and the other parsed members as before, no
+        `suggested_slots`, and `error` set to a fixed sentence (see
+        NLPParseResult.error) - unless `error` is already set, in which case it
+        is kept unchanged. A successful step sets no error. The parse does not
+        list unknown attendees (PAC-133 §5).
+
+        **Precedence.** An error already set is never replaced, so the first
+        one set wins: the model's own error, then the attendee-extraction
+        sentence (set right after the model's answer), then the
+        suggestion-failure sentence (set last).
       requestBody:
         required: true
         content:
@@ -2371,9 +2458,14 @@ components:
           items:
             type: string
           description: >
-            Mixed contents: handler-side entries read
-            `"<event_id>: invalid time format"`, engine-side entries are appended
-            verbatim by Compressor.Apply.
+            One entry per proposal not moved, `"<event_id>: <reason>"`. Handler
+            side: `invalid time format`. Engine side (CompressionEngine.Apply):
+            `attendee conflict at proposed time` (an attendee is busy over the
+            proposed time outside the meeting's own current time),
+            `attendee availability unverified` (PAC-133: an attendee is unknown,
+            or the free/busy check failed), or the error text of a failed event
+            read or write, appended verbatim. The two attendee reasons are
+            distinct from each other and from every other reason.
       required: [applied, failed]
       additionalProperties: false
 
@@ -2413,7 +2505,22 @@ components:
           description: At most 3 entries; `[]` when no candidate survived.
           items:
             $ref: '#/components/schemas/SuggestedSlot'
-      required: [slots]
+        unknown_attendees:
+          type: array
+          description: >-
+            PAC-133 §3.5 item 2. Every requested attendee whose availability
+            was unknown (the provider reported an error for it, did not
+            mention it, or, for a group, its expansion failed or a member is
+            unknown), and nobody else: never the caller's own calendar (an
+            unknown own calendar is the 500), never a readable attendee, never
+            a group's member by its own id. Each named once, spelled exactly as
+            sent in `attendees`, in request order. Always present: `[]` when
+            every attendee was read. Their missing time did not constrain
+            `slots`; windows reported for them did. Unknown means "not
+            checked", never "free".
+          items:
+            type: string
+      required: [slots, unknown_attendees]
       additionalProperties: false
 
     SuggestedSlot:
@@ -2538,17 +2645,28 @@ components:
             LLM call fails or returns invalid JSON, when the destination is
             refused, and when AI is not configured (then equal to
             `not_configured.message`). Also set by the model's own answer, with
-            any intent. Precedence: an error already set is never replaced.
-            PAC-122 (SF-037 second clause): when the attendee extraction (the
-            first LLM call) failed or did not answer JSON and no error was
-            already set, exactly `Paceday could not identify the attendees in
-            this request. Check the attendees before booking.`, with `intent`
-            and the other members as parsed (before, the failure was ignored).
-            PAC-122 (SF-037 third clause): when `range_start` or `range_end` in
-            the model's answer is not a `YYYY-MM-DD` date, `intent` is `unknown`
-            and `error` is the model's own error if it set one, else `LLM
-            returned an invalid date range` (before, the range was dropped and
-            no slot was searched).
+            any intent. Precedence: an error already set is never replaced, so
+            the first one set wins: the model's own, then the PAC-122
+            attendee-extraction sentence, then the PAC-133 suggestion-failure
+            sentence. PAC-122 (SF-037 second clause): when the attendee
+            extraction (the first LLM call) failed or did not answer JSON and no
+            error was already set, exactly `Paceday could not identify the
+            attendees in this request. Check the attendees before booking.`, with
+            `intent` and the other members as parsed (before, the failure was
+            ignored). PAC-122 (SF-037 third clause): when `range_start` or
+            `range_end` in the model's answer is not a `YYYY-MM-DD` date,
+            `intent` is `unknown` and `error` is the model's own error if it set
+            one, else `LLM returned an invalid date range` (before, the range was
+            dropped and no slot was searched). PAC-133 (SF-037 first clause):
+            with intent `schedule_meeting`, when the suggestion step failed and
+            no error was already set, exactly `No Google calendar is connected,
+            so Paceday cannot suggest meeting times.` (the caller has no stored
+            Google credential) or `Paceday could not suggest meeting times for
+            this request. Try again later.` (any other failure), and
+            `suggested_slots` is absent. A client shows this error in place of a
+            generic "no slots" message (PAC-133 AC-43: the web Dashboard does so
+            for any error, including one the model set when the suggestion step
+            returned no slot or never ran).
         not_configured:
           $ref: '#/components/schemas/AINotConfigured'
           description: >

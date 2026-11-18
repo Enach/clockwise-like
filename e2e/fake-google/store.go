@@ -314,13 +314,24 @@ func (s *Store) List(calendarID string, timeMin, timeMax time.Time) []*googlecal
 
 // Busy projects a calendar onto free/busy: the opaque, non-cancelled events
 // overlapping the window, clipped to it, as the real service reports them.
-// known is false when the stand-in holds no such calendar.
+// known is false when the stand-in holds no such calendar: no events, no
+// metadata, and not the calendar of an accepted credential. A fixture user's
+// own calendar is therefore readable even when empty or cleared, as Google
+// answers a real user's empty calendar (PAC-133 AC-37); only a truly unknown
+// id is notFound.
 func (s *Store) Busy(calendarID string, timeMin, timeMax time.Time) (busy []*googlecalendar.TimePeriod, known bool) {
 	s.mu.Lock()
 	_, hasEvents := s.calendars[calKey(calendarID)]
 	_, hasMeta := s.meta[calKey(calendarID)]
+	isCredential := false
+	for _, c := range s.tokens {
+		if c.Calendar != "" && calKey(c.Calendar) == calKey(calendarID) {
+			isCredential = true
+			break
+		}
+	}
 	s.mu.Unlock()
-	if !hasEvents && !hasMeta {
+	if !hasEvents && !hasMeta && !isCredential {
 		return nil, false
 	}
 	busy = []*googlecalendar.TimePeriod{}

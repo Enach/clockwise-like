@@ -436,6 +436,36 @@ const (
 	PublicLinkInfoUsageTypeSingleUse PublicLinkInfoUsageType = "single_use"
 )
 
+// Defines values for RawFreeBusyCalendarKnownStatus.
+const (
+	RawFreeBusyCalendarStatusKnown RawFreeBusyCalendarKnownStatus = "known"
+)
+
+// Defines values for RawFreeBusyCalendarUnknownStatus.
+const (
+	RawFreeBusyCalendarStatusUnknown RawFreeBusyCalendarUnknownStatus = "unknown"
+)
+
+// Defines values for RawFreeBusyMemberKnownStatus.
+const (
+	RawFreeBusyMemberStatusKnown RawFreeBusyMemberKnownStatus = "known"
+)
+
+// Defines values for RawFreeBusyMemberUnknownStatus.
+const (
+	RawFreeBusyMemberStatusUnknown RawFreeBusyMemberUnknownStatus = "unknown"
+)
+
+// Defines values for RawFreeBusyOwnKnownStatus.
+const (
+	RawFreeBusyOwnStatusKnown RawFreeBusyOwnKnownStatus = "known"
+)
+
+// Defines values for RawFreeBusyOwnUnknownStatus.
+const (
+	RawFreeBusyOwnStatusUnknown RawFreeBusyOwnUnknownStatus = "unknown"
+)
+
 // Defines values for ReadinessNotReadyError.
 const (
 	NotReady ReadinessNotReadyError = "not ready"
@@ -1417,7 +1447,7 @@ type CompressionApplyResult struct {
 	// Applied Event ids the engine moved.
 	Applied []string `json:"applied"`
 
-	// Failed Mixed contents: handler-side entries read `"<event_id>: invalid time format"`, engine-side entries are appended verbatim by Compressor.Apply.
+	// Failed One entry per proposal not moved, `"<event_id>: <reason>"`. Handler side: `invalid time format`. Engine side (CompressionEngine.Apply): `attendee conflict at proposed time` (an attendee is busy over the proposed time outside the meeting's own current time), `attendee availability unverified` (PAC-133: an attendee is unknown, or the free/busy check failed), or the error text of a failed event read or write, appended verbatim. The two attendee reasons are distinct from each other and from every other reason.
 	Failed []string `json:"failed"`
 }
 
@@ -1836,27 +1866,30 @@ type FocusRunResult struct {
 
 // FreeBusyLegacyResult engine.ParticipantBusy, as emitted under the `results` key.
 type FreeBusyLegacyResult struct {
-	Busy     []RawGoogleBusyWindow        `json:"busy"`
+	// Busy Same windows as `participants[].busy` (PAC-133, partial windows on `unknown` included).
+	Busy []RawGoogleBusyWindow `json:"busy"`
+
+	// Coverage Same value as `participants[].status` for this address (PAC-133).
 	Coverage FreeBusyLegacyResultCoverage `json:"coverage"`
 	Email    openapi_types.Email          `json:"email"`
 }
 
-// FreeBusyLegacyResultCoverage defines model for FreeBusyLegacyResult.Coverage.
+// FreeBusyLegacyResultCoverage Same value as `participants[].status` for this address (PAC-133).
 type FreeBusyLegacyResultCoverage string
 
 // FreeBusyParticipant api.freeBusyParticipantDTO. Exactly three keys. There is no provider key (the answer does not say which calendar provider supplied the data) and no status saying whether the address belongs to a Paceday user; `status` has two values only (API-046; PAC-41 D-2).
 type FreeBusyParticipant struct {
-	// Busy Always present; `[]` when the participant is free or status is unknown.
+	// Busy Always present. `known`: complete, `[]` when free. `unknown`: the windows the provider did report for the address (possibly none); they block (PAC-133 D-11), and `[]` here means "not checked", not free.
 	Busy []FreeBusyWindow `json:"busy"`
 
 	// Email Lowercased and trimmed form of the requested address.
 	Email openapi_types.Email `json:"email"`
 
-	// Status `known` when the provider returned data for this address; `unknown` when the domain is a known consumer domain, when no calendar credentials are stored, or when the provider call failed or timed out.
+	// Status `known` when the provider answered this address without error (a Google group: its expansion and every member); `unknown` when the domain is a known consumer domain, when no calendar credentials are stored, when the provider call failed or timed out, when the provider reported an error for the address, or when the provider did not mention it (PAC-133, SF-032). Two values only (PAC-41 D-2): a partial answer is `unknown`.
 	Status FreeBusyParticipantStatus `json:"status"`
 }
 
-// FreeBusyParticipantStatus `known` when the provider returned data for this address; `unknown` when the domain is a known consumer domain, when no calendar credentials are stored, or when the provider call failed or timed out.
+// FreeBusyParticipantStatus `known` when the provider answered this address without error (a Google group: its expansion and every member); `unknown` when the domain is a known consumer domain, when no calendar credentials are stored, when the provider call failed or timed out, when the provider reported an error for the address, or when the provider did not mention it (PAC-133, SF-032). Two values only (PAC-41 D-2): a partial answer is `unknown`.
 type FreeBusyParticipantStatus string
 
 // FreeBusyQueryRequest Body of POST /api/freebusy.
@@ -1864,7 +1897,7 @@ type FreeBusyQueryRequest struct {
 	// Emails 1 to 20 addresses. Empty or absent -> 400 `emails is required`; more than 20 -> 400 `max 20 emails per request`. Each entry is trimmed and lowercased before lookup. No format validation is performed.
 	Emails []openapi_types.Email `json:"emails"`
 
-	// EndTime RFC3339. Must parse or the request is rejected with 400. The handler does NOT check that end_time is after start_time.
+	// EndTime RFC3339. Must parse or the request is rejected with 400. Must be after `start_time`, else 400 `end_time must be after start_time` (PAC-133, API-077, SF-034).
 	EndTime time.Time `json:"end_time"`
 
 	// StartTime RFC3339. Must parse or the request is rejected with 400.
@@ -2457,7 +2490,7 @@ type NLPParseResult struct {
 	Constraints     *string `json:"constraints,omitempty"`
 	DurationMinutes *int    `json:"duration_minutes,omitempty"`
 
-	// Error Still HTTP 200 in every case. Set (with intent `unknown`) when the LLM call fails or returns invalid JSON, when the destination is refused, and when AI is not configured (then equal to `not_configured.message`). Also set by the model's own answer, with any intent. Precedence: an error already set is never replaced. PAC-122 (SF-037 second clause): when the attendee extraction (the first LLM call) failed or did not answer JSON and no error was already set, exactly `Paceday could not identify the attendees in this request. Check the attendees before booking.`, with `intent` and the other members as parsed (before, the failure was ignored). PAC-122 (SF-037 third clause): when `range_start` or `range_end` in the model's answer is not a `YYYY-MM-DD` date, `intent` is `unknown` and `error` is the model's own error if it set one, else `LLM returned an invalid date range` (before, the range was dropped and no slot was searched).
+	// Error Still HTTP 200 in every case. Set (with intent `unknown`) when the LLM call fails or returns invalid JSON, when the destination is refused, and when AI is not configured (then equal to `not_configured.message`). Also set by the model's own answer, with any intent. Precedence: an error already set is never replaced, so the first one set wins: the model's own, then the PAC-122 attendee-extraction sentence, then the PAC-133 suggestion-failure sentence. PAC-122 (SF-037 second clause): when the attendee extraction (the first LLM call) failed or did not answer JSON and no error was already set, exactly `Paceday could not identify the attendees in this request. Check the attendees before booking.`, with `intent` and the other members as parsed (before, the failure was ignored). PAC-122 (SF-037 third clause): when `range_start` or `range_end` in the model's answer is not a `YYYY-MM-DD` date, `intent` is `unknown` and `error` is the model's own error if it set one, else `LLM returned an invalid date range` (before, the range was dropped and no slot was searched). PAC-133 (SF-037 first clause): with intent `schedule_meeting`, when the suggestion step failed and no error was already set, exactly `No Google calendar is connected, so Paceday cannot suggest meeting times.` (the caller has no stored Google credential) or `Paceday could not suggest meeting times for this request. Try again later.` (any other failure), and `suggested_slots` is absent. A client shows this error in place of a generic "no slots" message (PAC-133 AC-43: the web Dashboard does so for any error, including one the model set when the suggestion step returned no slot or never ran).
 	Error *string `json:"error,omitempty"`
 
 	// Intent Values observed in the code and prompts: `schedule_meeting`, `schedule_focus`, `unknown`. The field is a plain string with no server-side validation, and the value ultimately comes from the LLM, so other values are possible.
@@ -3115,14 +3148,107 @@ type PublicSlotsResponse struct {
 	TimeZone string `json:"time_zone"`
 }
 
-// RawGoogleBusyWindow calendar.TimeSlot, with explicit json tags `start` / `end` since PAC-26 (API-028, API-029). Same keys as FreeBusyWindow; kept as its own schema because it is a different Go type with a different failure mode: a Google timestamp that fails to parse becomes the Go zero time `0001-01-01T00:00:00Z` because the parse error is discarded. Before PAC-26 the struct had no tags and the keys were `Start` / `End`.
+// RawFreeBusyAnswer 200 of GET /api/calendar/freebusy (PAC-133). `own` is the caller's own calendar (Google `primary`), always read and identified by its key, never by an address. `calendars` has exactly one entry per distinct requested attendee, in first-appearance order. Outcome and blocking rules: the operation's description (PAC-133 §3.1, D-11).
+type RawFreeBusyAnswer struct {
+	Calendars []RawFreeBusyCalendar `json:"calendars"`
+
+	// Own The caller's own calendar. Exactly one variant applies, told apart by `status` alone (disjoint enums; the PublicBookingConflict pattern).
+	Own RawFreeBusyOwnCalendar `json:"own"`
+}
+
+// RawFreeBusyCalendar One requested attendee. Exactly one variant applies, told apart by `status` alone (disjoint enums). Group members use RawFreeBusyMember.
+type RawFreeBusyCalendar struct {
+	union json.RawMessage
+}
+
+// RawFreeBusyCalendarKnown A readable calendar: `busy` is complete, `[]` means free. For a group, its expansion had no error and every member is known; `busy` is every window its members reported.
+type RawFreeBusyCalendarKnown struct {
+	// Address The attendee exactly as sent (an element of `attendees`).
+	Address string                `json:"address"`
+	Busy    []RawGoogleBusyWindow `json:"busy"`
+
+	// Group Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members are RawFreeBusyMember, which has no `group` property. A member is part of the group's answer, not an unrequested extra.
+	Group  *RawFreeBusyGroup              `json:"group,omitempty"`
+	Status RawFreeBusyCalendarKnownStatus `json:"status"`
+}
+
+// RawFreeBusyCalendarKnownStatus defines model for RawFreeBusyCalendarKnown.Status.
+type RawFreeBusyCalendarKnownStatus string
+
+// RawFreeBusyCalendarUnknown A calendar Google could not read: an error was reported for it, it was not mentioned in the answer, or (a group) its expansion failed or one of its members is unknown. Not checked, never free. `busy` is present only when windows were reported (a partial answer, or a group's members), and then is non-empty; those windows block (PAC-133 D-11). An unknown calendar is never shown with an empty busy list.
+type RawFreeBusyCalendarUnknown struct {
+	// Address As on RawFreeBusyCalendarKnown.
+	Address string                 `json:"address"`
+	Busy    *[]RawGoogleBusyWindow `json:"busy,omitempty"`
+
+	// Group Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members are RawFreeBusyMember, which has no `group` property. A member is part of the group's answer, not an unrequested extra.
+	Group  *RawFreeBusyGroup                `json:"group,omitempty"`
+	Status RawFreeBusyCalendarUnknownStatus `json:"status"`
+}
+
+// RawFreeBusyCalendarUnknownStatus defines model for RawFreeBusyCalendarUnknown.Status.
+type RawFreeBusyCalendarUnknownStatus string
+
+// RawFreeBusyGroup Present only on an address Google answered as a group (its `groups` expansion). `members` are the calendars it expanded into, each with its own outcome, in Google's order; `[]` when the expansion failed. Members are RawFreeBusyMember, which has no `group` property. A member is part of the group's answer, not an unrequested extra.
+type RawFreeBusyGroup struct {
+	Members []RawFreeBusyMember `json:"members"`
+}
+
+// RawFreeBusyMember One calendar a group expanded into. Exactly one variant applies, told apart by `status` alone (disjoint enums). Neither variant has a `group` property, so a nested group cannot be expressed (PAC-133 revision 1.1, challenge m-5).
+type RawFreeBusyMember struct {
+	union json.RawMessage
+}
+
+// RawFreeBusyMemberKnown A readable group member. `busy` is complete; `[]` means free.
+type RawFreeBusyMemberKnown struct {
+	// Address The calendar id Google listed in the group's expansion.
+	Address string                       `json:"address"`
+	Busy    []RawGoogleBusyWindow        `json:"busy"`
+	Status  RawFreeBusyMemberKnownStatus `json:"status"`
+}
+
+// RawFreeBusyMemberKnownStatus defines model for RawFreeBusyMemberKnown.Status.
+type RawFreeBusyMemberKnownStatus string
+
+// RawFreeBusyMemberUnknown A group member Google could not read (an error for it, or not in the answer). Not checked, never free. `busy` is present only when windows were reported, and then is non-empty; those windows block.
+type RawFreeBusyMemberUnknown struct {
+	// Address The calendar id Google listed in the group's expansion.
+	Address string                         `json:"address"`
+	Busy    *[]RawGoogleBusyWindow         `json:"busy,omitempty"`
+	Status  RawFreeBusyMemberUnknownStatus `json:"status"`
+}
+
+// RawFreeBusyMemberUnknownStatus defines model for RawFreeBusyMemberUnknown.Status.
+type RawFreeBusyMemberUnknownStatus string
+
+// RawFreeBusyOwnCalendar The caller's own calendar. Exactly one variant applies, told apart by `status` alone (disjoint enums; the PublicBookingConflict pattern).
+type RawFreeBusyOwnCalendar struct {
+	union json.RawMessage
+}
+
+// RawFreeBusyOwnKnown The caller's own calendar, readable. `busy` is complete; `[]` means free.
+type RawFreeBusyOwnKnown struct {
+	Busy   []RawGoogleBusyWindow     `json:"busy"`
+	Status RawFreeBusyOwnKnownStatus `json:"status"`
+}
+
+// RawFreeBusyOwnKnownStatus defines model for RawFreeBusyOwnKnown.Status.
+type RawFreeBusyOwnKnownStatus string
+
+// RawFreeBusyOwnUnknown The caller's own calendar, not readable (Google reported an error for it, or did not mention it). Not checked, never free. `busy` is present only when Google reported windows anyway, and then is non-empty; those windows block.
+type RawFreeBusyOwnUnknown struct {
+	Busy   *[]RawGoogleBusyWindow      `json:"busy,omitempty"`
+	Status RawFreeBusyOwnUnknownStatus `json:"status"`
+}
+
+// RawFreeBusyOwnUnknownStatus defines model for RawFreeBusyOwnUnknown.Status.
+type RawFreeBusyOwnUnknownStatus string
+
+// RawGoogleBusyWindow calendar.TimeSlot, with explicit json tags `start` / `end` since PAC-26 (API-028, API-029). Used by GET /api/calendar/freebusy (RawFreeBusyAnswer) and by the legacy `results` view of POST /api/freebusy. Same keys as FreeBusyWindow; kept as its own schema because it is a different Go type with a different failure mode: a Google timestamp that fails to parse becomes the Go zero time `0001-01-01T00:00:00Z` because the parse error is discarded. Before PAC-26 the struct had no tags and the keys were `Start` / `End`.
 type RawGoogleBusyWindow struct {
 	End   time.Time `json:"end"`
 	Start time.Time `json:"start"`
 }
-
-// RawGoogleFreeBusyMap Response of GET /api/calendar/freebusy: `map[string][]calendar.TimeSlot` keyed by the calendar id Google echoed back (normally the attendee email).
-type RawGoogleFreeBusyMap map[string][]RawGoogleBusyWindow
 
 // ReadinessNotReady The PAC-21 JSON error envelope (`{"error": ...}`) with its one
 // possible readiness message pinned. The cause is never in the body;
@@ -3250,6 +3376,9 @@ type ScheduleSuggestRequest struct {
 type ScheduleSuggestions struct {
 	// Slots At most 3 entries; `[]` when no candidate survived.
 	Slots []SuggestedSlot `json:"slots"`
+
+	// UnknownAttendees PAC-133 §3.5 item 2. Every requested attendee whose availability was unknown (the provider reported an error for it, did not mention it, or, for a group, its expansion failed or a member is unknown), and nobody else: never the caller's own calendar (an unknown own calendar is the 500), never a readable attendee, never a group's member by its own id. Each named once, spelled exactly as sent in `attendees`, in request order. Always present: `[]` when every attendee was read. Their missing time did not constrain `slots`; windows reported for them did. Unknown means "not checked", never "free".
+	UnknownAttendees []string `json:"unknown_attendees"`
 }
 
 // SchedulingErrorResponse The JSON error shape produced by api.writeError (handlers_settings.go:206). Emitted with `Content-Type: application/json`. Every 5xx in this domain uses it, with a fixed server-chosen message (PAC-21). Handlers that use the Go stdlib `http.Error` for a 4xx return text/plain and do NOT use this shape; each response above says which applies. The 401 from requireAuth is a hybrid: the body text is `{"error":"unauthorized"}` but it is written through http.Error, which overwrites the Content-Type to `text/plain; charset=utf-8`.
@@ -5087,10 +5216,10 @@ type GetCalendarFreeBusyParams struct {
 	// Start RFC3339. Missing or unparseable -> 400.
 	Start time.Time `form:"start" json:"start"`
 
-	// End RFC3339. Missing or unparseable -> 400.
+	// End RFC3339. Missing or unparseable -> 400. Not after `start` (equal or earlier) -> 400 `end must be after start`, before the credential is loaded and with no provider call (PAC-133).
 	End time.Time `form:"end" json:"end"`
 
-	// Attendees Comma-separated email addresses, split on "," with no trimming and no validation. An empty or absent value produces an empty email list, which is forwarded to Google as a free/busy query with zero items.
+	// Attendees Comma-separated addresses, split on "," with no trimming, no lowercasing and no validation. Each distinct element is asked of Google and appears once in `calendars`, in first-appearance order, spelled exactly as sent. Absent or empty: no attendee, and the answer still carries `own`. Never needed for the caller's own calendar: the server adds it.
 	Attendees *string `form:"attendees,omitempty" json:"attendees,omitempty"`
 }
 
@@ -6941,6 +7070,192 @@ func (t *PublicBookingConflict) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsRawFreeBusyCalendarKnown returns the union data inside the RawFreeBusyCalendar as a RawFreeBusyCalendarKnown
+func (t RawFreeBusyCalendar) AsRawFreeBusyCalendarKnown() (RawFreeBusyCalendarKnown, error) {
+	var body RawFreeBusyCalendarKnown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyCalendarKnown overwrites any union data inside the RawFreeBusyCalendar as the provided RawFreeBusyCalendarKnown
+func (t *RawFreeBusyCalendar) FromRawFreeBusyCalendarKnown(v RawFreeBusyCalendarKnown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyCalendarKnown performs a merge with any union data inside the RawFreeBusyCalendar, using the provided RawFreeBusyCalendarKnown
+func (t *RawFreeBusyCalendar) MergeRawFreeBusyCalendarKnown(v RawFreeBusyCalendarKnown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRawFreeBusyCalendarUnknown returns the union data inside the RawFreeBusyCalendar as a RawFreeBusyCalendarUnknown
+func (t RawFreeBusyCalendar) AsRawFreeBusyCalendarUnknown() (RawFreeBusyCalendarUnknown, error) {
+	var body RawFreeBusyCalendarUnknown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyCalendarUnknown overwrites any union data inside the RawFreeBusyCalendar as the provided RawFreeBusyCalendarUnknown
+func (t *RawFreeBusyCalendar) FromRawFreeBusyCalendarUnknown(v RawFreeBusyCalendarUnknown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyCalendarUnknown performs a merge with any union data inside the RawFreeBusyCalendar, using the provided RawFreeBusyCalendarUnknown
+func (t *RawFreeBusyCalendar) MergeRawFreeBusyCalendarUnknown(v RawFreeBusyCalendarUnknown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RawFreeBusyCalendar) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RawFreeBusyCalendar) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRawFreeBusyMemberKnown returns the union data inside the RawFreeBusyMember as a RawFreeBusyMemberKnown
+func (t RawFreeBusyMember) AsRawFreeBusyMemberKnown() (RawFreeBusyMemberKnown, error) {
+	var body RawFreeBusyMemberKnown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyMemberKnown overwrites any union data inside the RawFreeBusyMember as the provided RawFreeBusyMemberKnown
+func (t *RawFreeBusyMember) FromRawFreeBusyMemberKnown(v RawFreeBusyMemberKnown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyMemberKnown performs a merge with any union data inside the RawFreeBusyMember, using the provided RawFreeBusyMemberKnown
+func (t *RawFreeBusyMember) MergeRawFreeBusyMemberKnown(v RawFreeBusyMemberKnown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRawFreeBusyMemberUnknown returns the union data inside the RawFreeBusyMember as a RawFreeBusyMemberUnknown
+func (t RawFreeBusyMember) AsRawFreeBusyMemberUnknown() (RawFreeBusyMemberUnknown, error) {
+	var body RawFreeBusyMemberUnknown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyMemberUnknown overwrites any union data inside the RawFreeBusyMember as the provided RawFreeBusyMemberUnknown
+func (t *RawFreeBusyMember) FromRawFreeBusyMemberUnknown(v RawFreeBusyMemberUnknown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyMemberUnknown performs a merge with any union data inside the RawFreeBusyMember, using the provided RawFreeBusyMemberUnknown
+func (t *RawFreeBusyMember) MergeRawFreeBusyMemberUnknown(v RawFreeBusyMemberUnknown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RawFreeBusyMember) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RawFreeBusyMember) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRawFreeBusyOwnKnown returns the union data inside the RawFreeBusyOwnCalendar as a RawFreeBusyOwnKnown
+func (t RawFreeBusyOwnCalendar) AsRawFreeBusyOwnKnown() (RawFreeBusyOwnKnown, error) {
+	var body RawFreeBusyOwnKnown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyOwnKnown overwrites any union data inside the RawFreeBusyOwnCalendar as the provided RawFreeBusyOwnKnown
+func (t *RawFreeBusyOwnCalendar) FromRawFreeBusyOwnKnown(v RawFreeBusyOwnKnown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyOwnKnown performs a merge with any union data inside the RawFreeBusyOwnCalendar, using the provided RawFreeBusyOwnKnown
+func (t *RawFreeBusyOwnCalendar) MergeRawFreeBusyOwnKnown(v RawFreeBusyOwnKnown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsRawFreeBusyOwnUnknown returns the union data inside the RawFreeBusyOwnCalendar as a RawFreeBusyOwnUnknown
+func (t RawFreeBusyOwnCalendar) AsRawFreeBusyOwnUnknown() (RawFreeBusyOwnUnknown, error) {
+	var body RawFreeBusyOwnUnknown
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRawFreeBusyOwnUnknown overwrites any union data inside the RawFreeBusyOwnCalendar as the provided RawFreeBusyOwnUnknown
+func (t *RawFreeBusyOwnCalendar) FromRawFreeBusyOwnUnknown(v RawFreeBusyOwnUnknown) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRawFreeBusyOwnUnknown performs a merge with any union data inside the RawFreeBusyOwnCalendar, using the provided RawFreeBusyOwnUnknown
+func (t *RawFreeBusyOwnCalendar) MergeRawFreeBusyOwnUnknown(v RawFreeBusyOwnUnknown) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t RawFreeBusyOwnCalendar) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *RawFreeBusyOwnCalendar) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsSchedulingLinkSlugTakenError returns the union data inside the SchedulingLinkCreateConflict as a SchedulingLinkSlugTakenError
 func (t SchedulingLinkCreateConflict) AsSchedulingLinkSlugTakenError() (SchedulingLinkSlugTakenError, error) {
 	var body SchedulingLinkSlugTakenError
@@ -7244,7 +7559,7 @@ type ServerInterface interface {
 	// List Google Calendar events in a time window
 	// (GET /api/calendar/events)
 	ListCalendarEvents(w http.ResponseWriter, r *http.Request, params ListCalendarEventsParams)
-	// Raw Google free/busy lookup for a comma-separated attendee list
+	// Raw Google free/busy lookup for the caller's own calendar and a comma-separated attendee list
 	// (GET /api/calendar/freebusy)
 	GetCalendarFreeBusy(w http.ResponseWriter, r *http.Request, params GetCalendarFreeBusyParams)
 	// Create a standalone conference meeting with the configured provider.
@@ -7745,7 +8060,7 @@ func (_ Unimplemented) ListCalendarEvents(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Raw Google free/busy lookup for a comma-separated attendee list
+// Raw Google free/busy lookup for the caller's own calendar and a comma-separated attendee list
 // (GET /api/calendar/freebusy)
 func (_ Unimplemented) GetCalendarFreeBusy(w http.ResponseWriter, r *http.Request, params GetCalendarFreeBusyParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -14665,7 +14980,7 @@ type GetCalendarFreeBusyResponseObject interface {
 	VisitGetCalendarFreeBusyResponse(w http.ResponseWriter) error
 }
 
-type GetCalendarFreeBusy200JSONResponse RawGoogleFreeBusyMap
+type GetCalendarFreeBusy200JSONResponse RawFreeBusyAnswer
 
 func (response GetCalendarFreeBusy200JSONResponse) VisitGetCalendarFreeBusyResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -17632,6 +17947,15 @@ func (response PreviewCompression500JSONResponse) VisitPreviewCompressionRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
+type PreviewCompression503JSONResponse RequestBudgetExpiredError
+
+func (response PreviewCompression503JSONResponse) VisitPreviewCompressionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ApplyCompressionRequestObject struct {
 	Body *ApplyCompressionJSONRequestBody
 }
@@ -19860,7 +20184,7 @@ type StrictServerInterface interface {
 	// List Google Calendar events in a time window
 	// (GET /api/calendar/events)
 	ListCalendarEvents(ctx context.Context, request ListCalendarEventsRequestObject) (ListCalendarEventsResponseObject, error)
-	// Raw Google free/busy lookup for a comma-separated attendee list
+	// Raw Google free/busy lookup for the caller's own calendar and a comma-separated attendee list
 	// (GET /api/calendar/freebusy)
 	GetCalendarFreeBusy(ctx context.Context, request GetCalendarFreeBusyRequestObject) (GetCalendarFreeBusyResponseObject, error)
 	// Create a standalone conference meeting with the configured provider.

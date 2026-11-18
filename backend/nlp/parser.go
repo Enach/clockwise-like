@@ -247,11 +247,33 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 		suggestions, err := scheduler.Suggest(ctx, req)
 		if err == nil {
 			result.SuggestedSlots = suggestions.Slots
+		} else {
+			// PAC-133 §2.6 (SF-037 first clause): a failed suggestion step is
+			// said, not answered as "no slots". An error the model already
+			// set wins; the cause goes to the server log only.
+			log.Printf("ERROR nlp suggest: %v", err)
+			if result.Error == "" {
+				result.Error = suggestionFailureMessage(err)
+			}
 		}
 	}
 
 	storage.WriteAuditLogCtx(ctx, s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", storage.AuditJSON(map[string]string{"text": text, "intent": result.Intent}))
 	return result, nil
+}
+
+// The two fixed sentences NLP parse answers in error when its suggestion step
+// fails and no error is already set (PAC-133 §2.6).
+const (
+	suggestNotConnectedMessage = "No Google calendar is connected, so Paceday cannot suggest meeting times."
+	suggestFailedMessage       = "Paceday could not suggest meeting times for this request. Try again later."
+)
+
+func suggestionFailureMessage(err error) string {
+	if errors.Is(err, engine.ErrCalendarNotConnected) {
+		return suggestNotConnectedMessage
+	}
+	return suggestFailedMessage
 }
 
 // invalidJSONMessage is the result's error when the model's answer is not
