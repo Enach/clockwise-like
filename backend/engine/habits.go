@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base32"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
@@ -67,7 +70,30 @@ func (e *HabitsEngine) now() time.Time {
 // settings or the user's calendar credential fails the whole run before
 // anything is written. A user with no connected calendar is not a failure:
 // occurrences are stored without a calendar event, as before.
-func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) error {
+//
+// PAC-136: one run per user at a time, across replicas (a Postgres advisory
+// lock, storage.LockHabitReoptimize): habit create, update and the
+// reoptimize endpoint each start one, and two that overlapped each placed an
+// event for the same (habit, day). A run waits for the one before it and
+// then reads what that run stored.
+func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) (err error) {
+	release, err := storage.LockHabitReoptimize(ctx, e.DB, userID)
+	if err != nil {
+		return fmt.Errorf("habits: user %s: %w", userID, err)
+	}
+	defer func() {
+		if relErr := release(); relErr != nil {
+			err = errors.Join(err, fmt.Errorf("habits: user %s: %w", userID, relErr))
+		}
+	}()
+	if hook, ok := habitRunLocked.get(); ok {
+		hook(userID)
+	}
+	return e.reoptimizeLocked(ctx, userID)
+}
+
+// reoptimizeLocked is ReoptimizeAll's run, under the user's lock.
+func (e *HabitsEngine) reoptimizeLocked(ctx context.Context, userID uuid.UUID) error {
 	habits, err := storage.ListActiveHabitsByUser(e.DB, userID)
 	if err != nil {
 		return fmt.Errorf("list habits: %w", err)
@@ -292,7 +318,7 @@ func (e *HabitsEngine) scheduleDay(
 
 		calEventID := ""
 		if calOps != nil {
-			id, err := e.createHabitEvent(ctx, calOps, h, slot.start, slot.end)
+			id, err := e.createHabitEvent(ctx, calOps, h, day, slot.start, slot.end)
 			if err != nil {
 				// SF-015: never "scheduled" without its event. A row that
 				// existed no longer has one (deleted above): displaced.
@@ -344,7 +370,7 @@ func (e *HabitsEngine) createHabitEvent(
 	ctx context.Context,
 	calOps calendarOps,
 	h *storage.Habit,
-	start, end time.Time,
+	day, start, end time.Time,
 ) (string, error) {
 	ev := &googlecalendar.Event{
 		Summary:      h.Title,
@@ -359,7 +385,20 @@ func (e *HabitsEngine) createHabitEvent(
 			Private: map[string]string{habitEventMarker: h.ID.String()},
 		},
 	}
+	// PAC-136: the id is chosen here, from (habit, day), so a create that
+	// already happened (a run that crashed before storing it, or whose
+	// store failed and whose clean-up delete left the id taken) is found
+	// again rather than duplicated: Google answers 409 and that event is
+	// adopted, updated to this slot (and restored if it was deleted).
+	ev.Id = habitEventID(h.ID, day)
 	created, err := calOps.createEvent(ctx, ev)
+	if calendar.IsDuplicate(err) {
+		ev.Status = "confirmed"
+		created, err = calOps.updateEvent(ctx, ev.Id, ev)
+		if err != nil {
+			return "", fmt.Errorf("adopt existing event: %w", err)
+		}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -367,6 +406,15 @@ func (e *HabitsEngine) createHabitEvent(
 		return "", errors.New("calendar returned no event id")
 	}
 	return created.Id, nil
+}
+
+// habitEventID is the Google event id of a habit's occurrence on day (its
+// date in the user's zone, as the occurrence row stores it): base32hex (lowercase, unpadded) of a SHA-256 over
+// the habit id and the date. Google ids are 5-1024 characters of [a-v0-9];
+// this is 52.
+func habitEventID(habitID uuid.UUID, day time.Time) string {
+	sum := sha256.Sum256([]byte("paceday-habit:" + habitID.String() + ":" + day.Format("2006-01-02")))
+	return strings.ToLower(base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))
 }
 
 // habitEventMarker is the private extended property a habit event carries:

@@ -75,7 +75,8 @@ func insertRecapSend(db *sql.DB, r RecapSend) error {
 // ── Scheduling ────────────────────────────────────────────────────────────────
 
 // RunForUser checks whether it's time to send a recap to a single user and
-// sends if so.  Designed to be called every minute from a cron job.
+// sends if so.  Designed to be called every minute from a cron job (RunAll
+// calls it only at the user's send minute, PAC-136).
 //
 // PAC-122 SF-082: a failure that stops the recap is logged and reported as
 // daily-recap/<user id> (ids only): a failed settings or Slack-connection
@@ -100,6 +101,18 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 		return
 	}
 
+	now, due, err := recapDue(s.now(), settings.Timezone, settings.RecapSendTime)
+	if err != nil {
+		stop("stored send time is not HH:MM", err)
+		return
+	}
+	if !due {
+		return
+	}
+	loc := now.Location()
+
+	// PAC-136: the Slack connection is read only at the send time (it was
+	// read every minute, so an outage reported once per user per minute).
 	conn, err := storage.GetWorkspaceConnection(s.DB, userID, "slack")
 	if errors.Is(err, sql.ErrNoRows) {
 		return // no Slack connection: skip this user
@@ -110,23 +123,6 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	}
 	if conn.TokenErr != nil {
 		return // (PAC-84 AC-17) its token cannot be decrypted (the decrypt hook reports it): skip this user
-	}
-
-	loc, err := time.LoadLocation(settings.Timezone)
-	if err != nil {
-		loc = time.UTC
-	}
-	now := s.now().In(loc)
-
-	// Parse send_time "HH:MM"
-	var sendH, sendM int
-	if _, err := fmt.Sscanf(settings.RecapSendTime, "%d:%d", &sendH, &sendM); err != nil {
-		stop("stored send time is not HH:MM", err)
-		return
-	}
-
-	if now.Hour() != sendH || now.Minute() != sendM {
-		return
 	}
 
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
@@ -167,6 +163,23 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	}
 }
 
+// recapDue reports whether a recap with this zone and HH:MM send time is due
+// at instant: whether instant, in the zone (UTC when the zone is not one),
+// is that minute. It returns instant in that zone. A send time that is not
+// HH:MM is the error.
+func recapDue(instant time.Time, zone, sendTime string) (time.Time, bool, error) {
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		loc = time.UTC
+	}
+	now := instant.In(loc)
+	var sendH, sendM int
+	if _, err := fmt.Sscanf(sendTime, "%d:%d", &sendH, &sendM); err != nil {
+		return now, false, err
+	}
+	return now, now.Hour() == sendH && now.Minute() == sendM, nil
+}
+
 // recapUserTimeout bounds one user's recap send (a test seam).
 var recapUserTimeout = 55 * time.Second
 
@@ -178,7 +191,19 @@ func (s *DailyRecapService) RunAll(ctx context.Context) {
 		log.Printf("daily recap: list users error: %v", err)
 		return
 	}
-	for i, u := range users {
+	// PAC-136: only the users whose send time is this minute are run (by
+	// the zone and send time the list read returned), so a failing read of
+	// one user's settings or Slack connection is reported at that user's
+	// send time, once, not every minute. A send time the gate cannot parse
+	// is passed on, for RunForUser to report.
+	now := s.now()
+	due := users[:0]
+	for _, u := range users {
+		if _, ok, err := recapDue(now, u.zone, u.sendTime); ok || err != nil {
+			due = append(due, u)
+		}
+	}
+	for i, u := range due {
 		if i > 0 {
 			// Stagger sends to respect Slack rate limits; stop at shutdown
 			// or when the run's own deadline ends (PAC-81 AC-A6).
@@ -205,8 +230,10 @@ func (s *DailyRecapService) RunAll(ctx context.Context) {
 }
 
 type recapUser struct {
-	id   uuid.UUID
-	name string
+	id       uuid.UUID
+	name     string
+	zone     string
+	sendTime string // HH:MM
 }
 
 // recapUsers returns the users who enabled the recap on their own settings
@@ -214,7 +241,7 @@ type recapUser struct {
 // sent a recap to everyone).
 func (s *DailyRecapService) recapUsers(ctx context.Context) ([]recapUser, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT u.id, u.name
+		SELECT u.id, u.name, COALESCE(st.timezone, ''), COALESCE(to_char(st.recap_send_time, 'HH24:MI'), '')
 		FROM users u
 		INNER JOIN settings st ON st.user_id = u.id
 		WHERE st.recap_enabled = true`)
@@ -225,7 +252,7 @@ func (s *DailyRecapService) recapUsers(ctx context.Context) ([]recapUser, error)
 	var users []recapUser
 	for rows.Next() {
 		var u recapUser
-		if err := rows.Scan(&u.id, &u.name); err != nil {
+		if err := rows.Scan(&u.id, &u.name, &u.zone, &u.sendTime); err != nil {
 			continue
 		}
 		users = append(users, u)

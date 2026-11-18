@@ -2,6 +2,8 @@ package engine
 
 import (
 	"sync/atomic"
+
+	"github.com/google/uuid"
 )
 
 // The engine package's deterministic test seams, on the PAC-80 pattern of
@@ -71,4 +73,15 @@ func managerStepErr(step, memberEmail string, err error) error {
 		}
 	}
 	return err
+}
+
+// PAC-136: habitRunLocked fires once a habit reoptimize run holds its user's
+// lock, before it reads anything. A test blocks in it to hold the lock while
+// a second run starts.
+var habitRunLocked seam[func(userID uuid.UUID)]
+
+// InstallHabitRunLocked installs the habit-run-locked seam.
+func InstallHabitRunLocked(tb TB, fn func(userID uuid.UUID)) (uninstall func()) {
+	tb.Helper()
+	return habitRunLocked.install(tb, fn)
 }

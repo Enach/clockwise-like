@@ -118,6 +118,19 @@ func IsEventGone(err error) bool {
 	return gerr.Code == http.StatusNotFound || gerr.Code == http.StatusGone
 }
 
+// IsDuplicate reports whether err is Google refusing an insert because an
+// event with the requested id already exists on the calendar: a 409
+// (reason "duplicate"). An id stays taken after its event is deleted: the
+// event is kept as cancelled and an update with status "confirmed" restores
+// it (PAC-136).
+func IsDuplicate(err error) bool {
+	var gerr *googleapi.Error
+	if !errors.As(err, &gerr) {
+		return false
+	}
+	return gerr.Code == http.StatusConflict
+}
+
 func (c *CalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*googlecalendar.Event, error) {
 	return c.service.Events.Get(calendarID, eventID).Context(ctx).Do()
 }

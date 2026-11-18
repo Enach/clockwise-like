@@ -40,7 +40,11 @@ paths:
         error monitoring with the user id (PAC-122 SF-096), including every day the job
         could not schedule (SF-015): a day whose calendar read fails gets no new
         occurrence (SF-013), and an occurrence that moves or is missed has its old
-        calendar event deleted first (SF-014).
+        calendar event deleted first (SF-014). One job runs per user at a time, across
+        replicas (PAC-136): a job started while another runs for the same user (this
+        endpoint, habit create or update) waits for it. A day's calendar read covers
+        every page, and a habit occurrence's calendar event has an id derived from
+        (habit, day), so a create that already happened is adopted, never duplicated.
       responses:
         '500':
           $ref: '#/components/responses/SessionGenerationUnavailable'
