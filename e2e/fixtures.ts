@@ -31,7 +31,7 @@ import {
 } from './auth';
 import { query, queryOne } from './db';
 import { USERS } from './seed/ids';
-import { OFF_STACK_ALLOWLIST, isOnStack, offStackStandIn } from './lib/offstack';
+import { OFF_STACK_ALLOWLIST, isOnStack } from './lib/offstack';
 
 /**
  * PAC-81 Part B, AC-B3: "the browser reports zero CSP violations on every
@@ -112,8 +112,8 @@ async function watchCsp(context: BrowserContext, sink: CspViolation[]): Promise<
  *    before it connects;
  *  - the context route below, for every request no page.route answered. A
  *    test that fulfils a host with page.route (page routes run first) keeps
- *    that request in the browser, and it is not recorded. The app's own
- *    Google Fonts link is answered by OFF_STACK_STAND_INS, also in-browser;
+ *    that request in the browser, and it is not recorded. The app loads
+ *    nothing off the stack of its own (PAC-143: its fonts are self-hosted);
  *  - the hops of an HTTP redirect, which Playwright never hands to a route
  *    handler (it calls one "for the first url" only), cannot be aborted
  *    here. They are recorded from the request event (`redirect`), and
@@ -149,8 +149,6 @@ async function watchOffStack(context: BrowserContext, sink: OffStackRequest[]): 
   await context.route(
     (url) => !isOnStack(url.href),
     (route) => {
-      const standIn = offStackStandIn(route.request().url());
-      if (standIn) return route.fulfill(standIn);
       record(route.request(), 'routed');
       return route.abort('blockedbyclient');
     },

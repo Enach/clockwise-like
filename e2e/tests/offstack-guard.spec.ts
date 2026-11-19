@@ -157,21 +157,4 @@ test.describe('off-stack guard self-test', () => {
     expect(served).toBe(1);
     expect(offStackRequests).toEqual([]);
   });
-
-  test("the app's Google Fonts stylesheet is answered by the stand-in, never fetched", async ({
-    page,
-    offStackRequests,
-  }) => {
-    const fonts: string[] = [];
-    page.on('response', (r) => {
-      if (new URL(r.url()).hostname === 'fonts.googleapis.com') fonts.push(`${r.status()} ${r.headers()['content-type']}`);
-    });
-    await page.goto('/signin');
-    await expect(page.getByRole('dialog')).toBeVisible();
-    // If the web ever stops linking Google Fonts, drop the stand-in
-    // (lib/offstack.ts OFF_STACK_STAND_INS) and this test with it.
-    await expect.poll(() => fonts.length, 'the web links the Google Fonts stylesheet').toBeGreaterThan(0);
-    for (const f of fonts) expect(f).toBe('200 text/css');
-    expect(offStackRequests).toEqual([]);
-  });
 });
