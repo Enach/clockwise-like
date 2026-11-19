@@ -87,12 +87,22 @@ async function respond(api: Api, linkId: string, answer: 'accept' | 'decline') {
   expect(res.status(), await res.text()).toBe(200);
 }
 
+/**
+ * The link's host rows keyed by account. PAC-149: a pending invitation points
+ * at no account (it holds the address); this fixture view keys it by the one
+ * account whose stored address equals it ignoring case, or by the address when
+ * none does. The server never makes that match on the owner's side.
+ */
 async function hostRows(db: Db, linkId: string): Promise<Record<string, string>> {
-  const rows = await db.query<{ user_id: string; status: string }>(
-    'SELECT user_id, status FROM scheduling_link_hosts WHERE link_id = $1',
+  const rows = await db.query<{ k: string; status: string }>(
+    `SELECT COALESCE(h.user_id::text,
+              (SELECT u.id::text FROM users u WHERE lower(u.email) = lower(h.invitee_email)
+                 AND NOT EXISTS (SELECT 1 FROM users v WHERE lower(v.email) = lower(h.invitee_email) AND v.id <> u.id)),
+              h.invitee_email) AS k, h.status
+       FROM scheduling_link_hosts h WHERE h.link_id = $1`,
     [linkId],
   );
-  return Object.fromEntries(rows.map((r) => [r.user_id, r.status]));
+  return Object.fromEntries(rows.map((r) => [r.k, r.status]));
 }
 
 /** The roster from the strict single-link read, non-owner hosts only. */
@@ -330,11 +340,14 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
     }
   });
 
+  // PAC-149 (spec AC-12): not_added now means only "not a well-formed
+  // address", so the not-added case is a malformed address (one the editor's
+  // own check lets through: a double dot), no longer an address nobody holds.
   test("AC-11: an address that can't be added is named, the invitee is counted once", async ({ db, apiAs, pageAs }) => {
     const run = runId();
     const a = await freshUser(db, 'ac11-owner', run);
     const b = await freshUser(db, 'ac11-b', run);
-    const c = `e2e.pac112.ac11-nobody.${run}@pac112.e2e.test`;
+    const c = `e2e.pac112.ac11-bad..${run}@pac112.e2e.test`;
     try {
       const title = `E2E PAC112 AC-11 ${run}`;
       const id = await linkWith(apiAs(a), title);
@@ -347,15 +360,15 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
 
       // The editor stays open and names C (contract md §5.3, §5.4).
       const results = drawer.getByRole('status', { name: 'Save results' });
-      await expect(results).toContainText(`${c} couldn't be added as a co-host.`);
-      await expect(results).toContainText('1 co-host invited — they can accept from Paceday.');
-      await expect(results).toContainText("1 address couldn't be added as a co-host.");
+      await expect(results).toContainText(`${c} isn't a valid email address.`);
+      await expect(results).toContainText("1 co-host invited. Paceday doesn't email invitations, so let them know.");
+      await expect(results).toContainText("1 address wasn't a valid email address.");
       await expect(drawer).toBeVisible();
       // After the baseline re-read: B's chip from the server, C's gone.
       await expect(drawer.getByRole('button', { name: `Remove ${b.email}`, exact: true })).toBeVisible();
       await expect(drawer.getByRole('button', { name: `Remove ${c}`, exact: true })).toHaveCount(0);
       const text = (await results.innerText()).toLowerCase();
-      for (const banned of ['no paceday account', 'sent', 'email']) {
+      for (const banned of ['no paceday account', 'they can accept from paceday', "couldn't be added"]) {
         expect(text, `the save results say "${banned}"`).not.toContain(banned);
       }
 
@@ -370,7 +383,7 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
   test('AC-24: after a create that stays open, the next save edits the created link', async ({ db, pageAs }) => {
     const run = runId();
     const a = await freshUser(db, 'ac24-owner', run);
-    const c = `e2e.pac112.ac24-nobody.${run}@pac112.e2e.test`;
+    const c = `e2e.pac112.ac24-bad..${run}@pac112.e2e.test`; // PAC-149: malformed
     try {
       const title = `E2E PAC112 AC-24 ${run}`;
       const page = await pageAs(a);
@@ -407,7 +420,7 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
       await expect(editor).toBeVisible();
       await expect(page.getByRole('dialog', { name: /new scheduling link/i })).toHaveCount(0);
       const results = editor.getByRole('status', { name: 'Save results' });
-      await expect(results).toContainText(`${c} couldn't be added as a co-host.`);
+      await expect(results).toContainText(`${c} isn't a valid email address.`);
       await expect(editor.getByRole('button', { name: 'Save changes' })).toBeVisible();
       await expect(editor.getByLabel('Co-host email')).toBeEnabled();
 
@@ -443,13 +456,13 @@ test.describe('PAC-112 the link editor saves its co-host list', () => {
       const title = `E2E PAC112 AC-32 ${run}`;
       const id = await linkWith(apiAs(a), title);
       // PAC-120 (contract md §7.1): the single invitation stops at 5 co-hosts,
-      // so the 7 pending rows are seeded in one statement, as after 7
-      // invitations. They share invited_at, so they come back in no fixed
-      // order; no assertion below depends on order. Accept and decline still
-      // go through the API.
+      // so the 7 pending invitations are seeded in one statement, as after 7
+      // invitations (PAC-149: to the addresses; a pending row points at no
+      // account). They share invited_at; no assertion below depends on order.
+      // Accept and decline still go through the API.
       await db.query(
-        `INSERT INTO scheduling_link_hosts (link_id, user_id, status) SELECT $1, unnest($2::uuid[]), 'pending'`,
-        [id, hosts.map((h) => h.id)],
+        `INSERT INTO scheduling_link_hosts (link_id, invitee_email, status) SELECT $1, unnest($2::text[]), 'pending'`,
+        [id, hosts.map((h) => h.email)],
       );
       await respond(apiAs(hosts[1]!), id, 'accept');
       await respond(apiAs(hosts[2]!), id, 'decline');

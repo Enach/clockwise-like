@@ -202,7 +202,7 @@ func TestPAC40_DeletedLinkMissesEveryLiveReadAndWrite(t *testing.T) {
 		if _, err := AddLinkHost(db, l.ID, cohost, "accepted"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := AddLinkHost(db, l.ID, invitee, "pending"); err != nil {
+		if _, err := pac149AddPending(db, l.ID, invitee); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -239,16 +239,22 @@ func TestPAC40_DeletedLinkMissesEveryLiveReadAndWrite(t *testing.T) {
 	if ok, err := RespondToHostInvite(db, deleted.ID, invitee, "accepted"); err != nil || ok {
 		t.Errorf("accept on a deleted link = %v, %v; want false", ok, err)
 	}
-	if st, found, _ := GetLinkHostStatus(db, deleted.ID, invitee); !found || st != "pending" {
-		t.Errorf("invitee row after accept = %q %v; want still pending", st, found)
+	// PAC-149 (contract md §2.7, spec D-14): the delete erased the pending
+	// invitation in its own write; the accept wrote nothing.
+	var invitations int
+	if err := db.QueryRow(`SELECT count(*) FROM scheduling_link_hosts WHERE link_id = $1 AND user_id IS NULL`, deleted.ID).Scan(&invitations); err != nil || invitations != 0 {
+		t.Errorf("pending invitations of the deleted link = %d %v; want 0", invitations, err)
+	}
+	if _, found, _ := GetLinkHostStatus(db, deleted.ID, invitee); found {
+		t.Error("the accept on a deleted link made the invitee an entry")
 	}
 	for _, u := range []uuid.UUID{cohost, invitee, owner} {
 		if ok, err := RemoveLinkHost(db, deleted.ID, u); err != nil || ok {
 			t.Errorf("leave of %s on a deleted link = %v, %v; want false", u, ok, err)
 		}
 	}
-	if hosts, _ := GetLinkHosts(db, deleted.ID); len(hosts) != 3 {
-		t.Errorf("host rows of the deleted link = %d; want 3 kept", len(hosts))
+	if hosts, _ := GetLinkHosts(db, deleted.ID); len(hosts) != 2 {
+		t.Errorf("host rows of the deleted link = %d; want the owner's and the co-host's entries kept (PAC-40 D-2)", len(hosts))
 	}
 	// Paused is unchanged by PAC-40 (PAC-30 D-5): accept and leave still work.
 	if ok, err := RespondToHostInvite(db, paused.ID, invitee, "accepted"); err != nil || !ok {

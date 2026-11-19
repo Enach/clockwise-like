@@ -46,8 +46,8 @@ func TestPAC71_EveryGuardedWriterRefusesAStaleSession(t *testing.T) {
 	add("DeleteSchedulingLink", err)
 	add("DeleteTeam", DeleteTeamCtx(ctx, db, id))
 	add("DeleteWorkspaceConnection", DeleteWorkspaceConnectionCtx(ctx, db, u, "slack"))
-	_, _, err = InviteLinkHostCtx(ctx, db, id, u)
-	add("InviteLinkHost", err)
+	_, _, err = InviteLinkAddressCtx(ctx, db, id, "x@y.test") // PAC-149
+	add("InviteLinkAddress", err)
 	add("MarkPersonalCalendarSynced", MarkPersonalCalendarSyncedCtx(ctx, db, n, u))
 	add("PatchManagerTeamMember", PatchManagerTeamMemberCtx(ctx, db, u, "x@y.test", "X", "weekly", nil))
 	add("PatchManagerTeamMemberForTeam", PatchManagerTeamMemberForTeamCtx(ctx, db, u, id, "x@y.test", "X", "weekly", nil))

@@ -81,11 +81,13 @@ test.describe('PAC-120 the single invitation stops at 5 co-hosts', () => {
       expect(coHosts.sort()).toEqual(hosts.slice(0, 5).map((h) => h.email).sort());
 
       // The rows: the owner plus the 5, and nothing for the sixth.
-      const rows = await db.query<{ user_id: string; status: string }>(
-        'SELECT user_id, status FROM scheduling_link_hosts WHERE link_id = $1',
+      // PAC-149: a pending invitation holds the address, not the account.
+      const rows = await db.query<{ k: string; status: string }>(
+        'SELECT COALESCE(user_id::text, lower(invitee_email)) AS k, status FROM scheduling_link_hosts WHERE link_id = $1',
         [id],
       );
-      const byUser = Object.fromEntries(rows.map((r) => [r.user_id, r.status]));
+      const byEmail = Object.fromEntries([owner, sixth, ...hosts].map((u) => [u.email.toLowerCase(), u.id]));
+      const byUser = Object.fromEntries(rows.map((r) => [byEmail[r.k] ?? r.k, r.status]));
       expect(Object.keys(byUser).sort()).toEqual([owner.id, ...hosts.slice(0, 5).map((h) => h.id)].sort());
       expect(byUser[sixth.id]).toBeUndefined();
       for (const h of hosts.slice(0, 5)) expect(byUser[h.id]).toBe('pending');

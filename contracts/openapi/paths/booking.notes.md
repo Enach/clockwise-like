@@ -142,6 +142,9 @@ semantic, not routing**: `POST /api/scheduling-links/host-invites/{id}/accept` r
 Anyone who takes the `id` from a `SchedulingLinkHostRecord` (returned by
 `POST /{id}/hosts`) and puts it in that path gets a **200 with no effect** — see next
 item. The list payload's `link_id` is the correct value.
+*PAC-149: `SchedulingLinkHostRecord` no longer exists; `POST /{id}/hosts` answers a
+`SchedulingLinkHost` roster entry, which carries no row id. The aliases `/invites` and
+`/{id}/accept|decline` are marked deprecated (API-069).*
 
 ### Accept/decline are silently no-op on a miss
 
@@ -226,6 +229,8 @@ read. Cancelling a booking therefore re-opens a `single_use` link.
 "not found" (link missing) and "user not found" (no account with that email) are both
 404 on the same endpoint. A caller cannot distinguish "bad link id" from "invite an
 address that has not signed up yet".
+*PAC-149: superseded. "user not found" no longer exists; the only 404 is the
+missing or deleted link, because the invite never reads accounts (API-072 superseded).*
 
 ### `POST /{id}/hosts` upsert resets accepted hosts
 

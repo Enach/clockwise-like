@@ -81,7 +81,7 @@
     "AC-11 [unit] existing TestPAC40_PatchRacingADeleteIs404AndWritesNothing passes unchanged; plus the same injection with co_host_emails set -> 404 and no host row changed.",
     "AC-12 [unit] a co-host step fails (afterLinkPatchUpdate returns an error, or a failing lookup) -> 500 {\"error\":\"internal error\"}; neither fields nor host rows changed.",
     "AC-13 [unit] delete held open; accept, decline (both spellings) and leave each wait; commit -> 404, host row unchanged; rollback -> 200 {\"status\":...} / 204 as today.",
-    "AC-14 [unit] invite: unknown or deleted link -> 404 {\"error\":\"not found\"}; live owned link and no domain-confirmed holder -> 404 {\"error\":\"user not found\"}; the bodies differ (API-072).",
+    "AC-14 [unit] invite: unknown or deleted link -> 404 {\"error\":\"not found\"}; live owned link and no domain-confirmed holder -> 404 {\"error\":\"user not found\"}; the bodies differ (API-072). Amended by PAC-149 (2026-11-19; contract contracts/features/PAC-149.md revision 2, N-3): the second body no longer exists; the invite reads no account and only the link 404 remains (PAC-149 AC-1).",
     "AC-15 [unit] concurrent rounds on one link (bookings of distinct free slots, invites, PATCHes with fields and co-hosts, accept, decline, leave, pause, resume, finally a delete): no 500, no SQLSTATE 40P01 and no 55P03 (read per lock, contract md section 4.2); every 201 booking exists and is in the archive; every 404 booking does not exist.",
     "AC-16 [unit] two saves of different free slots on one live link held open at once: neither waits (no Lock waiter).",
     "AC-17 [contract] the descriptions listed in operationsChanged (this revision).",

@@ -5,7 +5,7 @@
 // ErrStaleSession instead of writing; without one it is X.
 //
 // Exception, the scheduling-link writes (PAC-101 contract §3.2, §4.3):
-// DeleteSchedulingLinkCtx, InviteLinkHostCtx, RemoveLinkHostCtx,
+// DeleteSchedulingLinkCtx, InviteLinkAddressCtx, RemoveLinkHostCtx,
 // RemoveLinkHostsExceptCtx, UpdateSchedulingLinkCtx (and
 // UpdateSchedulingLinkAndCoHostsCtx, UpdateSchedulingLinkReportingCoHostsCtx),
 // CreateSchedulingLinkWithCoHostsCtx (PAC-112: the create, its owner row and
@@ -160,16 +160,19 @@ func DeleteWorkspaceConnectionCtx(ctx context.Context, db DBTX, userID uuid.UUID
 	return err
 }
 
-// InviteLinkHostCtx is the single invitation under the in-request re-check (PAC-71,
-// contract §5), behind the link's FOR NO KEY UPDATE lock (PAC-120 contract md §3,
-// §4.1; it was FOR SHARE under PAC-101): ErrLinkGone, with no host row written, when
-// the link is deleted before the lock is taken; ErrCoHostLimitReached, with nothing
-// written, when a new non-owner invitee would join a link that already has
-// CoHostListLimit co-hosts. ctx reaches the afterLinkInviteLock test seam.
-func InviteLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID) (r0 *LinkHost, r1 bool, err error) {
+// InviteLinkAddressCtx is the single invitation of an address under the in-request re-check
+// (PAC-71, contract §5), behind the link's FOR NO KEY UPDATE lock (PAC-120 contract md §3, §4.1),
+// decided by address only (PAC-149 contract md §2.1): address is the request's address trimmed of
+// ECMA-262 \s. It returns the entry as the link reads show it, and created = true exactly when a
+// pending invitation was recorded. ErrLinkGone, with nothing written, when the link is deleted
+// before the lock is taken; ErrCoHostAddressMalformed or ErrCoHostLimitReached, with nothing
+// written, for a new address that is malformed or would join a link that already has
+// CoHostListLimit co-hosts. No account is read by the address. ctx reaches the
+// afterLinkInviteLock test seam.
+func InviteLinkAddressCtx(ctx context.Context, db DBTX, linkID uuid.UUID, address string) (r0 *LinkRosterHost, r1 bool, err error) {
 	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, r1, e = inviteLinkHostLocked(ctx, q, linkID, userID)
+		r0, r1, e = inviteLinkAddressLocked(ctx, q, linkID, address)
 		return e
 	})
 	return r0, r1, err
@@ -407,7 +410,7 @@ func updateSchedulingLinkTx(ctx context.Context, db DBTX, id uuid.UUID, l *Sched
 // CreateSchedulingLinkWithCoHostsCtx is a link create as one transaction (PAC-112 contract md
 // §3.1), opened with or without a session guard through withLinkWriteTx: under a guard the
 // PAC-71 re-check is its first statement, then every lock wait is bounded (PAC-101's
-// LinkLockTimeout; each invitation takes FOR KEY SHARE on the invitee's users row). It writes
+// LinkLockTimeout). It writes
 // the link, the owner's accepted host row (plain insert) and, when coHostEmails is not nil,
 // the co-host list; changes is nil exactly when coHostEmails is nil. Any error, including
 // ErrCoHostListTooLong, leaves no link and no host row.

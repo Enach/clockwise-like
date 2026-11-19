@@ -66,7 +66,13 @@ func (e *pac112Env) link(owner uuid.UUID, hosts map[uuid.UUID]string) *storage.S
 		e.t.Fatal(err)
 	}
 	for id, status := range hosts {
-		if _, err := storage.AddLinkHost(e.db, l.ID, id, status); err != nil {
+		var err error
+		if status == "pending" {
+			_, err = pac149AddPending(e.db, l.ID, id) // PAC-149: an invitation to id's address
+		} else {
+			_, err = storage.AddLinkHost(e.db, l.ID, id, status)
+		}
+		if err != nil {
 			e.t.Fatal(err)
 		}
 	}
@@ -196,25 +202,27 @@ func pac112SameHosts(t *testing.T, what string, got, want map[uuid.UUID]string) 
 	}
 }
 
-// AC-7: a create listing B and C answers B invited and C not_added in the
-// 201 itself; B is pending and no row exists for C.
+// AC-7: a create listing B and C answers each address in the 201 itself.
+// PAC-149 (spec §2.4, AC-2): C, carried by no account, is invited exactly as
+// B is (before PAC-149: not_added, no row); both are pending invitations.
 func TestPAC112_AC7_CreateReportsEachAddress(t *testing.T) {
 	e := newPAC112Env(t)
 	owner, _ := e.confirmed("ac7-owner")
 	b, bAddr := e.confirmed("ac7-b")
 	cAddr := pac112Addr("ac7-c-nobody")
 	s := pac112Saved(t, e.create(owner, map[string]any{"co_host_emails": []string{bAddr, cAddr}}), http.StatusCreated)
-	pac112Equal(t, "addresses", pac112Outcomes(t, s), []string{bAddr + "=invited", cAddr + "=not_added"})
-	pac112Counts(t, s, 1, 0, 1)
+	pac112Equal(t, "addresses", pac112Outcomes(t, s), []string{bAddr + "=invited", cAddr + "=invited"})
+	pac112Counts(t, s, 2, 0, 0)
 	if len(s.CoHostChanges.Removed) != 0 {
 		t.Errorf("removed on create = %v", s.CoHostChanges.Removed)
 	}
-	pac112SameHosts(t, "after create", e.hostRows(s.Id), map[uuid.UUID]string{owner: "accepted", b: "pending"})
+	pac112SameHosts(t, "after create", e.hostRows(s.Id), map[uuid.UUID]string{owner: "accepted", b: "pending", pac149AddrKey(cAddr): "pending"})
 }
 
 // AC-8: a PATCH listing E, F, G and C on a link holding E, F and B reports E
-// and F already_host, G invited, C not_added and B removed (with its status
-// and stored address).
+// and F already_host, G invited and B removed (with its status and address).
+// PAC-149: C (no account) is invited like G, and the removed pending B is
+// reported by address and status only, with no user_id.
 func TestPAC112_AC8_PatchReportsEveryOutcomeAndRemoval(t *testing.T) {
 	e := newPAC112Env(t)
 	owner, _ := e.confirmed("ac8-owner")
@@ -226,13 +234,14 @@ func TestPAC112_AC8_PatchReportsEveryOutcomeAndRemoval(t *testing.T) {
 	l := e.link(owner, map[uuid.UUID]string{eID: "accepted", f: "declined", b: "pending"})
 	s := pac112Saved(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": []string{eAddr, fAddr, gAddr, cAddr}}), http.StatusOK)
 	pac112Equal(t, "addresses", pac112Outcomes(t, s),
-		[]string{eAddr + "=already_host", fAddr + "=already_host", gAddr + "=invited", cAddr + "=not_added"})
-	pac112Counts(t, s, 1, 1, 1)
-	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId.String() != b.String() || r[0].Email != bAddr || string(r[0].Status) != "pending" {
-		t.Errorf("removed = %+v; want B (%s) pending", r, bAddr)
+		[]string{eAddr + "=already_host", fAddr + "=already_host", gAddr + "=invited", cAddr + "=invited"})
+	pac112Counts(t, s, 2, 1, 0)
+	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId != nil || r[0].Email != bAddr || string(r[0].Status) != "pending" {
+		t.Errorf("removed = %+v; want B's invitation (%s) pending, no user_id", r, bAddr)
 	}
+	_ = b
 	pac112SameHosts(t, "after PATCH", e.hostRows(l.ID),
-		map[uuid.UUID]string{owner: "accepted", eID: "accepted", f: "declined", g: "pending"})
+		map[uuid.UUID]string{owner: "accepted", eID: "accepted", f: "declined", g: "pending", pac149AddrKey(cAddr): "pending"})
 }
 
 // AC-4 (contract half): adding G keeps E accepted and F declined (PAC-61
@@ -264,10 +273,12 @@ func TestPAC112_AC9_UnconfirmedCarrierHostIsAlreadyHost(t *testing.T) {
 	pac112SameHosts(t, "after PATCH", e.hostRows(l.ID), map[uuid.UUID]string{owner: "accepted", eID: "accepted"})
 }
 
-// AC-10: nobody (C), an unconfirmed carrier (D) and an address two accounts
-// share in different case each report the same not_added and write no row,
-// on create and on PATCH. A failed lookup is the all-or-nothing 500, never
-// not_added.
+// AC-10, rewritten by PAC-149 (spec §2.4): nobody (C), an unconfirmed carrier
+// (D) and an address two accounts share in different case each report the
+// same outcome as any other address, invited, with one pending invitation to
+// the address and no row pointing at any account, on create and on PATCH.
+// The failed-lookup half is gone with the lookup; its rule (a failed read is
+// the 500) moved to the invitee side (TestPAC149_AC14_InviteeMatchFailureIs500).
 func TestPAC112_AC10_UninvitableAddressesAreOneOutcome(t *testing.T) {
 	e := newPAC112Env(t)
 	owner, _ := e.confirmed("ac10-owner")
@@ -278,39 +289,20 @@ func TestPAC112_AC10_UninvitableAddressesAreOneOutcome(t *testing.T) {
 	s2 := createConfirmedUser(t, strings.ToUpper(shared))
 	for _, addr := range []string{cAddr, dAddr, shared} {
 		s := pac112Saved(t, e.create(owner, map[string]any{"co_host_emails": []string{addr}}), http.StatusCreated)
-		pac112Equal(t, "create "+addr, pac112Outcomes(t, s), []string{addr + "=not_added"})
-		pac112Counts(t, s, 0, 0, 1)
-		pac112SameHosts(t, "create "+addr, e.hostRows(s.Id), map[uuid.UUID]string{owner: "accepted"})
+		pac112Equal(t, "create "+addr, pac112Outcomes(t, s), []string{addr + "=invited"})
+		pac112Counts(t, s, 1, 0, 0)
+		pac112SameHosts(t, "create "+addr, e.hostRows(s.Id), map[uuid.UUID]string{owner: "accepted", pac149Key(t, e.db, addr): "pending"})
 
 		l := e.link(owner, nil)
 		s = pac112Saved(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": []string{addr}}), http.StatusOK)
-		pac112Equal(t, "PATCH "+addr, pac112Outcomes(t, s), []string{addr + "=not_added"})
-		pac112Counts(t, s, 0, 0, 1)
-		pac112SameHosts(t, "PATCH "+addr, e.hostRows(l.ID), map[uuid.UUID]string{owner: "accepted"})
+		pac112Equal(t, "PATCH "+addr, pac112Outcomes(t, s), []string{addr + "=invited"})
+		pac112Counts(t, s, 1, 0, 0)
+		pac112SameHosts(t, "PATCH "+addr, e.hostRows(l.ID), map[uuid.UUID]string{owner: "accepted", pac149Key(t, e.db, addr): "pending"})
 	}
 	for _, id := range []uuid.UUID{d, s1, s2} {
 		if n := e.hostRowsOf(id); n != 0 {
-			t.Errorf("%s has %d host rows", id, n)
+			t.Errorf("%s has %d host rows: an invitation points at an account", id, n)
 		}
-	}
-
-	// The failed lookup.
-	b, bAddr := e.confirmed("ac10-b")
-	storage.InstallCoHostLookup(t, func(string) error { return errors.New("pac112: lookup failed") })
-	before := e.linkCount(owner)
-	pac112Body(t, e.create(owner, map[string]any{"co_host_emails": []string{bAddr}}), http.StatusInternalServerError,
-		`{"error":"internal error"}`, "create with a failed lookup")
-	if n := e.linkCount(owner); n != before {
-		t.Errorf("links %d -> %d: a create with a failed lookup left a link", before, n)
-	}
-	l := e.link(owner, nil)
-	pac112Body(t, e.patch(owner, l.ID, map[string]any{"title": "changed", "co_host_emails": []string{bAddr}}),
-		http.StatusInternalServerError, `{"error":"internal error"}`, "PATCH with a failed lookup")
-	if got := e.title(l.ID); got != l.Title {
-		t.Errorf("title %q after a failed PATCH", got)
-	}
-	if n := e.hostRowsOf(b); n != 0 {
-		t.Errorf("B has %d host rows after failed lookups", n)
 	}
 }
 
@@ -343,8 +335,10 @@ func TestPAC112_AC15_CreateWithOwnAddressKeepsOwnerAccepted(t *testing.T) {
 }
 
 // AC-16: PATCH with the owner's confirmed address: own_address, row
-// unchanged. The owner's address held unconfirmed: not_added on create and
-// PATCH, row unchanged.
+// unchanged. The owner's address held unconfirmed: PAC-149 (spec §3.2 rule
+// 1, D-18) decides own_address by comparing with the owner's stored address,
+// not by a lookup, so it is own_address too (before PAC-149: not_added); the
+// row is unchanged either way.
 func TestPAC112_AC16_OwnAddressNeverChangesTheOwnerRow(t *testing.T) {
 	e := newPAC112Env(t)
 	owner, ownerAddr := e.confirmed("ac16-owner")
@@ -355,11 +349,11 @@ func TestPAC112_AC16_OwnAddressNeverChangesTheOwnerRow(t *testing.T) {
 
 	un, unAddr := e.unconfirmed("ac16-owner-unconfirmed")
 	s = pac112Saved(t, e.create(un, map[string]any{"co_host_emails": []string{unAddr}}), http.StatusCreated)
-	pac112Equal(t, "create unconfirmed", pac112Outcomes(t, s), []string{unAddr + "=not_added"})
+	pac112Equal(t, "create unconfirmed", pac112Outcomes(t, s), []string{unAddr + "=own_address"})
 	pac112SameHosts(t, "create unconfirmed", e.hostRows(s.Id), map[uuid.UUID]string{un: "accepted"})
 	l2 := e.link(un, nil)
 	s = pac112Saved(t, e.patch(un, l2.ID, map[string]any{"co_host_emails": []string{unAddr}}), http.StatusOK)
-	pac112Equal(t, "PATCH unconfirmed", pac112Outcomes(t, s), []string{unAddr + "=not_added"})
+	pac112Equal(t, "PATCH unconfirmed", pac112Outcomes(t, s), []string{unAddr + "=own_address"})
 	pac112SameHosts(t, "PATCH unconfirmed", e.hostRows(l2.ID), map[uuid.UUID]string{un: "accepted"})
 }
 
@@ -436,7 +430,7 @@ func TestPAC112_AC32_RemoveOneOfSeven(t *testing.T) {
 	l, ids, addrs, all := e.seven(owner, "ac32")
 	s := pac112Saved(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": addrs[1:]}), http.StatusOK)
 	pac112Counts(t, s, 0, 1, 0)
-	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId.String() != ids[0].String() || string(r[0].Status) != "accepted" {
+	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId == nil || r[0].UserId.String() != ids[0].String() || string(r[0].Status) != "accepted" {
 		t.Errorf("removed = %+v", r)
 	}
 	delete(all, ids[0])
@@ -495,19 +489,17 @@ func TestPAC112_AC31_ListWithEKeepsE(t *testing.T) {
 	pac112SameHosts(t, "after PATCH", e.hostRows(l.ID), map[uuid.UUID]string{owner: "accepted", eID: "accepted", g: "pending"})
 }
 
-// AC-20, AC-21, AC-22: a failed co-host write, co-host lookup or owner-row
-// write on create is the 500 with no link and no host row. Each also runs
-// under a session guard (the PAC-71 re-check opens the transaction).
+// AC-20, AC-22: a failed co-host write or owner-row write on create is the
+// 500 with no link and no host row. Each also runs under a session guard (the
+// PAC-71 re-check opens the transaction). AC-21 (a failed co-host lookup) is
+// gone with the lookup (PAC-149 D-2); its rule moved to the invitee side.
 func TestPAC112_AC20_AC21_AC22_FailedCreateLeavesNothing(t *testing.T) {
 	cases := []struct {
 		name    string
 		install func(t *testing.T)
 	}{
 		{"AC-20 co-host write", func(t *testing.T) {
-			storage.InstallCoHostWrite(t, func(uuid.UUID, uuid.UUID) error { return errors.New("pac112: write failed") })
-		}},
-		{"AC-21 lookup", func(t *testing.T) {
-			storage.InstallCoHostLookup(t, func(string) error { return errors.New("pac112: lookup failed") })
+			storage.InstallCoHostWrite(t, func(uuid.UUID, string) error { return errors.New("pac112: write failed") })
 		}},
 		{"AC-22 owner row", func(t *testing.T) {
 			storage.InstallCreateOwnerHost(t, func(uuid.UUID) error { return errors.New("pac112: owner row failed") })
@@ -535,7 +527,7 @@ func TestPAC112_AC20_AC21_AC22_FailedCreateLeavesNothing(t *testing.T) {
 				if n := e.linkCount(owner); n != 0 {
 					t.Errorf("%d links exist after a failed create", n)
 				}
-				if e.hostRowsOf(owner) != 0 || e.hostRowsOf(b) != 0 {
+				if e.hostRowsOf(owner) != 0 || e.hostRowsOf(b) != 0 || pac149InvitationsTo(t, e.db, bAddr) != 0 {
 					t.Error("a failed create left host rows")
 				}
 			})
@@ -543,24 +535,25 @@ func TestPAC112_AC20_AC21_AC22_FailedCreateLeavesNothing(t *testing.T) {
 	}
 }
 
-// Contract md §3.1: every lock wait in the create is bounded like PATCH's. An
-// invitation insert takes FOR KEY SHARE on the invitee's users row; with that
-// row held FOR UPDATE, the create fails at the (shortened) bound with the 500
-// and leaves no link.
+// Contract md §3.1: every lock wait in the create is bounded like PATCH's.
+// PAC-149: an invitation no longer references the invitee's users row, so the
+// wait exercised is the owner's: the link and owner-row inserts take FOR KEY
+// SHARE on the owner's users row; with that row held FOR UPDATE, the create
+// fails at the (shortened) bound with the 500 and leaves no link.
 func TestPAC112_CreateLockWaitIsBounded(t *testing.T) {
 	e := newPAC112Env(t)
 	pac101ShortBound(t)
 	owner, _ := e.confirmed("bound-owner")
-	b, bAddr := e.confirmed("bound-b")
+	_, bAddr := e.confirmed("bound-b")
 	holder, err := e.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = holder.Rollback() }()
-	if _, err := holder.Exec(`SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, b); err != nil {
+	if _, err := holder.Exec(`SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, owner); err != nil {
 		t.Fatal(err)
 	}
-	w := pac101WithinBound(t, "create waiting on an invitee's row", func() *httptest.ResponseRecorder {
+	w := pac101WithinBound(t, "create waiting on the owner's row", func() *httptest.ResponseRecorder {
 		return e.create(owner, map[string]any{"co_host_emails": []string{bAddr}})
 	})
 	pac112Body(t, w, http.StatusInternalServerError, `{"error":"internal error"}`, "create past the bound")
@@ -690,11 +683,12 @@ func TestPAC112_C1_RuleSeesTheSetUnderTheLock(t *testing.T) {
 	pac112SameHosts(t, "after refusal", e.hostRows(l.ID), all)
 }
 
-// C-2 (md §3.3, P3-m2): keep-only lists over 5 with two spellings of one
-// co-host, or with the owner's address, are accepted; a 50-entry list whose
-// first entry is junk is refused after exactly one lookup, of that entry;
-// repeated addresses (identical after the ECMA trim and lower()) are looked
-// up once, in request order.
+// C-2 (md §3.3, P3-m2), rewritten by PAC-149 (spec §2.4: the lookup count
+// becomes zero): keep-only lists over 5 with two spellings of one co-host, or
+// with the owner's address, are accepted; a 50-entry list whose first entry
+// is new is refused, as is a keep-only prefix followed by new entries;
+// repeated addresses (identical after the ECMA trim and lower()) are one
+// invitation. No list reads any account's carriers.
 func TestPAC112_C2_LookupOrderAndCount(t *testing.T) {
 	e := newPAC112Env(t)
 	owner, ownerAddr := e.confirmed("c2-owner")
@@ -702,11 +696,10 @@ func TestPAC112_C2_LookupOrderAndCount(t *testing.T) {
 
 	var mu sync.Mutex
 	var looked []string
-	storage.InstallCoHostLookup(t, func(email string) error {
+	storage.InstallCarriersRead(t, func(email string) {
 		mu.Lock()
 		defer mu.Unlock()
 		looked = append(looked, email)
-		return nil
 	})
 	reset := func() []string {
 		mu.Lock()
@@ -719,7 +712,7 @@ func TestPAC112_C2_LookupOrderAndCount(t *testing.T) {
 	twoSpellings := []string{addrs[0], strings.ToUpper(addrs[0]), addrs[1], addrs[2], addrs[3], addrs[4]}
 	s := pac112Saved(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": append(twoSpellings, addrs[5], addrs[6])}), http.StatusOK)
 	pac112Counts(t, s, 0, 0, 0)
-	pac112Equal(t, "lookups for two spellings", reset(), []string{addrs[0], addrs[1], addrs[2], addrs[3], addrs[4], addrs[5], addrs[6]})
+	pac112Equal(t, "lookups for two spellings", reset(), nil)
 
 	withOwner := append([]string{ownerAddr}, addrs...)
 	s = pac112Saved(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": withOwner}), http.StatusOK)
@@ -736,20 +729,20 @@ func TestPAC112_C2_LookupOrderAndCount(t *testing.T) {
 		junk[i] = pac112Addr(fmt.Sprintf("c2-junk-%d", i))
 	}
 	pac112Body(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": junk}), http.StatusUnprocessableEntity, pac112CapMsg, "50 junk")
-	pac112Equal(t, "lookups for 50 junk", reset(), []string{junk[0]})
+	pac112Equal(t, "lookups for 50 junk", reset(), nil)
 
 	// Keep-only prefix, then junk: refused at the first non-host, one lookup
 	// past the prefix.
 	mixed := append(append([]string{}, addrs[:4]...), junk[1], junk[2])
 	pac112Body(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": mixed}), http.StatusUnprocessableEntity, pac112CapMsg, "prefix then junk")
-	pac112Equal(t, "lookups for prefix then junk", reset(), append(append([]string{}, addrs[:4]...), junk[1]))
+	pac112Equal(t, "lookups for prefix then junk", reset(), nil)
 
 	// Repeats identical after the ECMA trim and lower() share one lookup.
 	other := e.link(owner, nil)
 	b, bAddr := e.confirmed("c2-b")
 	reps := []string{bAddr, " " + strings.ToUpper(bAddr) + "\u00a0", "\ufeff" + bAddr}
 	s = pac112Saved(t, e.patch(owner, other.ID, map[string]any{"co_host_emails": reps}), http.StatusOK)
-	pac112Equal(t, "lookups for repeats", reset(), []string{bAddr})
+	pac112Equal(t, "lookups for repeats", reset(), nil)
 	pac112Equal(t, "repeat outcomes", pac112Outcomes(t, s),
 		[]string{bAddr + "=invited", strings.ToUpper(bAddr) + "=invited", bAddr + "=invited"})
 	pac112Counts(t, s, 1, 0, 0)
@@ -766,9 +759,10 @@ func TestPAC112_C3_PresenceAndShape(t *testing.T) {
 	cAddr := pac112Addr("c3-c")
 	list := []string{cAddr, bAddr, cAddr, bAddr}
 	s := pac112Saved(t, e.create(owner, map[string]any{"co_host_emails": list}), http.StatusCreated)
+	// PAC-149: C (no account) is invited like B.
 	pac112Equal(t, "create duplicates", pac112Outcomes(t, s),
-		[]string{cAddr + "=not_added", bAddr + "=invited", cAddr + "=not_added", bAddr + "=invited"})
-	pac112Counts(t, s, 1, 0, 1)
+		[]string{cAddr + "=invited", bAddr + "=invited", cAddr + "=invited", bAddr + "=invited"})
+	pac112Counts(t, s, 2, 0, 0)
 
 	for _, body := range []map[string]any{{}, {"co_host_emails": nil}} {
 		w := e.create(owner, body)

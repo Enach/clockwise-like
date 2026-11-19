@@ -36,10 +36,13 @@ func TestGetBusyBookingsForUser_CountsHostedLinksWithoutCalendarEvents(t *testin
 	if err != nil {
 		t.Fatalf("create link: %v", err)
 	}
-	for id, status := range map[uuid.UUID]string{owner: "accepted", accepted: "accepted", pending: "pending"} {
+	for id, status := range map[uuid.UUID]string{owner: "accepted", accepted: "accepted"} {
 		if _, err := AddLinkHost(db, link.ID, id, status); err != nil {
 			t.Fatalf("add host: %v", err)
 		}
+	}
+	if _, err := pac149AddPending(db, link.ID, pending); err != nil { // PAC-149: an invitation
+		t.Fatalf("add invitation: %v", err)
 	}
 
 	day := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)

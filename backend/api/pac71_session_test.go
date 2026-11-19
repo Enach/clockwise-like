@@ -88,7 +88,6 @@ func commitBinding(t *testing.T, a uuid.UUID, googleAccess, msAccess string) {
 	}
 }
 
-
 // ---- AC-42, AC-48, CONTRACT-6, CONTRACT-12 ----------------------------------
 
 func TestPAC71_AC42_GenerationAdvanceEndsEverySessionOfTheAccount(t *testing.T) {
@@ -278,8 +277,10 @@ func pac71Writes(t *testing.T) map[string]pac71Write {
 				if err := openTestDB(t).QueryRow(`INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($1, md5(random()::text), 'B') RETURNING id`, b).Scan(&link); err != nil {
 					t.Fatal(err)
 				}
-				// The pending row exists before the session acts (stored by user id).
-				execT(t, `INSERT INTO scheduling_link_hosts (link_id, user_id, status) VALUES ($1, $2, 'pending')`, link, a)
+				// The row exists before the session acts (stored by user id).
+				// PAC-149: a pending row can no longer point at an account; a
+				// declined entry is the account-keyed row an accept writes.
+				execT(t, `INSERT INTO scheduling_link_hosts (link_id, user_id, status) VALUES ($1, $2, 'declined')`, link, a)
 				return doAs(t, r, http.MethodPost, "/api/scheduling-links/"+link.String()+"/accept", "", s0)
 			},
 			check: func(t *testing.T, a uuid.UUID) bool {
@@ -379,14 +380,15 @@ func TestPAC71_AC47_OldGenerationWriteAfterTheBindingIsRefused(t *testing.T) {
 		if err := openTestDB(t).QueryRow(`INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($1, md5(random()::text), 'B') RETURNING id`, b).Scan(&link); err != nil {
 			t.Fatal(err)
 		}
-		execT(t, `INSERT INTO scheduling_link_hosts (link_id, user_id, status) VALUES ($1, $2, 'pending')`, link, a)
+		// PAC-149: a declined entry (a pending row points at no account).
+		execT(t, `INSERT INTO scheduling_link_hosts (link_id, user_id, status) VALUES ($1, $2, 'declined')`, link, a)
 		commitBinding(t, a, "henry-g1", "")
 		r := setupSchedulingLinkRoutes(t)
 		req := httptest.NewRequest(http.MethodPost, "/api/scheduling-links/"+link.String()+"/accept", nil)
 		assert401(t, serveGuarded(t, r, req, a, 0))
 		var status string
 		_ = openTestDB(t).QueryRow(`SELECT status FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`, link, a).Scan(&status)
-		if status != "pending" {
+		if status != "declined" {
 			t.Fatalf("status = %s", status)
 		}
 	})

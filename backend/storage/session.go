@@ -188,7 +188,7 @@ func withLinkWriteTx(ctx context.Context, db DBTX, fn func(q Querier) error) err
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := bounded(tx); err != nil {
+	if err := bounded(recordingTx(db, tx)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -210,10 +210,13 @@ func withGenerationTx(ctx context.Context, db DBTX, userID uuid.UUID, gen int64,
 		return fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := recheck(ctx, tx, userID, gen, g); err != nil {
+	// PAC-149: a test's statement recorder (RecordCoHostStatements) sees the
+	// re-check and every statement of fn; production passes tx unchanged.
+	q := recordingTx(db, tx)
+	if err := recheck(ctx, q, userID, gen, g); err != nil {
 		return err
 	}
-	if err := fn(tx); err != nil {
+	if err := fn(q); err != nil {
 		return err
 	}
 	return tx.Commit()

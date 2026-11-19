@@ -138,7 +138,14 @@ func (e *pac40Env) hostRows(id uuid.UUID) map[uuid.UUID]string {
 	}
 	out := map[uuid.UUID]string{}
 	for _, h := range hosts {
-		out[h.UserID] = h.Status
+		id := h.UserID
+		if h.IsInvitation() {
+			// PAC-149: a pending invitation points at no account; the
+			// fixture view keys it by the account carrying its address
+			// (pac149Key), so expectations keyed by account still read.
+			id = pac149Key(e.t, e.db, h.InviteeEmail)
+		}
+		out[id] = h.Status
 	}
 	return out
 }
@@ -204,7 +211,7 @@ func TestPAC40_DeletedLinkIsNotFoundOnEveryPathForEveryCaller(t *testing.T) {
 	if _, err := storage.AddLinkHost(e.db, link.ID, cohost, "accepted"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.AddLinkHost(e.db, link.ID, invitee, "pending"); err != nil {
+	if _, err := pac149AddPending(e.db, link.ID, invitee); err != nil {
 		t.Fatal(err)
 	}
 	pac40Booking(t, e.db, link.ID, "kim", futureBookingStart(), "")
@@ -294,7 +301,9 @@ func TestPAC40_DeletedLinkIsNotFoundOnEveryPathForEveryCaller(t *testing.T) {
 	if !at.Valid || !at.Time.Equal(deletedAt.Time) || active {
 		t.Errorf("link row: deleted_at %v (was %v), active %v; want unchanged, paused", at, deletedAt, active)
 	}
-	if got := e.hostRows(link.ID); len(got) != len(hostsBefore) || got[cohost] != "accepted" || got[invitee] != "pending" || got[owner] != "accepted" {
+	if got := e.hostRows(link.ID); len(got) != len(hostsBefore) || got[cohost] != "accepted" || got[invitee] != "" || got[owner] != "accepted" {
+		// PAC-149 (D-14): the delete erased the invitee's pending invitation;
+		// hostsBefore was read after the delete.
 		t.Errorf("host rows = %v; want %v unchanged", got, hostsBefore)
 	}
 	if n := e.bookingCount(link.ID); n != 1 {
@@ -495,7 +504,7 @@ func TestPAC40_LiveLinkFetchKeepsPAC25(t *testing.T) {
 	stranger := createConfirmedUser(t, "pac40-ac19-stranger@example.com")
 	link := createSchedulingLinkRecord(t, owner, "pac40-ac19", "PAC-40 AC-19")
 	_, _ = storage.AddLinkHost(e.db, link.ID, cohost, "accepted")
-	_, _ = storage.AddLinkHost(e.db, link.ID, invitee, "pending")
+	_, _ = pac149AddPending(e.db, link.ID, invitee)
 	for _, u := range []uuid.UUID{owner, cohost} {
 		w := e.do(http.MethodGet, "/api/scheduling-links/"+link.ID.String(), u, "")
 		e.mustStatus(w, http.StatusOK, "fetch")
@@ -655,7 +664,7 @@ func TestPAC40_OwnerArchive(t *testing.T) {
 	paused := createSchedulingLinkRecord(t, owner, "pac40-arch-paused", "Paused")
 	e.mustStatus(e.do(http.MethodPatch, "/api/scheduling-links/"+paused.ID.String(), owner, `{"active":false}`), http.StatusOK, "pause")
 	_, _ = storage.AddLinkHost(e.db, link.ID, cohost, "accepted")
-	_, _ = storage.AddLinkHost(e.db, link.ID, invitee, "pending")
+	_, _ = pac149AddPending(e.db, link.ID, invitee)
 	past := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
 	ahead := futureBookingStart()
 	pac40Booking(t, e.db, link.ID, "uma", past, "")

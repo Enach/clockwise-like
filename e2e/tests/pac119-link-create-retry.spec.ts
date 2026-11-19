@@ -94,9 +94,10 @@ test.describe('PAC-119 link create is safe to retry', () => {
     const run = runId();
     const a = await freshUser(db, 'ac25-owner', run);
     const b = await freshUser(db, 'ac25-b', run);
-    // C carries no account, so the save reports it not added and the editor
-    // stays open with its results (PAC-112 §5.4), where B's outcome shows.
-    const c = `e2e.pac119.ac25-nobody.${run}@pac119.e2e.test`;
+    // C is not a well-formed address (PAC-149: the only not-added case), so
+    // the save reports it not added and the editor stays open with its
+    // results (PAC-112 §5.4), where B's outcome shows.
+    const c = `e2e.pac119.ac25-bad..${run}@pac119.e2e.test`;
     const page = await pageAs(a);
     const posts: Array<{ key: string | null; body: string | null }> = [];
     let firstStatus: number | undefined;
@@ -149,8 +150,8 @@ test.describe('PAC-119 link create is safe to retry', () => {
       const editor = page.getByRole('dialog', { name: /edit link/i });
       await expect(editor).toBeVisible();
       const results = editor.getByRole('status', { name: 'Save results' });
-      await expect(results).toContainText('1 co-host invited — they can accept from Paceday.');
-      await expect(results).toContainText(`${c} couldn't be added as a co-host.`);
+      await expect(results).toContainText("1 co-host invited. Paceday doesn't email invitations, so let them know.");
+      await expect(results).toContainText(`${c} isn't a valid email address.`);
       await expect(editor.getByRole('alert')).toHaveCount(0);
 
       // Exactly one new link; B invited to it once; one key row.
@@ -159,9 +160,10 @@ test.describe('PAC-119 link create is safe to retry', () => {
         [a.id],
       );
       expect(links).toEqual([{ id, title }]);
+      // PAC-149: B's pending invitation holds B's address, not B's account.
       const bRows = await db.query<{ link_id: string; status: string }>(
-        'SELECT link_id, status FROM scheduling_link_hosts WHERE user_id = $1',
-        [b.id],
+        'SELECT link_id, status FROM scheduling_link_hosts WHERE user_id IS NULL AND lower(invitee_email) = lower($1)',
+        [b.email],
       );
       expect(bRows).toEqual([{ link_id: id, status: 'pending' }]);
       const invites = await apiAs(b).get('/api/scheduling-links/host-invites');

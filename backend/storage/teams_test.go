@@ -71,11 +71,19 @@ func TestGetLinkHostStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create link: %v", err)
 	}
-	if _, err := AddLinkHost(db, link.ID, pending, "pending"); err != nil {
+	if _, err := pac149AddPending(db, link.ID, pending); err != nil {
 		t.Fatalf("add host: %v", err)
 	}
-	if status, found, err := GetLinkHostStatus(db, link.ID, pending); err != nil || !found || status != "pending" {
-		t.Fatalf("pending: %q %v %v", status, found, err)
+	// PAC-149: a pending invitation points at no account, so the invitee has
+	// no status on the link until it answers; a declined entry has one.
+	if status, found, err := GetLinkHostStatus(db, link.ID, pending); err != nil || found || status != "" {
+		t.Fatalf("pending invitee: %q %v %v", status, found, err)
+	}
+	if ok, err := RespondToHostInvite(db, link.ID, pending, "declined"); err != nil || !ok {
+		t.Fatalf("decline: %v %v", ok, err)
+	}
+	if status, found, err := GetLinkHostStatus(db, link.ID, pending); err != nil || !found || status != "declined" {
+		t.Fatalf("declined: %q %v %v", status, found, err)
 	}
 	if status, found, err := GetLinkHostStatus(db, link.ID, stranger); err != nil || found || status != "" {
 		t.Fatalf("stranger: %q %v %v", status, found, err)

@@ -328,13 +328,19 @@ func validateSchedulingLink(link *storage.SchedulingLink) *httpError {
 //
 // loc is the link's zone, read from the owner's settings by the caller
 // (linkLocation): a failed read is the caller's 500 (PAC-72 revision 2.1).
-func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID) (schedulingLinkDTO, error) {
+func buildSchedulingLinkDTO(db storage.DBTX, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID) (schedulingLinkDTO, error) {
 	dto := baseSchedulingLinkDTO(link, loc, viewer)
 	hosts, err := storage.GetLinkHosts(db, link.ID)
 	if err != nil {
 		return dto, err
 	}
 	for _, host := range hosts {
+		if host.IsInvitation() {
+			// PAC-149: a pending invitation is shown by the address the owner
+			// typed, with no account read (contract md §2.5).
+			dto.addHost(link, viewer, uuid.Nil, host.Status, host.InviteeEmail, "", "")
+			continue
+		}
 		user, err := storage.GetUserByIDNoOrg(db, host.UserID)
 		if err != nil {
 			return dto, err
@@ -379,14 +385,27 @@ func baseSchedulingLinkDTO(link *storage.SchedulingLink, loc *time.Location, vie
 }
 
 // addHost appends one host and, for the viewer's own row, sets my_status.
+// userID is uuid.Nil for a pending invitation.
 func (dto *schedulingLinkDTO) addHost(link *storage.SchedulingLink, viewer, userID uuid.UUID, status, email, name, avatarURL string) {
-	dto.Hosts = append(dto.Hosts, schedulingHostDTO{
-		UserID: userID.String(), IsOwner: userID == link.OwnerUserID, Status: status,
-		Email: email, Name: name, AvatarURL: avatarURL,
-	})
-	if userID == viewer {
+	dto.Hosts = append(dto.Hosts, hostEntryDTO(link, userID, status, email, name, avatarURL))
+	if userID != uuid.Nil && userID == viewer {
 		dto.MyStatus = status
 	}
+}
+
+// hostEntryDTO is one roster entry as every link read shows it (PAC-149
+// contract md §2.5, spec D-6): the owner and an accepted co-host with their
+// account id, stored address, name and picture; a pending invitation (userID
+// uuid.Nil) by its recorded address and a declined co-host by the account's
+// address, each with is_owner and status only. Nothing in a pending entry
+// depends on whether an account carries its address.
+func hostEntryDTO(link *storage.SchedulingLink, userID uuid.UUID, status, email, name, avatarURL string) schedulingHostDTO {
+	isOwner := userID != uuid.Nil && userID == link.OwnerUserID
+	d := schedulingHostDTO{Email: email, IsOwner: isOwner, Status: status}
+	if isOwner || (userID != uuid.Nil && status == "accepted") {
+		d.UserID, d.Name, d.AvatarURL = userID.String(), name, avatarURL
+	}
+	return d
 }
 
 // PAC-112 (contract md §2): SchedulingLinkSaved, the create and PATCH answer.
@@ -410,8 +429,10 @@ type coHostOutcomeDTO struct {
 	Outcome string `json:"outcome"`
 }
 
+// removedHostDTO is SchedulingLinkRemovedHost: user_id exactly for an
+// accepted entry (PAC-149 contract md §2.5).
 type removedHostDTO struct {
-	UserID string `json:"user_id"`
+	UserID string `json:"user_id,omitempty"`
 	Email  string `json:"email"`
 	Status string `json:"status"`
 }
@@ -449,7 +470,11 @@ func toCoHostChangesDTO(c *storage.CoHostChanges) *coHostChangesDTO {
 		out.Addresses = append(out.Addresses, coHostOutcomeDTO{Email: a.Email, Outcome: a.Outcome})
 	}
 	for _, r := range c.Removed {
-		out.Removed = append(out.Removed, removedHostDTO{UserID: r.UserID.String(), Email: r.Email, Status: r.Status})
+		item := removedHostDTO{Email: r.Email, Status: r.Status}
+		if r.UserID != nil {
+			item.UserID = r.UserID.String()
+		}
+		out.Removed = append(out.Removed, item)
 	}
 	return out
 }
@@ -470,8 +495,8 @@ func writeSavedLink(w http.ResponseWriter, code int, dto schedulingLinkDTO, chan
 // zoneOf reads the link owner's zone for SchedulingLink.time_zone (PAC-72
 // D-9). The error is a failed settings read, which the caller answers 500,
 // never UTC (revision 2.1).
-func (h *schedulingLinkHandlers) zoneOf(ownerID uuid.UUID) (*time.Location, error) {
-	return linkLocation(h.db, h.ownerZone, ownerID)
+func (h *schedulingLinkHandlers) zoneOf(db storage.DBTX, ownerID uuid.UUID) (*time.Location, error) {
+	return linkLocation(db, h.ownerZone, ownerID)
 }
 
 // POST /api/scheduling-links
@@ -484,6 +509,9 @@ func (h *schedulingLinkHandlers) zoneOf(ownerID uuid.UUID) (*time.Location, erro
 // resolves the key again (R2, R3) before any slug answer.
 func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	// PAC-149 (contract md §6): every statement of the request goes through
+	// db, which only a test's statement recorder makes differ from h.db.
+	db := storage.RecordCoHostStatements(h.db)
 	key, ok := idempotencyKey(r)
 	if !ok {
 		writeError(w, errInvalidIdempotencyKey, http.StatusBadRequest)
@@ -504,14 +532,14 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, msg, http.StatusUnprocessableEntity)
 		return
 	}
-	owner, err := storage.GetUserByIDNoOrg(h.db, userID)
+	owner, err := storage.GetUserByIDNoOrg(db, userID)
 	if err != nil || owner == nil {
 		writeError(w, "user not found", http.StatusInternalServerError)
 		return
 	}
 	// The response's time_zone is the caller's zone; read before anything is
 	// written, so a failed read creates no link (PAC-72 revision 2.1).
-	loc, err := h.zoneOf(userID)
+	loc, err := h.zoneOf(db, userID)
 	if err != nil {
 		writeServerError(w, r, "create link zone", err, http.StatusInternalServerError)
 		return
@@ -522,7 +550,7 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		// slug is the normalised one sent, contract md §2.3).
 		pre := link
 		attempt = &storage.LinkCreateAttempt{Key: key, Link: &pre, CoHostEmails: input.CoHostEmails}
-		if h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+		if h.answerLinkCreateKey(w, r, db, userID, attempt, loc) {
 			return
 		}
 	}
@@ -537,13 +565,13 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 			writeError(w, "slug generation failed", http.StatusInternalServerError)
 			return
 		}
-	} else if exists, e := storage.SlugExists(h.db, link.Slug); e != nil {
+	} else if exists, e := storage.SlugExists(db, link.Slug); e != nil {
 		writeError(w, "slug check failed", http.StatusInternalServerError)
 		return
 	} else if exists {
 		// R2: a keyed create is never "slug already exists" while its own
 		// key is stored (spec §3.4).
-		if attempt != nil && h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+		if attempt != nil && h.answerLinkCreateKey(w, r, db, userID, attempt, loc) {
 			return
 		}
 		writeError(w, "slug already exists", http.StatusConflict)
@@ -569,7 +597,7 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		// PAC-132: the roster for `hosts` is read inside each attempt's
 		// transaction, after its last write; a failed read rolls that
 		// attempt back and is not a slug conflict, so it ends the loop.
-		created, changes, roster, err = storage.CreateSchedulingLinkWithCoHostsKeyedCtx(r.Context(), h.db, &link, input.CoHostEmails, key, digest)
+		created, changes, roster, err = storage.CreateSchedulingLinkWithCoHostsKeyedCtx(r.Context(), db, &link, input.CoHostEmails, key, digest)
 		if errors.Is(err, storage.ErrCoHostListTooLong) {
 			writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
 			return
@@ -578,7 +606,7 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 			// R3: a new guarded transaction. With nothing stored, an
 			// explicit slug's violation stays the 500 (PAC-119 spec §5)
 			// and a key violation with no row found is the 500.
-			if h.answerLinkCreateKey(w, r, userID, attempt, loc) {
+			if h.answerLinkCreateKey(w, r, db, userID, attempt, loc) {
 				return
 			}
 		}
@@ -619,8 +647,8 @@ func isSlugConflict(err error) bool {
 // nothing is stored under the key and the create goes on. A stale session
 // writes nothing derived from the key row: requireAuth's response guard turns
 // the answer into its own 401.
-func (h *schedulingLinkHandlers) answerLinkCreateKey(w http.ResponseWriter, r *http.Request, userID uuid.UUID, a *storage.LinkCreateAttempt, loc *time.Location) bool {
-	res, err := storage.ResolveLinkCreateKeyCtx(r.Context(), h.db, userID, a)
+func (h *schedulingLinkHandlers) answerLinkCreateKey(w http.ResponseWriter, r *http.Request, db storage.DBTX, userID uuid.UUID, a *storage.LinkCreateAttempt, loc *time.Location) bool {
+	res, err := storage.ResolveLinkCreateKeyCtx(r.Context(), db, userID, a)
 	switch {
 	case errors.Is(err, storage.ErrStaleSession):
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -634,7 +662,7 @@ func (h *schedulingLinkHandlers) answerLinkCreateKey(w http.ResponseWriter, r *h
 		// The replay writes nothing: its roster is the link's current one,
 		// read strictly after the resolution committed (PAC-132), so a
 		// failed read is the 500 with nothing written.
-		dto, err := buildSchedulingLinkDTO(h.db, res.Link, loc, userID)
+		dto, err := buildSchedulingLinkDTO(db, res.Link, loc, userID)
 		if err != nil {
 			writeServerError(w, r, "create link replay roster", err, http.StatusInternalServerError)
 			return true
@@ -676,7 +704,7 @@ func (h *schedulingLinkHandlers) listLinks(w http.ResponseWriter, r *http.Reques
 		if !ok {
 			// A failed read of any listed link owner's zone (a shared
 			// link's owner included) fails the list (PAC-72 AC-38).
-			if loc, err = h.zoneOf(link.OwnerUserID); err != nil {
+			if loc, err = h.zoneOf(h.db, link.OwnerUserID); err != nil {
 				writeServerError(w, r, "list links zone", err, http.StatusInternalServerError)
 				return
 			}
@@ -736,7 +764,7 @@ func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	loc, err := h.zoneOf(link.OwnerUserID)
+	loc, err := h.zoneOf(h.db, link.OwnerUserID)
 	if err != nil {
 		writeServerError(w, r, "getLink zone", err, http.StatusInternalServerError)
 		return
@@ -753,12 +781,14 @@ func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request)
 // PATCH /api/scheduling-links/{id}
 func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	// PAC-149 (contract md §6): as in createLink.
+	db := storage.RecordCoHostStatements(h.db)
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	existing, err := storage.GetSchedulingLinkByID(h.db, id)
+	existing, err := storage.GetSchedulingLinkByID(db, id)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
@@ -856,13 +886,13 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	}
 	// Read before the update, so a failed read changes nothing (PAC-72
 	// revision 2.1).
-	loc, err := h.zoneOf(existing.OwnerUserID)
+	loc, err := h.zoneOf(db, existing.OwnerUserID)
 	if err != nil {
 		writeServerError(w, r, "update link zone", err, http.StatusInternalServerError)
 		return
 	}
 	if updated.Slug != existing.Slug {
-		if exists, e := storage.SlugExists(h.db, updated.Slug); e != nil {
+		if exists, e := storage.SlugExists(db, updated.Slug); e != nil {
 			writeError(w, "slug check failed", http.StatusInternalServerError)
 			return
 		} else if exists {
@@ -883,7 +913,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	//
 	// PAC-132 (SF-029): it also reads the roster for `hosts`, strictly, after
 	// its last write; a failed read rolls the PATCH back and is the 500.
-	result, changes, roster, err := storage.UpdateSchedulingLinkReportingCoHostsCtx(r.Context(), h.db, id, &updated, userID, patch.CoHostEmails)
+	result, changes, roster, err := storage.UpdateSchedulingLinkReportingCoHostsCtx(r.Context(), db, id, &updated, userID, patch.CoHostEmails)
 	if errors.Is(err, storage.ErrCoHostListTooLong) {
 		writeError(w, coHostListTooLongMsg, http.StatusUnprocessableEntity)
 		return
@@ -968,14 +998,25 @@ func (h *schedulingLinkHandlers) listBookings(w http.ResponseWriter, r *http.Req
 }
 
 // POST /api/scheduling-links/{id}/hosts
+//
+// PAC-149 (contract md §2.1): an invitation is to an address. The answer is
+// decided by address only, under the link's lock: the owner's address or a
+// current entry's is 200 with that entry as the link reads show it; a
+// malformed address is the 400; a full link is the 422 for every new address;
+// a new address is 201 {email, is_owner:false, status:"pending"}. No account
+// is read by the address, so nothing in the answer, nor the work done,
+// depends on whether an account carries it ("user not found" is gone,
+// API-072).
 func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	// Contract md §6: as in createLink.
+	db := storage.RecordCoHostStatements(h.db)
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	link, err := storage.GetSchedulingLinkByID(h.db, id)
+	link, err := storage.GetSchedulingLinkByID(db, id)
 	if err != nil {
 		// PAC-120 (SF-101): logged and reported under its own step.
 		writeServerError(w, r, "invite link read", err, http.StatusInternalServerError)
@@ -992,37 +1033,26 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	var body struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Email) == "" {
+	// The co-host list's trim (ECMA-262 \s, PAC-149 spec D-15), not
+	// strings.TrimSpace.
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || storage.BlankECMA(body.Email) {
 		writeError(w, "email is required", http.StatusBadRequest)
 		return
 	}
-	// PAC-71 granting site: an unconfirmed holder is "user not found" too,
-	// so the answer does not reveal standing (contract §10, API-072).
-	// A storage error is the 500, never "user not found" (PAC-120, SF-068).
-	inviteeID, found, err := storage.ConfirmedHolder(h.db, body.Email)
-	if err != nil {
-		writeServerError(w, r, "invite lookup", err, http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		writeError(w, "user not found", http.StatusNotFound)
-		return
-	}
-	// An existing host keeps their status (PAC-61): 200 with their row as is;
-	// a new invitee gets a pending row and 201, unless the link already has
-	// 5 co-hosts (PAC-120: decided under the link lock inside the write).
-	host, created, err := storage.InviteLinkHostCtx(r.Context(), h.db, id, inviteeID)
-	if errors.Is(err, storage.ErrLinkGone) {
-		// PAC-101: deleted after the read above, before the host row was
+	entry, created, err := storage.InviteLinkAddressCtx(r.Context(), db, id, storage.TrimECMASpace(body.Email))
+	switch {
+	case errors.Is(err, storage.ErrLinkGone):
+		// PAC-101: deleted after the read above, before anything was
 		// written; nothing was written, as for a link deleted before.
 		writeError(w, "not found", http.StatusNotFound)
 		return
-	}
-	if errors.Is(err, storage.ErrCoHostLimitReached) {
+	case errors.Is(err, storage.ErrCoHostAddressMalformed):
+		writeError(w, invalidCoHostAddressMsg, http.StatusBadRequest)
+		return
+	case errors.Is(err, storage.ErrCoHostLimitReached):
 		writeError(w, string(gen.SchedulingLinkHostLimitReached), http.StatusUnprocessableEntity)
 		return
-	}
-	if err != nil {
+	case err != nil:
 		writeServerError(w, r, "invite failed", err, http.StatusInternalServerError)
 		return
 	}
@@ -1030,15 +1060,21 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	if created {
 		w.WriteHeader(http.StatusCreated)
 	}
-	_ = json.NewEncoder(w).Encode(host)
+	_ = json.NewEncoder(w).Encode(hostEntryDTO(link, entry.UserID, entry.Status, entry.Email, entry.Name, entry.AvatarURL))
 }
+
+// invalidCoHostAddressMsg is the single invite's 400 for a malformed new
+// address (PAC-149 contract md §2.1 step 5.3).
+const invalidCoHostAddressMsg = "email must be a valid email address"
 
 // GET /api/scheduling-links/host-invites and /api/scheduling-links/invites
 func (h *schedulingLinkHandlers) listHostInvites(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	// PAC-149 (contract md §2.4): the pending invitations whose address the
+	// caller holds; a failed match is the 500, never [] (spec D-10).
 	invites, err := storage.GetPendingInvitesForUser(h.db, userID)
 	if err != nil {
-		writeError(w, "internal error", http.StatusInternalServerError)
+		writeServerError(w, r, "host invites match", err, http.StatusInternalServerError)
 		return
 	}
 	// PAC-122 SF-030: only a link or owner that no longer exists drops an
@@ -1082,8 +1118,9 @@ func (h *schedulingLinkHandlers) respondToInvite(w http.ResponseWriter, r *http.
 		return
 	}
 	if !matched {
-		// PAC-30: no host row for the caller on this link (or no such link).
-		// Same 404 for both, so the answer does not reveal whether a link exists.
+		// PAC-30: no entry of the caller and no pending invitation it holds on
+		// this link (PAC-149 contract md §2.4), or no such link. Same 404 for
+		// all, so the answer does not reveal whether a link exists.
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -1124,7 +1161,8 @@ func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !removed {
-		// PAC-30: the caller has no host row on this link; nothing was deleted.
+		// PAC-30: the caller has no entry and holds no pending invitation on
+		// this link (PAC-149 contract md §2.4); nothing was deleted.
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}

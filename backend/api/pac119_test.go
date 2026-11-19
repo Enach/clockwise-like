@@ -201,8 +201,9 @@ func TestPAC119_AC1_IdenticalRetryReplaysWithTheOriginalOutcomes(t *testing.T) {
 	body := map[string]any{"title": "AC-1 link", "co_host_emails": []string{bAddr, cAddr}}
 	first := e.sendJSON(owner, key, body)
 	s1 := pac112Saved(t, first, http.StatusCreated)
-	pac112Equal(t, "original outcomes", pac112Outcomes(t, s1), []string{bAddr + "=invited", cAddr + "=not_added"})
-	pac112Counts(t, s1, 1, 0, 1)
+	// PAC-149: C (carried only unconfirmed) is invited like B.
+	pac112Equal(t, "original outcomes", pac112Outcomes(t, s1), []string{bAddr + "=invited", cAddr + "=invited"})
+	pac112Counts(t, s1, 2, 0, 0)
 
 	second := e.sendJSON(owner, key, body)
 	s2 := pac112Saved(t, second, http.StatusCreated)
@@ -215,8 +216,8 @@ func TestPAC119_AC1_IdenticalRetryReplaysWithTheOriginalOutcomes(t *testing.T) {
 	if n := e.linkCount(owner); n != 1 {
 		t.Errorf("%d links; want 1", n)
 	}
-	if n := e.hostRowsOf(b); n != 1 {
-		t.Errorf("B has %d host rows; want 1", n)
+	if n := pac149InvitationsTo(t, e.db, bAddr); n != 1 {
+		t.Errorf("B has %d invitations; want 1", n)
 	}
 	if n := e.invitesOf(b, s1.Id); n != 1 {
 		t.Errorf("L appears %d times in B's invitations; want 1", n)
@@ -265,7 +266,8 @@ func TestPAC119_AC3_ReplayShowsCurrentLinkAndOriginalOutcomes(t *testing.T) {
 	}
 	declined := false
 	for _, h := range s2.Hosts {
-		if h.UserId == b && string(h.Status) == "declined" {
+		// PAC-149: a declined entry is shown by address and status only.
+		if h.UserId == nil && h.Email == bAddr && string(h.Status) == "declined" {
 			declined = true
 		}
 	}
@@ -302,8 +304,8 @@ func TestPAC119_AC4_ExplicitSlugRetryIsTheReplay(t *testing.T) {
 func TestPAC119_AC5_SameRequestOrNot(t *testing.T) {
 	e := newPAC119Env(t)
 	owner := e.owner("ac5-owner")
-	b, bAddr := e.confirmed("ac5-b")
-	g, gAddr := e.confirmed("ac5-g")
+	_, bAddr := e.confirmed("ac5-b")
+	_, gAddr := e.confirmed("ac5-g")
 	_, hAddr := e.confirmed("ac5-h")
 	key := pac119NewKey()
 	orig := fmt.Sprintf(`{"title":"AC-5 link","duration_options":[30,45],"co_host_emails":[%q,%q]}`, bAddr, gAddr)
@@ -339,8 +341,8 @@ func TestPAC119_AC5_SameRequestOrNot(t *testing.T) {
 		t.Errorf("links %d, title %q", e.linkCount(owner), e.title(s1.Id))
 	}
 	pac112SameHosts(t, "L's hosts", e.hostRows(s1.Id), hostsBefore)
-	if e.hostRowsOf(b) != 1 || e.hostRowsOf(g) != 1 {
-		t.Error("B or G gained a row")
+	if pac149InvitationsTo(t, e.db, bAddr) != 1 || pac149InvitationsTo(t, e.db, gAddr) != 1 {
+		t.Error("B or G gained an invitation")
 	}
 
 	// Created with no list: co_host_emails null is the replay.
@@ -444,7 +446,7 @@ func TestPAC119_AC8_RolledBackWinnerLeavesNoKey(t *testing.T) {
 	key := pac119NewKey()
 	var once sync.Once
 	reached, gate := make(chan struct{}), make(chan struct{})
-	storage.InstallCoHostWrite(t, func(uuid.UUID, uuid.UUID) error {
+	storage.InstallCoHostWrite(t, func(uuid.UUID, string) error {
 		first := false
 		once.Do(func() { first = true })
 		if !first {

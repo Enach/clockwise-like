@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -25,11 +26,24 @@ func pac120Link(t *testing.T, db *sql.DB, owner uuid.UUID, n int) *SchedulingLin
 	l := pac40Link(t, db, owner, "pac120-s-"+uuid.NewString()[:8])
 	statuses := []string{"pending", "accepted", "declined"}
 	for i := 0; i < n; i++ {
-		if _, err := AddLinkHost(db, l.ID, pac120User(t, db, "co"), statuses[i%3]); err != nil {
+		var err error
+		if statuses[i%3] == "pending" {
+			// PAC-149: a pending co-host is an invitation to an address.
+			_, err = AddLinkInvitation(db, l.ID, pac120Addr("co"))
+		} else {
+			_, err = AddLinkHost(db, l.ID, pac120User(t, db, "co"), statuses[i%3])
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	return l
+}
+
+// pac120Addr is a fresh address no account carries (PAC-149: the single
+// invite takes an address).
+func pac120Addr(name string) string {
+	return "pac120-s-" + name + "-" + uuid.NewString()[:8] + "@example.com"
 }
 
 func pac120HostCount(t *testing.T, db *sql.DB, id uuid.UUID) int {
@@ -49,19 +63,24 @@ func TestPAC120_InviteCountRule(t *testing.T) {
 	owner := pac120User(t, db, "owner")
 
 	l := pac120Link(t, db, owner, 4)
-	h, created, err := InviteLinkHostCtx(ctx, db, l.ID, pac120User(t, db, "fifth"))
-	if err != nil || !created || h == nil || h.Status != "pending" {
+	fifth := pac120Addr("fifth")
+	h, created, err := InviteLinkAddressCtx(ctx, db, l.ID, fifth)
+	if err != nil || !created || h == nil || h.Status != "pending" || h.Email != fifth || h.UserID != uuid.Nil {
 		t.Fatalf("fifth: %+v %v %v", h, created, err)
 	}
-	if _, _, err := InviteLinkHostCtx(ctx, db, l.ID, pac120User(t, db, "sixth")); !errors.Is(err, ErrCoHostLimitReached) {
+	if _, _, err := InviteLinkAddressCtx(ctx, db, l.ID, pac120Addr("sixth")); !errors.Is(err, ErrCoHostLimitReached) {
 		t.Fatalf("sixth: %v, want ErrCoHostLimitReached", err)
 	}
 	if n := pac120HostCount(t, db, l.ID); n != 6 {
 		t.Fatalf("%d host rows after a refusal, want owner + 5", n)
 	}
-	// An existing co-host is returned unchanged, before the count.
-	if h2, created, err := InviteLinkHostCtx(ctx, db, l.ID, h.UserID); err != nil || created || h2.ID != h.ID {
+	// An existing invitation is returned unchanged, before the count, also in
+	// another letter case (PAC-149: compared under lower()).
+	if h2, created, err := InviteLinkAddressCtx(ctx, db, l.ID, strings.ToUpper(fifth)); err != nil || created || h2.Email != fifth || h2.Status != "pending" {
 		t.Fatalf("re-invite at 5: %+v %v %v", h2, created, err)
+	}
+	if n := pac120HostCount(t, db, l.ID); n != 6 {
+		t.Fatalf("%d host rows after a re-invitation, want owner + 5", n)
 	}
 
 	// The owner: never counted, with or without a row.
@@ -74,21 +93,27 @@ func TestPAC120_InviteCountRule(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if oh, created, err := InviteLinkHostCtx(ctx, db, l2.ID, owner); err != nil || !created || oh.UserID != owner {
-		t.Fatalf("owner without a row at 5: %+v %v %v", oh, created, err)
+	// PAC-149 (contract md §2.1 step 5.1, D-c): the owner's own address on a
+	// link with no owner row is the synthesized owner entry, nothing written
+	// (before PAC-149 a pending owner row was created).
+	ownerAddr := mustUserEmail(t, db, owner)
+	for i := 0; i < 2; i++ {
+		if oh, created, err := InviteLinkAddressCtx(ctx, db, l2.ID, strings.ToUpper(ownerAddr)); err != nil || created || oh.UserID != owner || oh.Status != "accepted" {
+			t.Fatalf("owner without a row at 5 (try %d): %+v %v %v", i, oh, created, err)
+		}
 	}
-	if oh, created, err := InviteLinkHostCtx(ctx, db, l2.ID, owner); err != nil || created || oh.UserID != owner {
-		t.Fatalf("owner with a row at 5: %+v %v %v", oh, created, err)
+	if n := pac120HostCount(t, db, l2.ID); n != 5 {
+		t.Fatalf("%d host rows after the owner's own address, want the 5 co-hosts", n)
 	}
-	if _, _, err := InviteLinkHostCtx(ctx, db, l2.ID, pac120User(t, db, "sixth")); !errors.Is(err, ErrCoHostLimitReached) {
-		t.Fatalf("sixth after the owner's row: %v", err)
+	if _, _, err := InviteLinkAddressCtx(ctx, db, l2.ID, pac120Addr("sixth")); !errors.Is(err, ErrCoHostLimitReached) {
+		t.Fatalf("sixth beside the owner: %v", err)
 	}
 
 	// A deleted link is ErrLinkGone, not the limit.
 	if _, err := DeleteSchedulingLink(db, l2.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := InviteLinkHostCtx(ctx, db, l2.ID, pac120User(t, db, "late")); !errors.Is(err, ErrLinkGone) {
+	if _, _, err := InviteLinkAddressCtx(ctx, db, l2.ID, pac120Addr("late")); !errors.Is(err, ErrLinkGone) {
 		t.Fatalf("deleted link: %v", err)
 	}
 }
@@ -125,7 +150,7 @@ func TestPAC120_InviteLocksTheLinkForNoKeyUpdate(t *testing.T) {
 		}
 		return nil
 	})
-	if _, created, err := InviteLinkHostCtx(ctx, db, l.ID, pac120User(t, db, "lock-x")); err != nil || !created {
+	if _, created, err := InviteLinkAddressCtx(ctx, db, l.ID, pac120Addr("lock-x")); err != nil || !created {
 		t.Fatalf("invite: %v %v", created, err)
 	}
 	if !fired {
@@ -135,7 +160,7 @@ func TestPAC120_InviteLocksTheLinkForNoKeyUpdate(t *testing.T) {
 	boom := errors.New("pac120: seam")
 	InstallAfterLinkInviteLock(t, func(context.Context, uuid.UUID) error { return boom })
 	before := pac120HostCount(t, db, l.ID)
-	if _, _, err := InviteLinkHostCtx(context.Background(), db, l.ID, pac120User(t, db, "lock-y")); !errors.Is(err, boom) {
+	if _, _, err := InviteLinkAddressCtx(context.Background(), db, l.ID, pac120Addr("lock-y")); !errors.Is(err, boom) {
 		t.Fatalf("seam error: %v", err)
 	}
 	if n := pac120HostCount(t, db, l.ID); n != before {

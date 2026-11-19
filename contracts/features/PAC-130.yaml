@@ -12,7 +12,7 @@
   "sourceOfTruth": "Enach/clockwise-like",
   "followUps": [
     "PAC-148 (spec F-2, O-11): the organisation member list; rule (b) narrows with it (md 2.5). Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): narrowed as stated in contracts/features/PAC-148.md.",
-    "PAC-149 (spec F-1, O-10, O-10b): scheduling-link co-host invite and co-host list."
+    "PAC-149 (spec F-1, O-10, O-10b): scheduling-link co-host invite and co-host list. Amended by PAC-149 (2026-11-19; spec docs/specs/PAC-149.md; contract contracts/features/PAC-149.md): closed: both oracles removed."
   ],
   "scope": "Manager mode stops revealing whether an address has a Paceday account. The add, the patch and schedule materialisation, and detection perform no account lookup and store no link; member_user_id is always null and deprecated. is_paceday_user means 'visible on Paceday' to the caller: an account carrying the address (any standing, case-insensitive) that is a Paceday member of a team the caller is a Paceday member of, or that the organisation member list returns to the caller. Figures by three branches decided once per entry per request: Paceday figures (visible, known account, PAC-60 owner, consent), no read (visible but not entitled), estimate (not visible: free/busy through the caller's credential, exactly as for an address with no account). The analytics cache serves a row only on the branch that computed it. A failed visibility read is the 500. Migration 042 erases stored links outside the rule. Web: badge only from the flag, neutral note, the demo guesses nothing. Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): 'returns to the caller' now means the accounts that belong to the caller's organisation under PAC-148's membership rule (domain-confirmed, address's domain not on the consumer list, organisation of the address's domain); rule (b) narrows with the list; the text before this note is kept as written.",
   "interfaceKind": "HTTP: no operation, status or schema shape changes; descriptions on 8 operations and 5 schemas, deprecated on one property (md 1). Non-HTTP and binding: the visibility statement and branch order (md 2), writes (md 3), migration 042 and runbook text (md 4), web texts (md 5), test seams (md 6).",
@@ -177,7 +177,7 @@
     "OQ-2: default (i), D-3: an estimate for every address not visible."
   ],
   "doesNotResolve": [
-    "O-10, O-10b co-host oracles (PAC-149).",
+    "O-10, O-10b co-host oracles (PAC-149). Amended by PAC-149 (2026-11-19; spec docs/specs/PAC-149.md; contract contracts/features/PAC-149.md): resolved there.",
     "O-11 organisation member list (PAC-148); rule (b) carries its exposure until then. Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): O-11 is resolved by PAC-148; (b) no longer carries a consumer-domain exposure.",
     "PAC-71 D12 emptiness rule (D-12).",
     "Removal of member_user_id (a later ticket, no earlier than the release after PAC-130's).",

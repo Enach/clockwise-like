@@ -176,19 +176,20 @@ func TestPAC71_AC41_EmptyLegacyAccountBindsAndEndsOldSessions(t *testing.T) {
 // pac71Kinds are the non-empty variants of rule (b) (AC-41 second bullet and
 // AC-45), each a statement on account $1 (and $2, another account B).
 var pac71Kinds = map[string]string{
-	"slack":                         `INSERT INTO workspace_connections (user_id, provider, access_token) VALUES ($1, 'slack', 'x')`,
-	"notion":                        `INSERT INTO workspace_connections (user_id, provider, access_token) VALUES ($1, 'notion', 'x')`,
-	"ai key":                        `INSERT INTO settings (user_id, llm_api_key_openai) VALUES ($1, 'sk-x')`,
-	"zoom":                          `INSERT INTO settings (user_id, zoom_tokens) VALUES ($1, '{"access_token":"z"}')`,
-	"google credential":             `INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES ($1, 'a', 'r', NOW(), 'primary')`,
-	"microsoft credential":          `INSERT INTO settings (user_id, microsoft_tokens) VALUES ($1, '{"access_token":"m"}')`,
-	"personal calendar":             `INSERT INTO personal_calendars (user_id, provider, name, url) VALUES ($1, 'ics', 'p', 'https://p.test/x.ics')`,
-	"credential loss":               `INSERT INTO credential_losses (user_id, provider) VALUES ($1, 'google')`,
-	"team member of B's team":       `WITH t AS (INSERT INTO teams (name, created_by) VALUES ('B team', $2) RETURNING id) INSERT INTO team_members (team_id, user_id, role) SELECT id, $1, 'member' FROM t`,
-	"team created":                  `INSERT INTO teams (name, created_by) VALUES ('A team', $1)`,
-	"team invite sent":              `WITH t AS (INSERT INTO teams (name, created_by) VALUES ('B team', $2) RETURNING id) INSERT INTO team_invites (team_id, invitee_email, invited_by, token, expires_at) SELECT id, 'z@x.test', $1, md5(random()::text), NOW() + interval '1 day' FROM t`,
-	"co-host accepted":              `WITH l AS (INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($2, md5(random()::text), 'L') RETURNING id) INSERT INTO scheduling_link_hosts (link_id, user_id, status) SELECT id, $1, 'accepted' FROM l`,
-	"co-host pending":               `WITH l AS (INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($2, md5(random()::text), 'L') RETURNING id) INSERT INTO scheduling_link_hosts (link_id, user_id, status) SELECT id, $1, 'pending' FROM l`,
+	"slack":                   `INSERT INTO workspace_connections (user_id, provider, access_token) VALUES ($1, 'slack', 'x')`,
+	"notion":                  `INSERT INTO workspace_connections (user_id, provider, access_token) VALUES ($1, 'notion', 'x')`,
+	"ai key":                  `INSERT INTO settings (user_id, llm_api_key_openai) VALUES ($1, 'sk-x')`,
+	"zoom":                    `INSERT INTO settings (user_id, zoom_tokens) VALUES ($1, '{"access_token":"z"}')`,
+	"google credential":       `INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES ($1, 'a', 'r', NOW(), 'primary')`,
+	"microsoft credential":    `INSERT INTO settings (user_id, microsoft_tokens) VALUES ($1, '{"access_token":"m"}')`,
+	"personal calendar":       `INSERT INTO personal_calendars (user_id, provider, name, url) VALUES ($1, 'ics', 'p', 'https://p.test/x.ics')`,
+	"credential loss":         `INSERT INTO credential_losses (user_id, provider) VALUES ($1, 'google')`,
+	"team member of B's team": `WITH t AS (INSERT INTO teams (name, created_by) VALUES ('B team', $2) RETURNING id) INSERT INTO team_members (team_id, user_id, role) SELECT id, $1, 'member' FROM t`,
+	"team created":            `INSERT INTO teams (name, created_by) VALUES ('A team', $1)`,
+	"team invite sent":        `WITH t AS (INSERT INTO teams (name, created_by) VALUES ('B team', $2) RETURNING id) INSERT INTO team_invites (team_id, invitee_email, invited_by, token, expires_at) SELECT id, 'z@x.test', $1, md5(random()::text), NOW() + interval '1 day' FROM t`,
+	"co-host accepted":        `WITH l AS (INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($2, md5(random()::text), 'L') RETURNING id) INSERT INTO scheduling_link_hosts (link_id, user_id, status) SELECT id, $1, 'accepted' FROM l`,
+	// "co-host pending" left this list with PAC-149 (spec D-9): a pending
+	// invitation points at no account; TestPAC149_AC9_LegacyWithInvitationBinds.
 	"co-host declined":              `WITH l AS (INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($2, md5(random()::text), 'L') RETURNING id) INSERT INTO scheduling_link_hosts (link_id, user_id, status) SELECT id, $1, 'declined' FROM l`,
 	"owned link":                    `INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($1, md5(random()::text), 'L')`,
 	"manager profile":               `INSERT INTO user_profiles (user_id, is_manager) VALUES ($1, true)`,
@@ -323,5 +324,31 @@ func TestPAC71_AC19_OneRefusalStateForEveryCause(t *testing.T) {
 	}
 	if len(locs) != 3 {
 		t.Fatal(fmt.Sprint(locs))
+	}
+}
+
+// PAC-149 AC-9 (spec D-9), the sign-in half: an unbound legacy account whose
+// only data is another owner's pending invitation to its address is empty
+// under rule (b), binds on authoritative evidence, and then sees the
+// invitation (it is now the address's single domain-confirmed holder).
+func TestPAC149_AC9_LegacyWithInvitationBinds(t *testing.T) {
+	d := pac71Domain()
+	addr := "henry@" + d
+	a := pac71Legacy(t, addr, "google", "")
+	b := createConfirmedUser(t, "b-"+uuid.NewString()[:8]+"@x.test")
+	link := createSchedulingLinkRecord(t, b, "pac149-ac9-"+uuid.NewString()[:8], "PAC-149 AC-9")
+	if _, err := storage.AddLinkInvitation(openTestDB(t), link.ID, strings.ToUpper(addr[:1])+addr[1:]); err != nil {
+		t.Fatal(err)
+	}
+	if invites, err := storage.GetPendingInvitesForUser(openTestDB(t), a); err != nil || len(invites) != 0 {
+		t.Fatalf("before binding: %v %v, want nothing listed", invites, err)
+	}
+	uid, _ := sessionOf(t, pac71Google(t, googleProfile(pac71GoogleID(), addr, true, d)))
+	if uid != a {
+		t.Fatalf("sign-in reached %s, want the legacy account %s (rule (b) refused it)", uid, a)
+	}
+	invites, err := storage.GetPendingInvitesForUser(openTestDB(t), a)
+	if err != nil || len(invites) != 1 || invites[0].LinkID != link.ID {
+		t.Fatalf("after binding: %+v %v, want the invitation", invites, err)
 	}
 }

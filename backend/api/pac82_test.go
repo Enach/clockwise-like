@@ -782,7 +782,7 @@ func TestPAC82_SoakNeverDeadlocksNorDoubleBooks(t *testing.T) {
 	five := 5
 	l3 := e.link(a, "recurring", &five, []int{30}, true)
 	l4 := e.link(c, "reusable", nil, []int{30}, true)
-	if _, err := storage.AddLinkHost(e.db, l4.ID, a, "pending"); err != nil {
+	if _, err := pac149AddPending(e.db, l4.ID, a); err != nil {
 		t.Fatal(err)
 	}
 	doomed := e.link(c, "reusable", nil, []int{30}, true)
