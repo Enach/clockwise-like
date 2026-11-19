@@ -1,7 +1,7 @@
 # Spec — PAC-53: the activity-log endpoint silently accepts a `limit` it cannot read
 
 - **Linear**: https://linear.app/paceday/issue/PAC-53/audithandler-discards-strconvatois-error-so-two-servers-in-this-repo
-- **Status**: draft
+- **Status**: revision 1 — answers the 2026-11-19 challenge of `47c6ec7` (REQUEST_CHANGES: B-1, B-2 blocking; 7 non-blocking). Challenge record and responses at the end.
 - **Author**: spec-author
 - **Track**: full process (contract change: a new error response on `listAuditEntries`)
 - **Decision taken**: the ticket's option 1 ("validate in the hand-written handler, declare the 400 in the contract in the same change"), with the JSON error encoding. Option 2 (leave it) is rejected in §9.
@@ -10,6 +10,7 @@
   - `contracts/openapi/paths/calendar.yaml`: no `x-uncertain` on `listAuditEntries` (the operation spans `calendar.yaml:959-1334`; `grep -n x-uncertain` hits only `:1516` and `:2179`, both elsewhere and both already resolved).
   - `contracts/openapi/MIGRATION.md:82` — the operation's `notes` cell states the precondition this ticket discharges; it must be rewritten in the same change (§3.4).
   - PAC-23 rejected alternative J and challenge findings R3-F1/R3-F3 (`contracts/features/PAC-23.md`), which named this ticket as the owner of the decision.
+  - The operation description's "WHICH SERVER ANSWERS THIS" paragraph (`calendar.yaml:1133-1153`) is stale: it says no generated server code is mounted and cites `routes.go:180`. Both are false today (§2.3, challenge B-1); the contract change corrects it (§3.4).
 - **Verified against**: `clockwise-like` `origin/main` at `f074b4d`; `smart-calendar-flow` `origin/main` at `36bdb0e`, read with `git show` / `git grep`, no checkout. **No code was run** for this spec: every behaviour claim below is from reading source, and the two "established by execution" claims are quoted from the ticket and the PAC-23 challenge, not re-run here.
 
 ## 1. Problem
@@ -92,9 +93,26 @@ contract's own analysis (`calendar.yaml:1219-1254`, executed during PAC-23 R3):
 empty/bare, non-integer, int64-overflowing and multiply-supplied decodable values
 → 400; `0`, negatives and `> 500` reach the handler (the binder does not enforce
 `minimum`/`maximum`); undecodable pairs are dropped before the binder sees them,
-so `?limit=%zz&limit=10` resolves to 10 on both servers. Nothing imports
-`backend/api/gen` from mounted code (`calendar.yaml:1144-1148` gives the
-falsifying grep).
+so `?limit=%zz&limit=10` resolves to 10 on both servers. The wrapper binds
+`limit` **before** running `HandlerMiddlewares` (`paceday.gen.go:9450-9462`).
+
+**The generated server is mounted for other operations; only this one is not.**
+(Corrected in revision 1, challenge B-1. Revision 0 repeated the contract's claim
+that nothing imports `backend/api/gen`.) The contract's own falsifying grep,
+`grep -rn "HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen" --include=*.go backend/ | grep -v "^backend/api/gen/"`,
+returns 40 lines at `f074b4d` (re-run for revision 1): the strict server has been
+in use since PAC-67 (`5bfa9fd`), e.g. `handlers_credentials.go:64-74`
+(`strictOptions`, `newGeneratedHandler`), `handlers_org_ai.go:75`,
+`handlers_pac71_auth.go:455`, `readiness.go:87`, and `handlers_sso_stepup.go:321-333`.
+The repo's migration pattern is **not** `ServerInterfaceWrapper`: a chi-mounted
+handwritten function parses its own parameters (refusing bad ones with
+`writeError`), fills the generated `…Params` struct, and calls
+`gen.NewStrictHandlerWithOptions(...).<Operation>(w, r, params)` — see
+`getStepupOptions` at `handlers_sso_stepup.go:321-333`. Under that pattern the
+generated binder never runs, so parameter-parsing behaviour is whatever the
+hand-parsing code does. `listAuditEntries` itself is still served only by
+`auditHandler`, registered at `backend/api/routes.go:216` (the contract says
+`:180`).
 
 ### 2.4 The web caller (`smart-calendar-flow` @ `36bdb0e`)
 
@@ -176,7 +194,7 @@ parameter and the accepted range, and no entries.
 | C-6 | integer from 1 to 500 inclusive | at most that many entries |
 | C-7 | integer > 500, whether or not it fits in 64 bits (`501`, `10000`, `99999999999999999999`) | **refused** (see OQ-1 for the alternative) |
 | C-8 | the count supplied more than once, even with identical values (`limit=10&limit=10`) | **refused** |
-| C-9 | the query string contains any pair that cannot be percent-decoded, or uses `;` as a separator — whatever that pair's name — (`%zz`, `limit=%zz&limit=10`, `x=%zz&limit=10`, `limit=10;x=1`) | **refused** |
+| C-9 | the query string contains an unencoded `;` anywhere (as a separator or inside a value), or any `%` sequence that does not decode — whatever the pair's name — (`%zz`, `limit=%zz&limit=10`, `x=%zz&limit=10`, `limit=10;x=1`, `x=a;b&limit=10`) | **refused** |
 | C-10 | other parameters, including a differently-cased `LIMIT` | ignored, as today |
 
 Precedence: an unauthenticated request is refused as unauthenticated (unchanged)
@@ -187,21 +205,36 @@ Why C-9 refuses the whole query rather than just ignoring the bad pair: the serv
 cannot tell whether an undecodable pair was the count (`%6Cimit` is `limit`; a
 broken encoder produces `limit=%zz`), so ignoring it is exactly the silent
 substitution this ticket removes. It is scoped to this operation; other endpoints
-keep today's behaviour (§5).
+keep today's behaviour (§5). Refusing the whole request costs no real caller
+anything: such a query can only come from a hand-built URL. The web builds this
+request with `new URL` and `searchParams.set` (`client.ts:600-614`) and never copies
+the page's own query into it, nginx passes the query through unchanged, and MCP does
+not call this operation (§2.4-§2.5).
 
 ### 3.3 Agreement with the generated server
 
-After this change, for every row of §3.2, the hand-written server and a correctly
-configured generated server give the same status. The generated binder already
-refuses C-2, C-3, C-7-overflow and C-8; the handler logic (which the generated
-server would also run) refuses C-5, C-7-in-range and C-9. Two residual differences
-are recorded in the contract, not left implicit:
+The rule in §3.2 belongs to the operation, not to one implementation. It must hold
+for each of the three ways this operation can be served:
 
-- the generated wrapper's **default** error handler writes text/plain, not the JSON
-  body; adopting the wrapper must install a JSON error handler (or the contract
-  change at that time must say otherwise);
-- C-9 is not visible to the binder (undecodable pairs are dropped before it), so a
-  generated-server implementation must make that check itself.
+1. **Today's hand-written handler.**
+2. **The repo's actual migration pattern** (§2.3): hand-parsed parameters passed to
+   the generated strict handler. Here the hand-parsing code is the whole of the
+   validation, so it must carry **every** C-row, C-1 through C-10, with the same
+   status, body and precedence. A migration that hand-parses `limit` more loosely
+   reintroduces this ticket.
+3. **The generated `ServerInterfaceWrapper`**, if anyone adopts it. Its binder
+   already refuses C-2, C-3, C-7-overflow and C-8; the handler behind it must refuse
+   C-5, C-7-in-range and C-9. Three residual differences are recorded in the
+   contract, not left implicit:
+   - its **default** error handler writes text/plain, not the JSON body; adopting
+     the wrapper must install a JSON error handler;
+   - C-9 is not visible to the binder (undecodable pairs are dropped before it), so
+     the handler behind it must check the raw query itself;
+   - it binds `limit` **before** `HandlerMiddlewares` (`paceday.gen.go:9450-9462`),
+     so if authentication were a wrapper middleware an unauthenticated `?limit=abc`
+     would get 400, not 401. "Correctly configured" therefore includes
+     authentication running before binding (as `requireAuth` on the chi group does
+     today).
 
 ### 3.4 Contract
 
@@ -212,21 +245,38 @@ rewrites the operation's `notes` cell in the migration register so that moving t
 row is no longer described as a contract change for this reason. `minimum`,
 `maximum` and `default` keep their values.
 
+The same change corrects the operation description's "WHICH SERVER ANSWERS THIS"
+paragraph (§2.3, challenge B-1): it must stop saying that no generated server code
+is mounted, scope its falsifying grep to **this operation** (for example, that
+nothing outside `backend/api/gen/` references `ListAuditEntries`), cite the real
+registration line (`routes.go:216` at `f074b4d`, or by command), and name the
+repo's actual migration pattern (§3.3 item 2) as the one a migrating author will
+follow.
+
+The same change also records PAC-23's superseded behaviour (decision D-5): a one-line
+pointer at `docs/specs/PAC-23.md:419` (AC-11) to this spec, and a supersession note
+on the `declaredResponses` entry of `contracts/features/PAC-23.yaml:91` ("NO 400 …
+UPHELD"), which this change makes false.
+
 ## 4. Acceptance criteria
 
-Each is falsifiable today: every "refused" criterion currently returns 200.
+The refusal criteria (AC-3 to AC-6, AC-8, AC-10, AC-12) fail today: each "refused"
+request currently returns 200, and the contract paragraph AC-12 checks is currently
+false. AC-1, AC-2, AC-7, AC-9 and AC-11 pass today and are **regression guards**:
+they pin behaviour this change must keep (AC-1, AC-2, AC-7, AC-9) or the binder
+agreement it relies on (AC-11).
 
 AC-1. Given an authenticated user with 120 entries, when they request the log with no count, then they receive 200 and exactly 50 entries.  [unit]
 
 AC-2. Given that user, when they request with a count of 1, 10 and 500 (in turn), then they receive 200 and at most 1, 10, and 120 entries respectively; and a count written `%2B10` or `010` returns 10 entries.  [unit]
 
-AC-3. Given an authenticated user, when they request with each of: an empty count, a bare count, `abc`, `50.5`, `1e2`, `0x10`, `1_0`, a raw `+50`, `%2050`, `50%20`, then each response is 400 with a JSON body matching the API's error shape whose message names the parameter, and the body contains no entries.  [unit]
+AC-3. Given an authenticated user, when they request with each of: an empty count, a bare count, `abc`, `50.5`, `1e2`, `0x10`, `1_0`, a raw `+50`, `%2050`, `50%20`, then each response is 400 with a JSON body matching the API's error shape whose message names the parameter, and the body contains no entries. Every refusal in AC-3 to AC-6 carries the **same fixed message**, and no refusal body contains the submitted text: in particular the bodies for `abc` and `99999999999999999999` do not contain those strings.  [unit]
 
-AC-4. Given an authenticated user, when they request with a count of `0`, `-0`, `-5`, `501`, `10000`, `9223372036854775807` and `99999999999999999999`, then each response is 400 with the JSON error body.  [unit]
+AC-4. Given an authenticated user, when they request with a count of `0`, `-0`, `-5`, `501`, `10000`, `9223372036854775807`, `99999999999999999999` and `-9223372036854775809` (negative overflow), then each response is 400 with the JSON error body.  [unit]
 
 AC-5. Given an authenticated user, when the count is supplied twice (`10&limit=500`, and `10&limit=10`), then the response is 400 with the JSON error body.  [unit]
 
-AC-6. Given an authenticated user, when the query string is `limit=%zz`, `limit=%zz&limit=10`, `x=%zz&limit=10`, or `limit=10;x=1`, then the response is 400 with the JSON error body — in particular `limit=%zz&limit=10` no longer returns 10 entries.  [unit]
+AC-6. Given an authenticated user, when the query string is `limit=%zz`, `limit=%zz&limit=10`, `x=%zz&limit=10`, or `limit=10;x=1`, then the response is 400 with the JSON error body — in particular `limit=%zz&limit=10` no longer returns 10 entries. `x=a;b&limit=10` is refused too.  [unit]
 
 AC-7. Given an unauthenticated request carrying an invalid count (`abc`), when it is sent through the real router, then the response is the existing unauthenticated refusal, not 400.  [unit]
 
@@ -237,6 +287,8 @@ AC-9. Given the full stack and the shipped web client, when a user opens the act
 AC-10. Given the full stack, when an authenticated API caller requests `?limit=10000` and `?limit=abc`, then each returns 400 with a JSON body (replaces PAC-23's e2e expectation that 10000 returns 500 entries).  [e2e]
 
 AC-11. Given the generated server wrapper for this operation (built from the new bundle, not mounted), when it is driven with one request from each of C-2, C-3, C-7-overflow and C-8, then it returns 400 — i.e. the binder still agrees with the declared contract on the cases it can see. (Pins §3.3 so a codegen bump that relaxes the binder is noticed.)  [unit]
+
+AC-12. Given the contract change is merged, when the contract's own falsifying command for "which server answers this operation" is run, then its output matches what the paragraph says: no mounted code serves `listAuditEntries` other than the hand-written handler at the cited registration line. Today the paragraph's command returns 40 lines while the paragraph says it returns nothing.  [contract]
 
 ## 5. Explicitly out of scope
 
@@ -255,8 +307,9 @@ AC-11. Given the generated server wrapper for this operation (built from the new
 - **The storage-layer clamp.** Whether the storage function keeps its own
   defensive defaulting is the plan's business; it must not become reachable with a
   value the handler would have refused.
-- **Web changes.** None required (§2.4). Hardening `getAudit` against a
-  non-integer argument is optional and not a gate for this ticket.
+- **Web behaviour changes.** None required (§2.4). Hardening `getAudit` against a
+  non-integer argument is optional and not a gate for this ticket. **A web PR is
+  still required** (challenge B-2): see §7.
 
 ## 6. What must not change
 
@@ -275,33 +328,46 @@ AC-11. Given the generated server wrapper for this operation (built from the new
 `handlers_audit_test.go:106` (invalid queries in the cross-user loop must expect
 400 and still assert no foreign text), `:179` (`""` stays 50; the other five move
 to 400 assertions), `:191-200` `_OverMaximumLimitCaps` (becomes a 400 test, under
-OQ-1's default), and `e2e/tests/audit.spec.ts:58` (drop 10000 from the 200 loop)
+D-5), and `e2e/tests/audit.spec.ts:58` (drop 10000 from the 200 loop)
 and `:116-125` (AC-10 above). **This supersedes PAC-23 AC-11** ("asks for more than
-the maximum → receives at most the maximum") under OQ-1's default; the PAC-23 spec
-should get a one-line pointer to PAC-53.
+the maximum → receives at most the maximum") (decision D-5); the pointers
+in PAC-23.md and PAC-23.yaml are part of the contract change (§3.4).
 
 ## 7. Rollback
 
-No migration, no data. Reverting the backend change restores today's silent
-resolution; the reverted contract goes back to the PAC-23 text. Order: backend and
-contract merge together (one PR in `clockwise-like`); the web needs no change, so
-there is no cross-repo ordering and no old-web compatibility window — every request
-the shipped web sends is a C-6 request, valid before and after. The web's
-regenerated types gain a 400 response variant; that is additive and does not need
-to ship before or after the backend.
+No migration, no data.
+
+**Two PRs, paired (corrected in revision 1, challenge B-2).** `smart-calendar-flow`
+commits generated files that embed this operation's description and responses
+(`src/api/generated/types.ts:820-851` and `:8862` onwards;
+`src/api/generated/schemas.types.d.ts:4586` onwards). `make openapi-check` runs the
+cross-repo `openapi-check-web` half on every PR (`Makefile:112-123`), and
+`release.yml` refuses to publish a mismatched pair once the grace period is over
+(factory README §3). So the change is:
+
+1. `clockwise-like`, branch `factory/pac-53`: contract, regenerated bundle and Go
+   code, backend change, tests.
+2. `smart-calendar-flow`, branch `factory/pac-53`: **only** the regenerated files
+   under `src/api/generated/`, with no hand-written change.
+
+Merge order is the factory's usual one (README §1): the api PR first, then the web
+PR within the pair-mismatch grace period (60 minutes).
+
+There is no old-web compatibility window. Every request the shipped web sends is a
+C-6 request, valid before and after, and the regenerated types only add a 400
+response variant and change prose.
+
+Rollback: revert both PRs, api first, then web, so the pair matches again within the
+grace period. Reverting the backend change restores today's silent resolution; the
+reverted contract goes back to the PAC-23 text.
 
 ## 8. Open questions
 
-**OQ-1 — integers above the maximum: refuse (spec default) or keep capping to 500?**
-Owner: product owner (Nicolas). PAC-23 AC-11 made "above the maximum → the maximum"
-an accepted requirement and e2e pins it; this spec overturns it.
-*Recommendation: refuse.* (a) Capping keeps a seam the binder forces anyway:
-`9223372036854775807` would cap to 500 while `9223372036854775808` must 400 — the
-kind of hidden case boundary that cost PAC-23 three revisions. (b) The only sibling
-with a declared maximum on an integer query parameter, `teams/{id}/availability`,
-refuses above it. (c) No shipped caller sends > 500. If the owner prefers capping,
-C-7 becomes "1–int64-max → at most 500; overflow → refused", AC-4 drops `501`,
-`10000`, `9223372036854775807`, and §6's PAC-23 tests stay as they are.
+**OQ-1 — owner veto on D-5 (refuse integers above the maximum).** Owner: product
+owner. Revision 1 makes refusing a decision (D-5), not a default. The owner may still
+reverse it. If they do, C-7 becomes "1 to the int64 maximum → at most 500; overflow →
+refused", AC-4 drops `501`, `10000` and `9223372036854775807`, §6's PAC-23 tests stay
+as they are, and the PAC-23 supersession notes in §3.4 shrink to the 400 itself.
 
 **OQ-2 — refuse the whole request on any undecodable pair (C-9), or only ignore it?**
 Owner: contract-author / challenger. *Recommendation: refuse* (§3.2 rationale).
@@ -332,6 +398,20 @@ not worth distinguishing to a caller).
   no user benefit; a negative then fails C-5.
 - **D-4 Repeated count refused even when the values agree (C-8)**, matching the
   binder; "which one wins" is not a question a caller should be able to ask.
+- **D-5 Integers above the maximum are refused (C-7). This supersedes PAC-23 AC-11**
+  (`docs/specs/PAC-23.md:419`) and the "NO 400 … UPHELD" `declaredResponses` of
+  `contracts/features/PAC-23.yaml:91`. Both get pointers in the contract change
+  (§3.4). Reasons:
+  - Capping keeps a seam the binder forces anyway: `9223372036854775807` would cap to
+    500 while `9223372036854775808` must get a 400. That is the kind of hidden case
+    boundary that cost PAC-23 three revisions.
+  - The only sibling with a declared maximum on an integer query parameter,
+    `teams/{id}/availability`, refuses above it.
+  - No shipped caller sends more than 500.
+  - PAC-23 AC-11's own intent ("not a smaller number chosen silently") is better
+    served by refusing than by a silent cap.
+
+  Owner veto: OQ-1.
 
 ### Follow-ups to file (not in scope)
 
@@ -341,3 +421,26 @@ not worth distinguishing to a caller).
 - **F-2** `?duration=` (empty) treated as absent in
   `handlers_teams.go:623-624` and `handlers_booking.go:248`, while the generated
   binder refuses it. Align or document.
+
+## Challenge — 2026-11-19 (of `47c6ec7`), and responses (revision 1)
+
+Verdict: **REQUEST_CHANGES**, two blocking wording fixes. The challenger ran all
+42 cases against `net/url`, `strconv` and the real generated wrapper and found every
+row of the case table correct. It also upheld the rule and all four OQ defaults.
+
+| # | Finding | Response |
+|---|---|---|
+| B-1 (blocking) | §2.3 "Nothing imports `backend/api/gen` from mounted code" is false. The contract's grep returns 40 lines: the strict server has been mounted for other operations since PAC-67 (`5bfa9fd`), and migrated operations hand-parse their params and call the strict handler (`getStepupOptions`, `handlers_sso_stepup.go:321-333`). The contract's "WHICH SERVER ANSWERS THIS" paragraph is equally stale and cites `routes.go:180` (real line: `:216`). | **Accepted.** Re-ran the grep (40 lines) and read `handlers_sso_stepup.go:318-334`. §2.3 is corrected. §3.3 now requires agreement for all three ways of serving the operation; for the repo's actual pattern (hand-parsed params plus the strict handler), the hand-parsing must carry every C-row. §3.4 requires the contract change to correct the paragraph: a grep scoped to this operation, the real registration line, and the real pattern. New AC-12 pins it. Inherited scope lists it. |
+| B-2 (blocking) | §5 "Web changes. None required" and §7 "one PR … no cross-repo ordering" are wrong: the web commits generated files embedding this operation, `openapi-check-web` runs on every PR, and `release.yml` refuses a mismatched pair. | **Accepted.** Verified `Makefile:112-123` and the web's `types.ts:820-851`, `:8862` and `schemas.types.d.ts:4586`. §7 now requires a paired `factory/pac-53` web PR containing only regenerated files, api merging first and web within the grace period, and rollback in the same order. §5 points to it. |
+| NB-1 | C-9: any unencoded `;` anywhere, including inside a value, makes `ParseQuery` error. | **Accepted.** C-9 is reworded to "an unencoded `;` anywhere, or any `%` sequence that does not decode". `x=a;b&limit=10` is added to the C-9 examples and to AC-6. |
+| NB-2 | Say that bad pairs can only come from hand-built URLs. | **Accepted.** Sentence added under §3.2, with the web, nginx and MCP evidence. |
+| NB-3 | The wrapper binds before `HandlerMiddlewares`, so wrapper-level auth would give 400, not 401. | **Accepted.** Added as the third residual difference in §3.3 item 3. "Correctly configured" now includes authentication before binding. |
+| NB-4 | Make the PAC-23 overturn a deliverable: pointers at PAC-23.md:419 and PAC-23.yaml:91, and record it as D-5. | **Accepted.** D-5 added, with AC-11's own wording cited in support. §3.4 makes both pointers part of the contract change. OQ-1 is now an owner veto on D-5 rather than a default. |
+| NB-5 | Every refusal carries the same fixed message, and the body never echoes the input. | **Accepted.** Added to AC-3, which governs AC-3 to AC-6, with `abc` and `99999999999999999999` asserted absent. |
+| NB-6 | Add `-9223372036854775809` (negative overflow) to AC-4. | **Accepted.** |
+| NB-7 | "Each is falsifiable today" only fits the refusal ACs. | **Accepted.** §4's preamble now separates the failing-today criteria from the regression guards (AC-1, AC-2, AC-7, AC-9, AC-11). |
+
+Revision 1 re-ran only the commands needed to check the challenge's evidence: the
+contract grep, reads of `calendar.yaml:1128-1153`, `handlers_sso_stepup.go:318-334`,
+`Makefile:108-124` and `PAC-23.yaml:91`, and a `git grep` of the web's generated
+files. No code or tests were run.
