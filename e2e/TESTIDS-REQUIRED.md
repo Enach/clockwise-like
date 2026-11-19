@@ -89,6 +89,12 @@ is better for users as well, and the suite would then need no ids here.
 | `manager-member-focus-<email>` | the focus-minutes figure in the row | To assert the exact seeded value (615) end to end, as the API test already does. |
 | `team-switcher` | the team popover trigger | `e2e/lib/ui.ts switchTeam()` finds it by filtering buttons whose text is a team name or "No team selected" — it cannot match on the target name, because the trigger shows the *current* team. |
 | `team-option-<teamId>` | each team button inside the popover | Same. |
+| `manager-paceday-badge` | the "On Paceday" badge inside a roster row (PAC-130) | `tests/pac130-manager-oracle.spec.ts` AC-6: the badge renders only from the server's `is_paceday_user`, so the {H} and {N} runs must both show none. Provided by smart-calendar-flow `factory/pac-130` (e22f35f). |
+| `manager-estimate-note` | the estimated-figures note in the expanded row, text exactly "Meeting time estimated from your calendar. Focus time is shown only for Paceday members of your teams who share it." (PAC-130 contract §5) | AC-6: the note is in the same state for {H} and {N}. Same web PR. |
+| `manager-degraded-banner` | the amber "Some calendar analytics are unavailable" banner (rule unchanged, contract §5) | AC-6: the banner is in the same state for {H} and {N}. Same web PR. |
+
+`<email>` in the row and focus ids is the lowercase address as the server
+sends it. PAC-130's journey relies on `manager-member-row-<email>` too.
 
 ## 4. Dashboard calendar — `src/pages/Dashboard.tsx`
 

@@ -271,17 +271,19 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	var result []memberResp
 	for _, m := range members {
 		var thisWeek, lastWeek *engine.MemberWeekStats
+		isPacedayUser := false
 		if m.Source != "added" { // PAC-129: no calendar read, nothing stored
-			// PAC-122 SF-040: a failed read is the 500, never zeroes.
-			var err error
-			if thisWeek, err = eng.GetMemberWeek(r.Context(), userID, m, weekStart); err != nil {
+			// PAC-130 (contract md §2.2): the entry's branch, and so its
+			// is_paceday_user, is decided once, then both weeks are read on
+			// it. PAC-122 SF-040 and PAC-130 D-9: a failed read is the 500,
+			// never zeroes and never "not on Paceday".
+			res, err := eng.MemberWeeks(r.Context(), userID, m, []time.Time{weekStart, priorWeekStart})
+			if err != nil {
 				writeServerError(w, r, "getTeam: member week", err, http.StatusInternalServerError)
 				return
 			}
-			if lastWeek, err = eng.GetMemberWeek(r.Context(), userID, m, priorWeekStart); err != nil {
-				writeServerError(w, r, "getTeam: member week", err, http.StatusInternalServerError)
-				return
-			}
+			isPacedayUser = res.IsPacedayUser
+			thisWeek, lastWeek = res.Weeks[0], res.Weeks[1]
 		}
 		if thisWeek == nil {
 			thisWeek = &engine.MemberWeekStats{}
@@ -296,7 +298,7 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 			Cadence:           m.Cadence,
 			CadenceCustomDays: m.CadenceCustomDays,
 			LastOneOnOneAt:    m.LastOneOnOneAt,
-			IsPacedayUser:     m.MemberUserID != nil,
+			IsPacedayUser:     isPacedayUser,
 			ThisWeek:          thisWeek,
 			LastWeek:          lastWeek,
 			FocusTrendPct:     engine.TrendPct(thisWeek.FocusMinutes, lastWeek.FocusMinutes),
@@ -353,18 +355,9 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 		Cadence:           body.Cadence,
 		CadenceCustomDays: body.CadenceCustomDays,
 	}
-	// Resolve member_user_id if they're a Paceday user
-	// PAC-71 granting site: only the one domain-confirmed holder (any case).
-	// PAC-122 SF-010: a failed lookup is the 500, never "not a Paceday user"
-	// (which would store the member as external).
-	uid, holder, err := storage.ConfirmedHolder(h.db, email)
-	if err != nil {
-		writeServerError(w, r, "addMember: holder lookup", err, http.StatusInternalServerError)
-		return
-	}
-	if holder {
-		m.MemberUserID = &uid
-	}
+	// PAC-130 (spec D-2, contract md §3.1): the add never looks the address
+	// up to find an account and stores no account link, so its answer and
+	// its work are the same whether or not an account holds the address.
 	if teamID != nil {
 		err = storage.UpsertManagerTeamMemberForTeamCtx(r.Context(), h.db, *teamID, m)
 	} else {
@@ -385,7 +378,7 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(stored)
+	_ = json.NewEncoder(w).Encode(withoutAccountLink(stored))
 }
 
 func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
@@ -494,7 +487,7 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
+	_ = json.NewEncoder(w).Encode(withoutAccountLink(updated))
 }
 
 // ── Cadence gaps ──────────────────────────────────────────────────────────────
@@ -619,19 +612,31 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	eng := h.newEngine()
 	var result []memberAnalytics
 	numWeeks := months * 4
+	weekStarts := make([]time.Time, numWeeks)
+	for i := range weekStarts {
+		weekStarts[i] = weekStart.Add(time.Duration(-i*7) * 24 * time.Hour)
+	}
 	for _, m := range members {
 		weeks := make([]weekData, 0, numWeeks)
 		anyMeasured := false
-		for i := 0; i < numWeeks; i++ {
-			ws := weekStart.Add(time.Duration(-i*7) * 24 * time.Hour)
+		isPacedayUser := false
+		var stored []*engine.MemberWeekStats
+		if m.Source != "added" { // PAC-129: unmeasured, team_analytics_cache never written
+			// PAC-130 (contract md §2.2): one branch per entry, decided
+			// before its weeks are read. PAC-122 SF-040 and PAC-130 D-9: a
+			// failed read is the 500, never "no data" or "not on Paceday".
+			res, err := eng.MemberWeeks(r.Context(), userID, m, weekStarts)
+			if err != nil {
+				writeServerError(w, r, "getAnalytics: member week", err, http.StatusInternalServerError)
+				return
+			}
+			isPacedayUser = res.IsPacedayUser
+			stored = res.Weeks
+		}
+		for i, ws := range weekStarts {
 			var stats *engine.MemberWeekStats
-			if m.Source != "added" { // PAC-129: unmeasured, team_analytics_cache never written
-				// PAC-122 SF-040: a failed read is the 500, never "no data".
-				var err error
-				if stats, err = eng.GetMemberWeek(r.Context(), userID, m, ws); err != nil {
-					writeServerError(w, r, "getAnalytics: member week", err, http.StatusInternalServerError)
-					return
-				}
+			if i < len(stored) {
+				stats = stored[i]
 			}
 			if stats == nil {
 				stats = &engine.MemberWeekStats{}
@@ -645,12 +650,13 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 				DataAvailable:  stats.DataAvailable,
 			})
 		}
-		// is_paceday_user matches the roster's derivation; data_available is
-		// any(weeks[].data_available), so it cannot disagree with the buckets (PAC-34 D-1).
+		// is_paceday_user matches the roster's derivation (PAC-130: visible on
+		// Paceday to the caller); data_available is any(weeks[].data_available),
+		// so it cannot disagree with the buckets (PAC-34 D-1).
 		result = append(result, memberAnalytics{
 			Email:         m.MemberEmail,
 			Name:          m.DisplayName,
-			IsPacedayUser: m.MemberUserID != nil,
+			IsPacedayUser: isPacedayUser,
 			DataAvailable: anyMeasured,
 			Weeks:         weeks,
 		})
@@ -720,6 +726,9 @@ func (h *managerHandlers) listManagerMembers(userID uuid.UUID, teamID *uuid.UUID
 		if _, exists := byEmail[email]; exists {
 			continue
 		}
+		// The formal entry names its account in memory, from the team
+		// membership, never from a stored link: the engine reads it for this
+		// source only (PAC-130 contract md §2.2 step 3).
 		memberUserID := formal.UserID
 		displayName := strings.TrimSpace(formal.Name)
 		if displayName == "" {
@@ -790,13 +799,14 @@ func (h *managerHandlers) getOrCreateScopedMember(ctx context.Context, userID uu
 		if ok, herr := storage.HoldsConfirmed(h.db, formal.UserID, email); herr != nil || !ok {
 			continue
 		}
-		memberUserID := formal.UserID
+		// PAC-130 (spec D-6, contract md §3.2): the row and assignment are
+		// written with no account link; the entry check above stays.
 		displayName := strings.TrimSpace(formal.Name)
 		if displayName == "" {
 			displayName = strings.Split(email, "@")[0]
 		}
 		member = &storage.ManagerTeamMember{
-			ManagerUserID: userID, MemberEmail: strings.ToLower(email), MemberUserID: &memberUserID,
+			ManagerUserID: userID, MemberEmail: strings.ToLower(email),
 			DisplayName: displayName, Source: "manual", Cadence: "none",
 		}
 		if err := storage.UpsertManagerTeamMemberForTeamCtx(ctx, h.db, *teamID, member); err != nil {
@@ -812,6 +822,15 @@ func (h *managerHandlers) getOrCreateScopedMember(ctx context.Context, userID uu
 		return nil, err
 	}
 	return nil, sql.ErrNoRows
+}
+
+// withoutAccountLink is a stored roster row as the add and patch answer it:
+// member_user_id is always null (PAC-130 spec D-4, contract md §3.1), even
+// for a link migration 042 kept, which nothing reads or answers any more.
+func withoutAccountLink(m *storage.ManagerTeamMember) *storage.ManagerTeamMember {
+	out := *m
+	out.MemberUserID = nil
+	return &out
 }
 
 // errAddedWithoutRoster is the patch and schedule 422 for a person added to

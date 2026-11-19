@@ -421,3 +421,30 @@ func ListManagerUserIDs(db DBTX) ([]uuid.UUID, error) {
 	}
 	return ids, rows.Err()
 }
+
+// AddressVisibleTo is the Manager visibility rule (PAC-130 spec D-1, contract
+// md §2.1): whether an account carrying email (ignoring letter case, at any
+// address standing) is one viewerID can already see in Paceday, either
+//   - (a) a Paceday member (team_members, either role) of a team viewerID is
+//     a Paceday member of (people added under PAC-129 never count), or
+//   - (b) in viewerID's organisation member set, the set GET /api/org/members
+//     lists (orgMemberSetSQL, shared with GetOrgMembers).
+//
+// It is one statement of the same shape whatever the address: an account
+// outside (a) and (b) is never consulted, so for such an address the answer
+// and the work are those of an address nobody carries (AC-8). No statement
+// runs only because a carrier exists.
+func AddressVisibleTo(q Querier, viewerID uuid.UUID, email string) (bool, error) {
+	var visible bool
+	err := q.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 FROM users u
+			 WHERE lower(u.email) = lower($2)
+			   AND (EXISTS (SELECT 1 FROM team_members v
+			                  JOIN team_members m ON m.team_id = v.team_id
+			                 WHERE v.user_id = $1 AND m.user_id = u.id)
+			        OR u.id IN (`+orgMemberSetSQL("$1", "$3")+`)))`,
+		viewerID, strings.TrimSpace(email), orgMembersExcluded(viewerID),
+	).Scan(&visible)
+	return visible, err
+}

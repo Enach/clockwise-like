@@ -41,7 +41,8 @@ func (s *seam[F]) install(tb TB, f F) (uninstall func()) {
 
 // PAC-122 batch 4 (docs/factory/silent-failures.md SF-040): the manager
 // engine's storage steps. managerStep fires at each named step of
-// GetMemberWeek and of the gap check's future-occurrence count. A non-nil
+// DecideMember and MemberWeek (PAC-130) and of the gap check's
+// future-occurrence count. A non-nil
 // error replaces that step's error, so it takes the production error path:
 // after a read (the read ran; its result is treated as failed), and before
 // the cache write (nothing is written).
@@ -56,6 +57,10 @@ const (
 	StepFreeBusy          = "freebusy"
 	StepCacheWrite        = "cache-write"
 	StepFutureOccurrences = "future-occurrences"
+	// PAC-130 (contract md §6): the Manager visibility statement and the
+	// confirmed-holder lookup of DecideMember.
+	StepVisibilityRead = "visibility-read"
+	StepHolderLookup   = "holder-lookup"
 )
 
 // InstallManagerStep installs the manager-engine step seam.

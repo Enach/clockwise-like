@@ -5601,22 +5601,33 @@ paths:
       description: 'Returns exactly 12 week buckets per member (months=3 is hard-coded and numWeeks =
         months*4), ordered NEWEST FIRST: weeks[0].week_start == the resolved `week`, each subsequent entry
         is 7 days earlier. A member with no data still gets 12 buckets of zeroes with data_available=false.
-        `members` is always an array, never null. Visibility (PAC-60): a member who is a Paceday user
-        has measured minutes only when the caller owns at least one team that member belongs to; otherwise
-        every bucket is zeroes with data_available=false, whatever the route or `team_id` that put the
-        member on the caller''s list. External (non-Paceday) members are unaffected (FreeBusy). PAC-34
-        (API-022): each member also carries is_paceday_user (same derivation as the roster''s) and a member-level
-        data_available that is true iff at least one of its 12 buckets has data_available=true. A client
-        must render a bucket with data_available=false, and a member with data_available=false, as "no
-        data", never as zero minutes. Neither field widens visibility: is_paceday_user is already on the
-        roster for the same caller and members, and data_available is derived only from the buckets this
-        response already returns.
+        `members` is always an array, never null. Members are the caller''s global roster without `team_id`,
+        or the team-scoped roster with it (formal members included, as getManagerRoster). Visibility and
+        figures (PAC-130, spec §3.1-§3.4, D-1, D-3, D-5, D-7, D-10; replacing the PAC-60 paragraph that
+        stood here): each member and each of its 12 weeks follows exactly the rule and the three branches
+        stated on getManagerRoster. `is_paceday_user` is the visibility rule of ManagerRosterMember.is_paceday_user;
+        Paceday figures need visibility, a known account (the team member for "formal", the one DOMAIN-CONFIRMED
+        holder for "manual" and "auto"), ownership of a team that account is a Paceday member of (PAC-60,
+        unchanged), and consent; a visible member without all of them is "no data" with nothing read;
+        a member who is not visible is estimated from free/busy through the caller''s own credential,
+        exactly like an address no account holds, whatever account holds it. The decision is the same
+        with and without `team_id` (API-088, accepted). Before PAC-130 a Paceday user outside the caller''s
+        owned teams was all zeroes with data_available=false while an address with no account at a readable
+        domain was measured, so the answer revealed account existence (spec O-5). PAC-34 (API-022): each
+        member also carries is_paceday_user (the same value ManagerRosterMember.is_paceday_user carries
+        for this caller and address) and a member-level data_available that is true iff at least one of
+        its 12 buckets has data_available=true. A client must render a bucket with data_available=false,
+        and a member with data_available=false, as "no data", never as zero minutes. Neither field widens
+        visibility: is_paceday_user shows only what the team member list and the organisation member list
+        already show the caller, and data_available is derived only from the buckets this response already
+        returns.
 
         PAC-122 SF-040: a failed read of any member''s week (the PAC-60 ownership check, the cached figures,
         the consent or analytics read, the FreeBusy query, or the cache write) is the 500, never a bucket
-        of zeroes with data_available=false. An external member whose FreeBusy coverage is unknown (a
-        provider failure, PAC-67 D-6) is data_available=false for this answer and is not cached, so a
-        later request asks again.
+        of zeroes with data_available=false. Since PAC-130 (spec D-9, AC-13) a failed visibility read
+        or holder lookup is the 500 too, never a member shown as not visible and never an estimate, and
+        nothing is cached. A member whose FreeBusy coverage is unknown (a provider failure, PAC-67 D-6)
+        is data_available=false for this answer and is not cached, so a later request asks again.
 
         PAC-129 (spec §3.6, §3.9, AC-31): with `team_id` and `include_added=true`, the members gain every
         person added to the team who has no assignment of the caller on it and is not a formal member,
@@ -5624,7 +5635,7 @@ paths:
         such a member and no figure is stored (team_analytics_cache is never written for them). Owners
         see an added person''s availability figures through getFormalTeamAnalytics instead. Without the
         flag the answer is exactly today''s. A roster entry the manager created explicitly (add, or detection
-        confirm) keeps today''s stored figures.
+        confirm) is measured by the PAC-130 rule above, like any other roster entry.
 
         '
       parameters:
@@ -5668,10 +5679,14 @@ paths:
         team. `assigned` is hard-coded to 0: this endpoint never creates a manager_team_member_assignments
         row for any team. `team_id` is REQUIRED here and the caller must be the team OWNER.
 
-        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the roster import
-        (DetectTeam) resolves each detected address to an account (`member_user_id`) only when exactly
-        one account holds it DOMAIN-CONFIRMED (case-insensitive); otherwise the identity row is written
-        with `member_user_id` null, as for a non-Paceday address.
+        PAC-130 (spec D-2, D-6, AC-7, AC-18; contract PAC-130 §3.5): detection, here and in the weekly
+        job and the background run of setManagerProfile, performs NO account lookup. Every identity row
+        it writes or refreshes is written with `member_user_id` null; a link kept by migration 042 is
+        left as it is (never written, refreshed or erased). The preview''s entries depend only on the
+        manager''s calendar and roster, never on whether an account holds an address. Before PAC-130 (PAC-71
+        rule) the import resolved each detected address to its one DOMAIN-CONFIRMED holder and stored
+        that link, which the roster and analytics then surfaced (PAC-130 O-7); a failed lookup was the
+        error (PAC-122 SF-010), a step that no longer exists.
 
         '
       parameters:
@@ -5722,7 +5737,8 @@ paths:
         rows from detection. Runs in a single transaction (storage.ConfirmManagerTeamMembers) and is idempotent:
         a second confirm of the same email counts as skipped, not assigned. Emails are lowercased/trimmed
         by the handler before storage sees them. The request decoder uses DisallowUnknownFields, so any
-        field other than `emails` yields 400 "invalid JSON".
+        field other than `emails` yields 400 "invalid JSON". PAC-130: the counts depend only on roster
+        rows and assignments; confirming reads and writes no account link.
 
         '
       parameters:
@@ -5831,8 +5847,9 @@ paths:
       summary: Set the caller's is_manager flag; may trigger background detection.
       description: 'When `is_manager` is true and the profile has no `detected_at` yet, the handler spawns
         a background goroutine running DetectTeam with a 30s timeout. That background run persists detected
-        members into the GLOBAL manager_team_members table only; it never creates team assignments. The
-        response is written before the goroutine completes. A failed profile write is the 500 (PAC-122
+        members into the GLOBAL manager_team_members table only; it never creates team assignments, and
+        since PAC-130 it looks up no account and stores no `member_user_id` (see previewManagerDetection).
+        The response is written before the goroutine completes. A failed profile write is the 500 (PAC-122
         SF-009): the 200 echoes only a stored value.
 
         '
@@ -5889,6 +5906,39 @@ paths:
         a client built before PAC-129 (whose strict schema knows only auto, manual and formal) never receives
         source="added".
 
+        PAC-130 (spec §3.1-§3.4, D-1, D-3, D-5, D-7, D-9, D-10; contract PAC-130 §2): an entry''s `is_paceday_user`
+        and its week figures are decided at READ time from the caller''s current teams and organisation.
+        They never depend on a stored `member_user_id`, and no address is looked up outside those teams
+        and that organisation. `is_paceday_user` is the visibility rule stated on ManagerRosterMember.is_paceday_user.
+        Every entry other than source "added" takes exactly one of three branches, decided once per entry
+        per request before any of its weeks is read, so the flag and every week of the entry agree: (1)
+        PACEDAY FIGURES: the entry is visible, its account is known, the caller OWNS a team that account
+        is a Paceday member of (PAC-60), and that account shares analytics with its manager. The account
+        is known through team membership for source "formal" (the team member itself, at any address standing,
+        as before PAC-130). For source "manual" or "auto" it is the one account holding the address DOMAIN-CONFIRMED,
+        ignoring letter case (PAC-71 granting site); that lookup runs only once the address is visible.
+        The figures are that account''s stored weekly analytics; a week with no stored row has data_available
+        false. (2) NO READ: visible, but a condition of (1) fails (the caller is a co-member or same-organisation
+        only, there is no single domain-confirmed holder for a manual or auto entry, or consent is withheld).
+        The entry has is_paceday_user true and zero-valued weeks with data_available false. No week figure
+        is read, no free/busy request is made, the analytics cache is neither read nor written. (3) ESTIMATE:
+        not visible. The entry has is_paceday_user false and is measured exactly as an address no account
+        holds: free/busy read through the CALLER''s own calendar credential, focus_minutes 0, meeting_minutes
+        the busy minutes, free_minutes 2400 minus busy floored at 0; unknown coverage is data_available
+        false and is not cached. No Paceday-held data of any account is read. The analytics cache (4 h,
+        keyed by caller, address and week) serves a row only on the branch that computed it: (1) only
+        a row stored with Paceday figures, (3) only a row stored as an estimate, (2) never. The branch,
+        consent included, is decided before the cache is consulted. So a person who leaves the caller''s
+        last shared team gets the estimate on the next read; a cached estimate is not served once the
+        person becomes visible; figures cached before PAC-130 for a caller who now sees the address as
+        not visible are never served. For an address that is not visible, the server does the same work
+        whether or not an account holds it: one visibility statement of the same shape, then branch (3)
+        (spec AC-8). A failed visibility read, holder lookup, ownership check or consent read is the 500
+        `{"error":"internal error"}`; it is never an entry shown as not visible and never an estimate,
+        and nothing is cached (spec D-9, SF-010''s rule carried forward). Before PAC-130, `is_paceday_user`
+        was `member_user_id` set, a link stored by an address lookup on add and detection, so this answer
+        revealed whether any address had a Paceday account (spec O-4).
+
         '
       parameters:
       - $ref: '#/components/parameters/RequiredTeamIdQuery'
@@ -5936,18 +5986,22 @@ paths:
         and the caller must be the team OWNER. Adding a member never creates a team_invites row (asserted
         by TestManagerTeam_AddMemberCreatesOnlySelectedTeamAssignment).
 
-        PAC-129 (spec §3.9, D-13, AC-31): unchanged. This explicit manager action creates a roster entry
-        with today''s behaviour even when the address is also a person added to the team without Paceday
-        access; that person stays an added person of the team (team membership and the manager''s roster
-        are separate). It never adds anyone to the team.
+        PAC-129 (spec §3.9, D-13, AC-31): this explicit manager action creates a roster entry even when
+        the address is also a person added to the team without Paceday access; that person stays an added
+        person of the team (team membership and the manager''s roster are separate). It never adds anyone
+        to the team. Since PAC-130 the entry follows the PAC-130 rule of getManagerRoster: no `is_paceday_user`
+        unless the address is visible to the caller, and no stored link.
 
-        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): `member_user_id`
-        is resolved to an account only when exactly one account holds `email` DOMAIN-CONFIRMED (compared
-        case-insensitively; before PAC-71 an exact-case match on any account). An address that is carried
-        only unconfirmed, by several accounts (a letter-case collision), or by none resolves to nobody:
-        the roster row is stored with `member_user_id` null, as for a non-Paceday address today. A failed
-        holder lookup is the 500 and nothing is stored (PAC-122 SF-010); before PAC-122 it was read as
-        "nobody", storing the member as external.
+        PAC-130 (spec §3.2, D-2, D-4, D-11, AC-1, AC-2, AC-3, AC-16): the add performs NO account lookup.
+        Whether, how many and at what standing accounts carry `email` changes nothing in the answer, the
+        status, the stored row or the work done: the 201 for an address held by an account and for one
+        held by nobody are equal byte for byte once the address, `id`, `created_at` and `updated_at` are
+        replaced. The row is stored with `member_user_id` null; an existing row''s link kept by migration
+        042 is left as it is and is never returned. With and without `team_id` alike; the form without
+        `team_id` is the caller''s own global roster (API-088, accepted). Before PAC-130 (PAC-71 rule)
+        the add stored and returned the id of the address''s one DOMAIN-CONFIRMED holder, which revealed
+        whether any address had a Paceday account, and its id (spec O-1, O-2); a failed lookup was the
+        500 (PAC-122 SF-010), a step that no longer exists.
 
         '
       parameters:
@@ -5969,7 +6023,8 @@ paths:
             as patchManagerTeamMember returns it. `id`, `created_at` and `updated_at` are the stored values.
             Before PAC-26 the body was the pre-insert struct in PascalCase with the zero UUID and "0001-01-01T00:00:00Z"
             timestamps. If the read-back fails the response is the 500 below, although the upsert has
-            committed; the upsert is idempotent, so a retry is safe.
+            committed; the upsert is idempotent, so a retry is safe. `member_user_id` is always null since
+            PAC-130 (deprecated; see the schema).
 
             '
           content:
@@ -6076,6 +6131,12 @@ paths:
         `{email}` DOMAIN-CONFIRMED (case-insensitive); a formal member whose address is unconfirmed is
         not matched, and the answer is the one for an address with no roster entry.
 
+        PAC-130 (spec §3.5, D-4, D-6, AC-5, AC-18): the materialised roster row is written with `member_user_id`
+        null (before PAC-130 it stored the formal member''s account), behind the same DOMAIN-CONFIRMED
+        entry check. No patch writes, refreshes or erases a link; a link kept by migration 042 is left
+        as it is. The 200 never carries a link, and for an address that is not visible to the caller it
+        is the same whether or not an account holds the address (spec O-3).
+
         PAC-129 (spec §3.9, D-13, AC-31): with `team_id`, an address that has no assignment of the caller
         on this team, is not matched to a formal member, and is a person ADDED to this team is refused
         with the 422 "this person was added to the team without Paceday access; add them with Add person
@@ -6098,6 +6159,7 @@ paths:
           description: 'The re-read storage.ManagerTeamMember, with explicit snake_case json tags since
             PAC-26 (API-030). Never `null`: since PAC-26 (API-032) a failed re-read is the 500 below instead
             of a 200 whose body is the JSON literal `null`. The patch has committed when that 500 is sent.
+            `member_user_id` is always null since PAC-130 (deprecated; see the schema).
 
             '
           content:
@@ -6145,7 +6207,8 @@ paths:
 
         PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the roster entry
         this operation may materialise for a formal team member follows the same DOMAIN-CONFIRMED rule
-        as patchManagerTeamMember.
+        as patchManagerTeamMember, and since PAC-130 it is written with `member_user_id` null (spec D-6,
+        AC-18).
 
         PAC-129 (spec §3.9, D-13, AC-31): the same refusal as patchManagerTeamMember for a person added
         to the team who has no roster entry on it: the 422 below, no roster row, no assignment, no prefill
@@ -6628,9 +6691,13 @@ paths:
       tags:
       - calendar
       summary: List users in the caller's organization
-      description: Returns all `users` rows sharing the caller's `org_id`, ordered by `created_at` ascending.
+      description: 'Returns all `users` rows sharing the caller''s `org_id`, ordered by `created_at` ascending.
         If the caller cannot be loaded, or has no `org_id`, the handler returns 200 with `[]` rather than
-        an error.
+        an error. PAC-130 (spec §3.1, D-1, AC-17): the set of accounts this list returns to a caller IS
+        rule (b) of the Manager visibility rule (ManagerRosterMember.is_paceday_user): both use one definition,
+        so narrowing this list (follow-up PAC-148, which owns this endpoint''s own exposure for consumer
+        domains) narrows Manager visibility with it. The Manager read does not inherit this handler''s
+        fallback: a failure to load the caller there is the 500, never "no organisation".'
       responses:
         '200':
           description: Org members, or `[]` when the caller has no organization. The `org` property is
@@ -13195,8 +13262,9 @@ components:
           type: string
         is_paceday_user:
           type: boolean
-          description: 'True iff the member''s member_user_id resolved to a Paceday user row; the same
-            value ManagerRosterMember.is_paceday_user carries for this member (PAC-34).
+          description: 'The visibility rule of ManagerRosterMember.is_paceday_user (PAC-130), applied
+            to this caller and address: the same value the roster carries for them (PAC-34). false does
+            NOT mean "has no Paceday account".
 
             '
         data_available:
@@ -13204,9 +13272,10 @@ components:
           description: 'True iff at least one entry of `weeks` has data_available=true (PAC-34). Derived
             from the buckets of this response, never read or cached separately, so it cannot disagree
             with them. False means no bucket is measured (degraded FreeBusy, no analytics_weeks rows,
-            consent withheld, or the PAC-60 visibility gate): the member''s minutes must be shown as "no
-            data", not as zeroes. True does NOT mean every bucket is measured; each bucket''s own data_available
-            still decides how that bucket is drawn.
+            or the PAC-130 no-read branch: visible but not entitled, which covers consent withheld and
+            the PAC-60 gate): the member''s minutes must be shown as "no data", not as zeroes. True does
+            NOT mean every bucket is measured; each bucket''s own data_available still decides how that
+            bucket is drawn.
 
             '
         weeks:
@@ -13339,7 +13408,22 @@ components:
           format: date-time
         is_paceday_user:
           type: boolean
-          description: True iff member_user_id resolved to a Paceday user row.
+          description: 'PAC-130 (spec §3.1, D-1, D-5, AC-4, AC-10, AC-17): true iff the entry''s address
+            is VISIBLE ON PACEDAY to the caller, decided at read time. It is visible when some account
+            whose stored address equals the entry''s address ignoring letter case, at ANY address standing,
+            is (a) a Paceday member (a team_members row, owner or member; never a person added under PAC-129)
+            of a team the caller is also a Paceday member of, in either role, or (b) an account the organisation
+            member list (listOrgMembers, GET /api/org/members) returns to the caller. Rule (b) IS that
+            list, not a separate organisation rule: whatever narrows the list (follow-up PAC-148) narrows
+            (b) with it, and until then (b) carries the list''s exposure for consumer domains missing
+            from the generic-domain list. An account outside (a) and (b) is never consulted, so the value
+            is the same for an address no account holds and for one held only outside them. true does
+            not promise figures (see getManagerRoster''s branches), false does NOT mean "has no Paceday
+            account", and a client must not say so. Always true for source "formal" (a co-member by construction);
+            always false for source "added" (PAC-129). Before PAC-130: true iff a stored member_user_id
+            was set, which revealed account existence for any address.
+
+            '
         this_week:
           allOf:
           - $ref: '#/components/schemas/MemberWeekStats'
@@ -13401,7 +13485,17 @@ components:
           - string
           - 'null'
           format: uuid
-          description: Set when the email matches a Paceday user; null for external members.
+          deprecated: true
+          description: 'DEPRECATED, always null since PAC-130 (spec D-4, AC-1, AC-5, AC-16). The key stays,
+            and stays required, so that a client built on the previous contract (which required it as
+            a nullable uuid) parses every answer unchanged; it may be removed by a later ticket no earlier
+            than the first release after the one that ships PAC-130. It is null whatever account holds
+            `member_email`, and also for a row whose stored link was kept by migration 042: no answer
+            depends on a stored link. Before PAC-130 it carried the id of the address''s one domain-confirmed
+            holder (PAC-71), which revealed whether any address had a Paceday account, and that account''s
+            internal id (spec O-1 to O-3). Whether a roster person is shown as a Paceday user is ManagerRosterMember.is_paceday_user.
+
+            '
         display_name:
           type: string
         source:
@@ -13541,21 +13635,26 @@ components:
     MemberWeekStats:
       type: object
       description: 'engine.MemberWeekStats. When data_available is false the three minute counters are
-        all 0 — callers must branch on data_available rather than treating 0 as measured. For a Paceday
-        member, data_available is also false unless the caller owns a team the member belongs to (PAC-60);
-        see getManagerAnalytics.
+        all 0 — callers must branch on data_available rather than treating 0 as measured. Which figures
+        a week carries is the PAC-130 branch of getManagerRoster: Paceday figures (visible, known account,
+        PAC-60 owner, consent), no read (visible but not entitled: zeroes, data_available false), or an
+        estimate (not visible).
 
         '
       properties:
         focus_minutes:
           type: integer
-          description: Always 0 for an external (non-Paceday) member; FreeBusy yields no focus signal.
+          description: 'Always 0 on the estimate branch (a person not visible to the caller, whatever
+            account holds the address); free/busy yields no focus signal. On the Paceday branch, the stored
+            analytics_weeks value.
+
+            '
         meeting_minutes:
           type: integer
         free_minutes:
           type: integer
-          description: 'For an external member, 2400 (5 days x 8h) minus busy minutes, floored at 0. For
-            a Paceday member, the stored analytics_weeks value.
+          description: 'On the estimate branch, 2400 (5 days x 8h) minus busy minutes, floored at 0. On
+            the Paceday branch, the stored analytics_weeks value.
 
             '
         data_available:

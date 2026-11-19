@@ -30,6 +30,10 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 		}
 		return u
 	}
+	// PAC-130: the 1:1-list entries below are resolved from their address, a
+	// PAC-71 granting site, so the accounts hold their addresses
+	// domain-confirmed; the gate under test is PAC-60's, and the account is
+	// found by the branch decision, never from a stored link.
 	owner := mk("owner@scope.test")
 	report := mk("report@scope.test")
 	stranger := mk("stranger@scope.test")
@@ -47,6 +51,9 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 
 	week := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
 	for _, u := range []*storage.User{owner, report, stranger} {
+		if _, err := db.Exec(`UPDATE users SET address_standing = 'domain_confirmed' WHERE id = $1`, u.ID); err != nil {
+			t.Fatalf("confirm %s: %v", u.Email, err)
+		}
 		if _, err := storage.UpsertAnalyticsWeek(db, &storage.AnalyticsWeek{
 			UserID: u.ID, WeekStart: week, FocusMinutes: 615, MeetingMinutes: 240, FreeMinutes: 1545,
 		}); err != nil {
@@ -61,9 +68,11 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 	return &scopeFixture{eng: &ManagerEngine{DB: db}, owner: owner, report: report, stranger: stranger, weekStart: week}
 }
 
+// memberFor is a manual 1:1-list entry for u's address. Before PAC-130 it
+// carried u's id as a stored link; the link is no longer read (PAC-130
+// contract md §2.2), so the entry is the address alone.
 func (f *scopeFixture) memberFor(managerID uuid.UUID, u *storage.User) *storage.ManagerTeamMember {
-	id := u.ID
-	return &storage.ManagerTeamMember{ManagerUserID: managerID, MemberEmail: u.Email, MemberUserID: &id, Cadence: "weekly"}
+	return &storage.ManagerTeamMember{ManagerUserID: managerID, MemberEmail: u.Email, Source: "manual", Cadence: "weekly"}
 }
 
 func TestGetMemberWeek_TeamOwnerSeesTheirMember(t *testing.T) {

@@ -55,31 +55,43 @@ func pac122b4DetectionStub(t *testing.T, managerEmail, report string) {
 	t.Cleanup(func() { calendar.Configure(config.ProductionCalendarEndpoint()) })
 }
 
-// SF-010: the holder lookup for a detected member fails. Detection returns
-// the error and stores nothing: before the fix the member was stored with
-// member_user_id NULL, as external.
-func TestPAC122_SF010_DetectionHolderLookupErrorStoresNothing(t *testing.T) {
+// SF-010, rewritten by PAC-130 (was
+// TestPAC122_SF010_DetectionHolderLookupErrorStoresNothing; spec D-2,
+// contract md §3.3, §7): detection no longer looks a detected address up at
+// all, so the guarded lookup is gone. A holder lookup that would fail is never reached: detection succeeds
+// and stores the member with no account link (member_user_id NULL), for a
+// held address as for any other. SF-010's rule (a failed read is the error)
+// moves to the Manager visibility read (engine/pac130_test.go, AC-13).
+func TestPAC122_SF010_DetectionLooksNoAddressUp(t *testing.T) {
 	db := openTestDB(t)
 	mgr, _ := pac81User(t, db, "pac122-sf010-boss@example.com")
 	report := "pac122-sf010-report@example.com"
 	pac81User(t, db, report)
 	pac122b4DetectionStub(t, "pac122-sf010-boss@example.com", report)
+	if _, err := db.Exec(`UPDATE users SET address_standing = 'domain_confirmed' WHERE lower(email) = $1`, report); err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
 	storage.InstallConfirmedHolderLookup(t, func(e string) error {
 		if strings.EqualFold(e, report) {
+			lookups++
 			return errors.New("pac122: holder lookup failed")
 		}
 		return nil
 	})
 
 	res, err := (&ManagerEngine{DB: db, OAuthConfig: &oauth2.Config{}}).DetectTeam(context.Background(), mgr)
-	if err == nil || res != nil {
-		t.Fatalf("DetectTeam = %+v, %v; want the lookup error", res, err)
+	if err != nil || res == nil || res.MembersAdded != 1 {
+		t.Fatalf("DetectTeam = %+v, %v; want one member added, no error", res, err)
 	}
-	if strings.Contains(err.Error(), "@") {
-		t.Fatalf("error names an address: %v", err)
+	if lookups != 0 {
+		t.Fatalf("holder lookups = %d, want 0 (detection looks no address up)", lookups)
 	}
-	if n := pac122b4Count(t, db, `SELECT count(*) FROM manager_team_members WHERE manager_user_id=$1`, mgr); n != 0 {
-		t.Fatalf("stored rows = %d, want 0", n)
+	if n := pac122b4Count(t, db, `SELECT count(*) FROM manager_team_members WHERE manager_user_id=$1 AND member_user_id IS NULL`, mgr); n != 1 {
+		t.Fatalf("stored rows without a link = %d, want 1", n)
+	}
+	if n := pac122b4Count(t, db, `SELECT count(*) FROM manager_team_members WHERE manager_user_id=$1 AND member_user_id IS NOT NULL`, mgr); n != 0 {
+		t.Fatalf("stored rows with a link = %d, want 0", n)
 	}
 }
 
@@ -119,7 +131,12 @@ func pac122b4PacedayMember(t *testing.T, db *sql.DB, prefix string) (uuid.UUID, 
 	if err := storage.UpsertUserProfile(db, &storage.UserProfile{UserID: member, AnalyticsSharedWithManager: true}); err != nil {
 		t.Fatal(err)
 	}
-	return mgr, &storage.ManagerTeamMember{ManagerUserID: mgr, MemberEmail: email, MemberUserID: &member, Source: "manual", Cadence: "weekly"}
+	// PAC-130: the manual entry's account is the address's single
+	// domain-confirmed holder, found by the branch decision (no stored link).
+	if _, err := db.Exec(`UPDATE users SET address_standing = 'domain_confirmed' WHERE id = $1`, member); err != nil {
+		t.Fatal(err)
+	}
+	return mgr, &storage.ManagerTeamMember{ManagerUserID: mgr, MemberEmail: email, Source: "manual", Cadence: "weekly"}
 }
 
 // SF-040: each failed step of a Paceday member's week is the error, and no

@@ -245,24 +245,13 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 			lastOOOPtr = &lastOOO
 		}
 
-		// Check if member is a Paceday user
-		// PAC-71 granting site (roster import): only the one account that
-		// holds the address domain-confirmed, ignoring letter case.
-		// PAC-122 SF-010: a failed lookup stops the run, never stores the
-		// member as external (member_user_id NULL).
-		var memberUserID *uuid.UUID
-		uid, holder, err := storage.ConfirmedHolder(e.DB, c.email)
-		if err != nil {
-			return nil, fmt.Errorf("holder lookup for detected member #%d: %w", n, err)
-		}
-		if holder {
-			memberUserID = &uid
-		}
-
+		// PAC-130 (spec D-2, contract md §3.3): detection never looks an
+		// address up to find an account and stores no account link. Whether
+		// the person is "On Paceday" is decided at read time, from the
+		// manager's teams and organisation (DecideMember).
 		m := &storage.ManagerTeamMember{
 			ManagerUserID:  managerID,
 			MemberEmail:    c.email,
-			MemberUserID:   memberUserID,
 			DisplayName:    c.displayName,
 			Source:         "auto",
 			Cadence:        cadence,
@@ -450,40 +439,178 @@ type MemberWeekStats struct {
 const analyticsCache4h = 4 * time.Hour
 const totalWorkMinutesPerWeek = 5 * 8 * 60 // Mon–Fri, 8h/day
 
-func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember, weekStart time.Time) (*MemberWeekStats, error) {
-	// PAC-129 (spec §3.9, AC-31): a person added to the team with no roster
-	// entry is never measured here and nothing is stored for them.
+// MemberBranch is how one roster entry's weeks are answered for the caller
+// (PAC-130 spec §3.4, D-7; contract md §2.2). It is decided once per entry per
+// request, before any week is read.
+type MemberBranch int
+
+const (
+	// BranchUnmeasured is a person added to a team under PAC-129: never
+	// measured, nothing read or stored, not "On Paceday".
+	BranchUnmeasured MemberBranch = iota
+	// BranchFigures is a visible person whose account the caller may read:
+	// their stored weekly analytics.
+	BranchFigures
+	// BranchNoRead is a visible person the caller may not read: "no data",
+	// nothing read, nothing served from or written to the cache.
+	BranchNoRead
+	// BranchEstimate is an address the caller cannot already see on Paceday:
+	// free/busy through the caller's own credential, exactly as for an
+	// address nobody holds.
+	BranchEstimate
+)
+
+// MemberDecision is the branch of one roster entry for one caller, and the
+// account its figures belong to (BranchFigures only).
+type MemberDecision struct {
+	Branch  MemberBranch
+	Account uuid.UUID
+}
+
+// IsPacedayUser is the wire's is_paceday_user: "visible on Paceday" to the
+// caller (spec D-1, D-5), true on the figures and no-read branches.
+func (d *MemberDecision) IsPacedayUser() bool {
+	return d.Branch == BranchFigures || d.Branch == BranchNoRead
+}
+
+// DecideMember decides member's branch for managerID (contract md §2.2), in
+// this order, each read firing the step seam after it runs:
+//  1. source "added": unmeasured (PAC-129);
+//  2. visibility: a "formal" entry (a Paceday member of the roster's team,
+//     known through that membership) is visible by construction and reads
+//     nothing; any other entry runs the one visibility statement
+//     (storage.AddressVisibleTo, step visibility-read). Not visible: estimate;
+//  3. the known account: a formal entry's own member, at any standing (as
+//     before PAC-130); otherwise the single domain-confirmed holder of the
+//     address (storage.ConfirmedHolder, PAC-71 granting site, step
+//     holder-lookup). None: no read;
+//  4. PAC-60: the caller owns a team the account is a member of (step
+//     owner-check). Not: no read;
+//  5. consent (step consent-read): no user_profiles row reads as NOT shared,
+//     a NULL column as shared, as before. Withheld: no read;
+//  6. otherwise figures.
+//
+// A stored account link (manager_team_members.member_user_id) is never read:
+// only a formal entry, built in memory from team membership, names its
+// account. Every failed read is the error (spec D-9): never "not visible",
+// never an estimate, never "no data".
+func (e *ManagerEngine) DecideMember(_ context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember) (*MemberDecision, error) {
 	if member.Source == "added" {
-		return &MemberWeekStats{}, nil
+		return &MemberDecision{Branch: BranchUnmeasured}, nil
 	}
-	// A Paceday user's minutes are visible only to an owner of a team that user
-	// is on. Without this, anyone could add a colleague's email to their 1:1
-	// list and read their week (PAC-60). Checked before the cache, so figures
-	// cached before this gate existed are never served, and failing closed:
-	// a lookup error shows nothing, as the error (PAC-122 SF-040), never as
-	// someone else's figures nor as "no data".
-	//
-	// PAC-122 SF-040: every read below that fails is returned as the error
-	// (the handlers answer the 500); nothing computed from a failed read is
-	// cached, and a failed cache write is the error too.
-	if member.MemberUserID != nil {
-		allowed, err := storage.OwnsTeamWithMember(e.DB, managerID, *member.MemberUserID)
-		err = managerStepErr(StepOwnerCheck, member.MemberEmail, err)
+	var account uuid.UUID
+	if member.Source == "formal" && member.MemberUserID != nil {
+		account = *member.MemberUserID
+	} else {
+		visible, err := storage.AddressVisibleTo(e.DB, managerID, member.MemberEmail)
+		err = managerStepErr(StepVisibilityRead, member.MemberEmail, err)
 		if err != nil {
-			return nil, fmt.Errorf("member week: owner check: %w", err)
+			return nil, fmt.Errorf("member decision: visibility read: %w", err)
 		}
-		if !allowed {
-			return &MemberWeekStats{}, nil
+		if !visible {
+			return &MemberDecision{Branch: BranchEstimate}, nil
 		}
+		holder, ok, err := storage.ConfirmedHolder(e.DB, member.MemberEmail)
+		err = managerStepErr(StepHolderLookup, member.MemberEmail, err)
+		if err != nil {
+			return nil, fmt.Errorf("member decision: holder lookup: %w", err)
+		}
+		if !ok {
+			return &MemberDecision{Branch: BranchNoRead}, nil
+		}
+		account = holder
 	}
 
-	// Check cache (4h TTL)
+	// PAC-60: a Paceday user's minutes are visible only to an owner of a team
+	// that user is on.
+	allowed, err := storage.OwnsTeamWithMember(e.DB, managerID, account)
+	err = managerStepErr(StepOwnerCheck, member.MemberEmail, err)
+	if err != nil {
+		return nil, fmt.Errorf("member decision: owner check: %w", err)
+	}
+	if !allowed {
+		return &MemberDecision{Branch: BranchNoRead}, nil
+	}
+
+	// Consent, decided before the cache (contract md §2.2): no profile row
+	// reads as not shared, as before; a NULL column as shared.
+	var shared bool
+	err = e.DB.QueryRow(`
+		SELECT COALESCE(analytics_shared_with_manager, true)
+		FROM user_profiles WHERE user_id=$1`, account,
+	).Scan(&shared)
+	err = managerStepErr(StepConsentRead, member.MemberEmail, err)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("member decision: consent read: %w", err)
+	}
+	if !shared {
+		return &MemberDecision{Branch: BranchNoRead}, nil
+	}
+	return &MemberDecision{Branch: BranchFigures, Account: account}, nil
+}
+
+// MemberWeeks is one roster entry's answer for a caller: whether the entry is
+// "On Paceday" to them, and its weeks in the order asked.
+type MemberWeeks struct {
+	IsPacedayUser bool
+	Weeks         []*MemberWeekStats
+}
+
+// MemberWeeks decides member's branch once and reads every week of weekStarts
+// on it, in order. A failed read stops at once: nothing is cached for the
+// failing week or any after it.
+func (e *ManagerEngine) MemberWeeks(ctx context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember, weekStarts []time.Time) (*MemberWeeks, error) {
+	d, err := e.DecideMember(ctx, managerID, member)
+	if err != nil {
+		return nil, err
+	}
+	out := &MemberWeeks{IsPacedayUser: d.IsPacedayUser(), Weeks: make([]*MemberWeekStats, 0, len(weekStarts))}
+	for _, ws := range weekStarts {
+		stats, err := e.MemberWeek(ctx, managerID, member, d, ws)
+		if err != nil {
+			return nil, err
+		}
+		out.Weeks = append(out.Weeks, stats)
+	}
+	return out, nil
+}
+
+// GetMemberWeek is MemberWeeks for one week: the branch is decided, then the
+// week is read on it.
+func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember, weekStart time.Time) (*MemberWeekStats, error) {
+	res, err := e.MemberWeeks(ctx, managerID, member, []time.Time{weekStart})
+	if err != nil {
+		return nil, err
+	}
+	return res.Weeks[0], nil
+}
+
+// MemberWeek reads one week of member on the branch d (contract md §2.2).
+// The analytics cache's is_paceday_user column is the branch marker of a
+// cached row: the figures branch serves and writes only rows marked true, the
+// estimate branch only rows marked false, and the no-read branch never reads
+// or writes the cache. So a figure computed on one branch is never served on
+// another (spec §3.4): not after the person leaves the caller's teams, not
+// from a row cached before PAC-60, and an estimate never once they are
+// visible.
+//
+// PAC-122 SF-040: every read that fails is returned as the error (the
+// handlers answer the 500); nothing computed from a failed read is cached,
+// and a failed cache write is the error too.
+func (e *ManagerEngine) MemberWeek(ctx context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember, d *MemberDecision, weekStart time.Time) (*MemberWeekStats, error) {
+	if d.Branch != BranchFigures && d.Branch != BranchEstimate {
+		// Unmeasured (PAC-129) and no read: "no data", nothing read or stored.
+		return &MemberWeekStats{}, nil
+	}
+	isPacedayUser := d.Branch == BranchFigures
+
+	// Check cache (4h TTL), on this branch only.
 	cached, err := storage.GetTeamAnalytics(e.DB, managerID, member.MemberEmail, weekStart)
 	err = managerStepErr(StepCacheRead, member.MemberEmail, err)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("member week: cache read: %w", err)
 	}
-	if err == nil && time.Since(cached.ComputedAt) < analyticsCache4h {
+	if err == nil && cached.IsPacedayUser == isPacedayUser && time.Since(cached.ComputedAt) < analyticsCache4h {
 		return &MemberWeekStats{
 			FocusMinutes:   cached.FocusMinutes,
 			MeetingMinutes: cached.MeetingMinutes,
@@ -493,47 +620,33 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 	}
 
 	var stats MemberWeekStats
-	var isPacedayUser bool
 	// cacheable is false for an answer that is not a fact about the week: an
-	// external member whose free/busy coverage is not known (a provider
-	// failure degrades to unknown, PAC-67 D-6). Such an answer is shown as
-	// "no data" but never cached, so the next read asks again (SF-040).
+	// address whose free/busy coverage is not known (a provider failure
+	// degrades to unknown, PAC-67 D-6). Such an answer is shown as "no data"
+	// but never cached, so the next read asks again (SF-040).
 	cacheable := true
 
-	if member.MemberUserID != nil {
-		// Member is a Paceday user — read their analytics_weeks row
-		// Check consent first. No profile row reads as not shared, as before.
-		var shared bool
+	if isPacedayUser {
+		var focusMin, meetMin, freeMin int
 		err := e.DB.QueryRow(`
-			SELECT COALESCE(analytics_shared_with_manager, true)
-			FROM user_profiles WHERE user_id=$1`, *member.MemberUserID,
-		).Scan(&shared)
-		err = managerStepErr(StepConsentRead, member.MemberEmail, err)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("member week: consent read: %w", err)
+			SELECT COALESCE(focus_minutes,0), COALESCE(meeting_minutes,0), COALESCE(free_minutes,0)
+			FROM analytics_weeks
+			WHERE user_id=$1 AND week_start=$2`,
+			d.Account, weekStart.Format("2006-01-02"),
+		).Scan(&focusMin, &meetMin, &freeMin)
+		err = managerStepErr(StepAnalyticsWeekRead, member.MemberEmail, err)
+		switch {
+		case err == nil:
+			stats.FocusMinutes = focusMin
+			stats.MeetingMinutes = meetMin
+			stats.FreeMinutes = freeMin
+			stats.DataAvailable = true
+		case !errors.Is(err, sql.ErrNoRows):
+			return nil, fmt.Errorf("member week: analytics read: %w", err)
 		}
-		if shared {
-			var focusMin, meetMin, freeMin int
-			err := e.DB.QueryRow(`
-				SELECT COALESCE(focus_minutes,0), COALESCE(meeting_minutes,0), COALESCE(free_minutes,0)
-				FROM analytics_weeks
-				WHERE user_id=$1 AND week_start=$2`,
-				*member.MemberUserID, weekStart.Format("2006-01-02"),
-			).Scan(&focusMin, &meetMin, &freeMin)
-			err = managerStepErr(StepAnalyticsWeekRead, member.MemberEmail, err)
-			switch {
-			case err == nil:
-				stats.FocusMinutes = focusMin
-				stats.MeetingMinutes = meetMin
-				stats.FreeMinutes = freeMin
-				stats.DataAvailable = true
-			case !errors.Is(err, sql.ErrNoRows):
-				return nil, fmt.Errorf("member week: analytics read: %w", err)
-			}
-		}
-		isPacedayUser = true
 	} else {
-		// External user — use FreeBusyService
+		// Not visible: free/busy through the caller's own credential, the
+		// same for every such address, account or not (spec D-3).
 		fbSvc := NewFreeBusyService(e.DB, e.OAuthConfig)
 		weekEnd := weekStart.Add(7 * 24 * time.Hour)
 		results, err := fbSvc.Query(ctx, managerID, []string{member.MemberEmail}, weekStart, weekEnd)

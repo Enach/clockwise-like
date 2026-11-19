@@ -23,8 +23,12 @@ func (f *pace023PreviewWorkflow) DetectTeam(context.Context, uuid.UUID) (*engine
 func (*pace023PreviewWorkflow) GetGaps(context.Context, uuid.UUID, []*storage.ManagerTeamMember) ([]engine.CadenceGap, error) {
 	return nil, nil
 }
-func (*pace023PreviewWorkflow) GetMemberWeek(context.Context, uuid.UUID, *storage.ManagerTeamMember, time.Time) (*engine.MemberWeekStats, error) {
-	return &engine.MemberWeekStats{}, nil
+func (*pace023PreviewWorkflow) MemberWeeks(_ context.Context, _ uuid.UUID, _ *storage.ManagerTeamMember, weekStarts []time.Time) (*engine.MemberWeeks, error) {
+	out := &engine.MemberWeeks{}
+	for range weekStarts {
+		out.Weeks = append(out.Weeks, &engine.MemberWeekStats{})
+	}
+	return out, nil
 }
 
 func TestPACE023PreviewThenConfirmWireContract(t *testing.T) {

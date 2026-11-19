@@ -2372,12 +2372,12 @@ type ManagerAnalytics struct {
 
 // ManagerAnalyticsMember defines model for ManagerAnalyticsMember.
 type ManagerAnalyticsMember struct {
-	// DataAvailable True iff at least one entry of `weeks` has data_available=true (PAC-34). Derived from the buckets of this response, never read or cached separately, so it cannot disagree with them. False means no bucket is measured (degraded FreeBusy, no analytics_weeks rows, consent withheld, or the PAC-60 visibility gate): the member's minutes must be shown as "no data", not as zeroes. True does NOT mean every bucket is measured; each bucket's own data_available still decides how that bucket is drawn.
+	// DataAvailable True iff at least one entry of `weeks` has data_available=true (PAC-34). Derived from the buckets of this response, never read or cached separately, so it cannot disagree with them. False means no bucket is measured (degraded FreeBusy, no analytics_weeks rows, or the PAC-130 no-read branch: visible but not entitled, which covers consent withheld and the PAC-60 gate): the member's minutes must be shown as "no data", not as zeroes. True does NOT mean every bucket is measured; each bucket's own data_available still decides how that bucket is drawn.
 	DataAvailable bool                `json:"data_available"`
 	DisplayName   string              `json:"display_name"`
 	Email         openapi_types.Email `json:"email"`
 
-	// IsPacedayUser True iff the member's member_user_id resolved to a Paceday user row; the same value ManagerRosterMember.is_paceday_user carries for this member (PAC-34).
+	// IsPacedayUser The visibility rule of ManagerRosterMember.is_paceday_user (PAC-130), applied to this caller and address: the same value the roster carries for them (PAC-34). false does NOT mean "has no Paceday account".
 	IsPacedayUser bool `json:"is_paceday_user"`
 
 	// Weeks Exactly 12 buckets, newest first.
@@ -2434,7 +2434,7 @@ type ManagerRosterMember struct {
 	// FocusTrendPct engine.TrendPct(this_week.focus, last_week.focus). Clamped to [-200, 200], rounded to one decimal. Returns exactly 200 when prior is 0 and current is non-zero, and 0 when both are 0. Never NaN or Inf.
 	FocusTrendPct float32 `json:"focus_trend_pct"`
 
-	// IsPacedayUser True iff member_user_id resolved to a Paceday user row.
+	// IsPacedayUser PAC-130 (spec §3.1, D-1, D-5, AC-4, AC-10, AC-17): true iff the entry's address is VISIBLE ON PACEDAY to the caller, decided at read time. It is visible when some account whose stored address equals the entry's address ignoring letter case, at ANY address standing, is (a) a Paceday member (a team_members row, owner or member; never a person added under PAC-129) of a team the caller is also a Paceday member of, in either role, or (b) an account the organisation member list (listOrgMembers, GET /api/org/members) returns to the caller. Rule (b) IS that list, not a separate organisation rule: whatever narrows the list (follow-up PAC-148) narrows (b) with it, and until then (b) carries the list's exposure for consumer domains missing from the generic-domain list. An account outside (a) and (b) is never consulted, so the value is the same for an address no account holds and for one held only outside them. true does not promise figures (see getManagerRoster's branches), false does NOT mean "has no Paceday account", and a client must not say so. Always true for source "formal" (a co-member by construction); always false for source "added" (PAC-129). Before PAC-130: true iff a stored member_user_id was set, which revealed account existence for any address.
 	IsPacedayUser  bool       `json:"is_paceday_user"`
 	LastOneOnOneAt *time.Time `json:"last_one_on_one_at"`
 
@@ -2464,7 +2464,8 @@ type ManagerTeamMemberGoStruct struct {
 	ManagerUserId  openapi_types.UUID  `json:"manager_user_id"`
 	MemberEmail    openapi_types.Email `json:"member_email"`
 
-	// MemberUserId Set when the email matches a Paceday user; null for external members.
+	// MemberUserId DEPRECATED, always null since PAC-130 (spec D-4, AC-1, AC-5, AC-16). The key stays, and stays required, so that a client built on the previous contract (which required it as a nullable uuid) parses every answer unchanged; it may be removed by a later ticket no earlier than the first release after the one that ships PAC-130. It is null whatever account holds `member_email`, and also for a row whose stored link was kept by migration 042: no answer depends on a stored link. Before PAC-130 it carried the id of the address's one domain-confirmed holder (PAC-71), which revealed whether any address had a Paceday account, and that account's internal id (spec O-1 to O-3). Whether a roster person is shown as a Paceday user is ManagerRosterMember.is_paceday_user.
+	// Deprecated:
 	MemberUserId *openapi_types.UUID `json:"member_user_id"`
 
 	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual). "added" (PAC-129) = SYNTHETIC and READ-ONLY, returned only by getManagerRoster with include_added=true, for a person added to the team without Paceday access who has no assignment and is not a formal member. Never persisted, never returned without include_added.
@@ -2523,14 +2524,14 @@ type MemberAnalyticsSummary struct {
 	UserId openapi_types.UUID `json:"user_id"`
 }
 
-// MemberWeekStats engine.MemberWeekStats. When data_available is false the three minute counters are all 0 — callers must branch on data_available rather than treating 0 as measured. For a Paceday member, data_available is also false unless the caller owns a team the member belongs to (PAC-60); see getManagerAnalytics.
+// MemberWeekStats engine.MemberWeekStats. When data_available is false the three minute counters are all 0 — callers must branch on data_available rather than treating 0 as measured. Which figures a week carries is the PAC-130 branch of getManagerRoster: Paceday figures (visible, known account, PAC-60 owner, consent), no read (visible but not entitled: zeroes, data_available false), or an estimate (not visible).
 type MemberWeekStats struct {
 	DataAvailable bool `json:"data_available"`
 
-	// FocusMinutes Always 0 for an external (non-Paceday) member; FreeBusy yields no focus signal.
+	// FocusMinutes Always 0 on the estimate branch (a person not visible to the caller, whatever account holds the address); free/busy yields no focus signal. On the Paceday branch, the stored analytics_weeks value.
 	FocusMinutes int `json:"focus_minutes"`
 
-	// FreeMinutes For an external member, 2400 (5 days x 8h) minus busy minutes, floored at 0. For a Paceday member, the stored analytics_weeks value.
+	// FreeMinutes On the estimate branch, 2400 (5 days x 8h) minus busy minutes, floored at 0. On the Paceday branch, the stored analytics_weeks value.
 	FreeMinutes    int `json:"free_minutes"`
 	MeetingMinutes int `json:"meeting_minutes"`
 }

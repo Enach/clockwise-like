@@ -93,25 +93,34 @@ func TestPAC122_SF009_FailedProfileWriteIs500(t *testing.T) {
 	pac122AssertServerError(t, w, reported)
 }
 
-// SF-010: the Paceday-holder lookup fails. The answer is the 500 and nothing
-// is stored: before the fix the member was stored as external.
-func TestPAC122_SF010_HolderLookupErrorIs500(t *testing.T) {
+// SF-010, rewritten by PAC-130 (was TestPAC122_SF010_HolderLookupErrorIs500;
+// spec D-2, contract md §3.1, §7): the add no longer looks the address up, so
+// a holder lookup that would fail is never reached. The add answers 201 with member_user_id null and stores the row
+// with no account link, exactly as for an address nobody holds. SF-010's rule
+// moves to the Manager visibility read (api/pac130_test.go, AC-13).
+func TestPAC122_SF010_AddLooksNoAddressUp(t *testing.T) {
 	r := setupManagerRoutes(t, &fakeManagerWorkflow{})
 	u := createTestUser(t, "pac122-sf010-mgr@example.com")
 	email := "pac122-sf010-report@example.com"
 	createConfirmedUser(t, email)
+	lookups := 0
 	storage.InstallConfirmedHolderLookup(t, func(e string) error {
 		if strings.EqualFold(strings.TrimSpace(e), email) {
+			lookups++
 			return errors.New("pac122: holder lookup failed")
 		}
 		return nil
 	})
-	reported, _ := captureServerErrors(t)
 
 	w := managerRequest(t, r, http.MethodPost, "/api/manager/team/members", u, map[string]any{"email": email, "cadence": "weekly"})
-	pac122AssertServerError(t, w, reported)
-	if n := pac122Count(t, `SELECT count(*) FROM manager_team_members WHERE manager_user_id=$1`, u); n != 0 {
-		t.Fatalf("stored rows = %d, want 0", n)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"member_user_id":null`) {
+		t.Fatalf("status = %d, want 201 with member_user_id null; body: %s", w.Code, w.Body.String())
+	}
+	if lookups != 0 {
+		t.Fatalf("holder lookups = %d, want 0 (the add looks no address up)", lookups)
+	}
+	if n := pac122Count(t, `SELECT count(*) FROM manager_team_members WHERE manager_user_id=$1 AND member_user_id IS NULL`, u); n != 1 {
+		t.Fatalf("stored rows without a link = %d, want 1", n)
 	}
 }
 
@@ -122,11 +131,15 @@ type failingWeekWorkflow struct {
 	failWeek time.Time
 }
 
-func (f *failingWeekWorkflow) GetMemberWeek(_ context.Context, _ uuid.UUID, _ *storage.ManagerTeamMember, weekStart time.Time) (*engine.MemberWeekStats, error) {
-	if f.failWeek.IsZero() || weekStart.Equal(f.failWeek) {
-		return nil, errors.New("pac122: member week read failed")
+func (f *failingWeekWorkflow) MemberWeeks(_ context.Context, _ uuid.UUID, _ *storage.ManagerTeamMember, weekStarts []time.Time) (*engine.MemberWeeks, error) {
+	out := &engine.MemberWeeks{}
+	for _, weekStart := range weekStarts {
+		if f.failWeek.IsZero() || weekStart.Equal(f.failWeek) {
+			return nil, errors.New("pac122: member week read failed")
+		}
+		out.Weeks = append(out.Weeks, &engine.MemberWeekStats{DataAvailable: true})
 	}
-	return &engine.MemberWeekStats{DataAvailable: true}, nil
+	return out, nil
 }
 
 // SF-040: a failed member-week read is the 500 on the roster and on the

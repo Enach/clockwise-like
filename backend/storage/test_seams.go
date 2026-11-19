@@ -481,3 +481,17 @@ func InstallFocusBlocksRead(tb TB, fn func(userID uuid.UUID) error) (uninstall f
 	tb.Helper()
 	return focusBlocksRead.install(tb, fn)
 }
+
+// orgMembersExclude supplies orgMemberSetSQL's exclusion list for a viewer
+// (PAC-130 contract md §2.5, §6): both readers of the organisation member set,
+// GetOrgMembers and the Manager visibility statement, pass it, so a test that
+// narrows the set (standing in for PAC-148) narrows both. Uninstalled, or
+// answering nil, the list is empty.
+var orgMembersExclude seam[func(viewerID uuid.UUID) []uuid.UUID]
+
+// InstallOrgMembersExclude installs the organisation member set's exclusion
+// seam.
+func InstallOrgMembersExclude(tb TB, fn func(viewerID uuid.UUID) []uuid.UUID) (uninstall func()) {
+	tb.Helper()
+	return orgMembersExclude.install(tb, fn)
+}
