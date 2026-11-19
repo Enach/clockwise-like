@@ -87,6 +87,11 @@ type Booking struct {
 	Status      string    `json:"status"`
 	Notes       string    `json:"notes"`
 	CreatedAt   time.Time `json:"created_at"`
+	// BookerErasedAt is set once the booker's name and email were erased
+	// (PAC-40's automatic job, or PAC-134's operator erasure on any link);
+	// read by GetBookingsByLink only. The live bookings read maps it to
+	// booker_erased_at (PAC-134 contract md §1.1); never encoded from here.
+	BookerErasedAt *time.Time `json:"-"`
 	// IdempotencyKey is the optional key of the public booking attempt that
 	// saved the row (PAC-82); "" is none. Never returned in any response.
 	IdempotencyKey string `json:"-"`
@@ -1228,7 +1233,7 @@ func HasOverlappingBooking(db DBTX, linkID uuid.UUID, start, end time.Time) (boo
 
 func GetBookingsByLink(db DBTX, linkID uuid.UUID) ([]*Booking, error) {
 	rows, err := db.QueryContext(context.Background(), `
-		SELECT id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
+		SELECT id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at, booker_erased_at
 		FROM bookings WHERE link_id = $1 ORDER BY start_time DESC
 	`, linkID)
 	if err != nil {
@@ -1240,7 +1245,7 @@ func GetBookingsByLink(db DBTX, linkID uuid.UUID) ([]*Booking, error) {
 		var b Booking
 		if err := rows.Scan(
 			&b.ID, &b.LinkID, &b.BookerName, &b.BookerEmail,
-			&b.StartTime, &b.EndTime, &b.Status, &b.Notes, &b.CreatedAt,
+			&b.StartTime, &b.EndTime, &b.Status, &b.Notes, &b.CreatedAt, &b.BookerErasedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2134,9 +2139,16 @@ func ClearExpiredLinkCreateKeyData(ctx context.Context, db DBTX) (int64, error) 
 	if err := setLinkLockTimeout(tx); err != nil {
 		return 0, err
 	}
+	// PAC-134 L-2 (contract md §6.2): the rows are locked in the
+	// erase-address tool's order, (owner_user_id, idempotency_key "C"), then
+	// updated, so the cleanup and an erasure clearing several keys can never
+	// wait on each other in a cycle. The rows it clears are unchanged.
 	res, err := tx.ExecContext(ctx, `
-		UPDATE scheduling_link_create_keys SET request_sha256 = NULL, co_host_changes = NULL
-		WHERE request_sha256 IS NOT NULL AND created_at <= now() - make_interval(secs => $1)`,
+		UPDATE scheduling_link_create_keys k SET request_sha256 = NULL, co_host_changes = NULL
+		FROM (SELECT owner_user_id, idempotency_key FROM scheduling_link_create_keys
+		      WHERE request_sha256 IS NOT NULL AND created_at <= now() - make_interval(secs => $1)
+		      ORDER BY owner_user_id, idempotency_key COLLATE "C" FOR UPDATE) m
+		WHERE k.owner_user_id = m.owner_user_id AND k.idempotency_key = m.idempotency_key`,
 		LinkCreateKeyWindow.Seconds())
 	if err != nil {
 		return 0, err

@@ -18,7 +18,20 @@ var sequence atomic.Uint64
 const fallbackDSN = "postgres://test:test@127.0.0.1:15432/testdb?sslmode=disable"
 
 // Create creates an isolated database on the PostgreSQL instance configured for tests.
-func Create() (string, func() error, error) {
+func Create() (string, func() error, error) { return create("") }
+
+// CreateCLocale is Create with a database whose collation and character
+// type are "C" (from template0, UTF8): PostgreSQL's lower() then folds ASCII
+// only, as on the e2e stack (PAC-134 AC-20).
+func CreateCLocale() (string, func() error, error) {
+	return create(" TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'")
+}
+
+// CreateWithOptions is Create with options appended to CREATE DATABASE (for
+// example a locale provider); options are test constants, never input.
+func CreateWithOptions(options string) (string, func() error, error) { return create(" " + options) }
+
+func create(options string) (string, func() error, error) {
 	// PAC-84: every database test may write an inventory secret, which needs
 	// a keyring; a random one is installed once per test process.
 	secretboxtest.EnsureProcess()
@@ -41,7 +54,7 @@ func Create() (string, func() error, error) {
 
 	name := fmt.Sprintf("paceday_test_%d_%d", os.Getpid(), sequence.Add(1)+uint64(time.Now().UnixNano()))
 	quotedName := `"` + name + `"`
-	if _, err := admin.Exec("CREATE DATABASE " + quotedName); err != nil {
+	if _, err := admin.Exec("CREATE DATABASE " + quotedName + options); err != nil {
 		admin.Close()
 		return "", nil, fmt.Errorf("create isolated test database %s: %w", name, err)
 	}

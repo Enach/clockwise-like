@@ -1278,31 +1278,98 @@ then leave the archive and are never erased. Before any rollback that crosses
 
 ## Erasing an address
 
-Use this when someone asks to be erased and Paceday holds their address as
-**team or Manager data** of other people's accounts. It does not delete any
-account; account deletion is separate. A person **with** a Paceday account
-must be searched by address too: entries added to a team by address are not
-linked to their account, so deleting the account does not reach them.
+Use `paceday-operator erase-address` (PAC-134) when someone asks to be erased
+and Paceday holds their address in **other people's data**: team entries
+(`team_added_members`), team invitations of every status (`team_invites`),
+Manager roster rows (`manager_team_members`) and their team assignments
+(`manager_team_member_assignments`), 1:1 occurrences
+(`one_on_one_occurrences`), cached Manager figures (`team_analytics_cache`),
+pending co-host invitations (`scheduling_link_hosts`), the stored co-host
+outcomes of keyed link creations (`scheduling_link_create_keys`), and public
+bookings (`bookings`). It never changes an account. A person **with** a
+Paceday account must be searched by address too: entries added to a team by
+address are not linked to their account.
 
-Stop nothing; run in one transaction, with the address lowercased:
+**Precondition:** the web release that reads erased live bookings (PAC-134)
+is deployed. An older web shows the whole bookings list of an affected link as
+unreadable.
 
-```sql
-BEGIN;
-DELETE FROM team_added_members              WHERE email = lower(:addr);
-DELETE FROM team_invites                    WHERE lower(invitee_email) = lower(:addr);
-DELETE FROM manager_team_member_assignments WHERE lower(member_email) = lower(:addr);
-DELETE FROM one_on_one_occurrences          WHERE lower(member_email) = lower(:addr);
-DELETE FROM team_analytics_cache            WHERE lower(member_email) = lower(:addr);
-DELETE FROM manager_team_members            WHERE lower(member_email) = lower(:addr);
-COMMIT;
-```
+1. Put the request's ticket reference in `-reason`. Never put the address in
+   `-operator` or `-reason` (refused).
+2. Give the address on standard input, never as an argument: read it with
+   `read -rs ADDR` (silent: not echoed, not in the shell history), then
+   ```sh
+   printf '%s\n' "$ADDR" | docker compose -f docker-compose.prod.yml exec -T backend \
+     /paceday-operator erase-address -operator <you> -reason <ticket> -dry-run
+   ```
+   (`-T`: standard input goes to the command, no terminal is allocated).
+3. **Dry run first** (`-dry-run`): it prints per place what would be erased
+   (`would_erase=`) and what is kept, changes nothing, applies no migration,
+   and writes an address-free `erase_address_dry_run` record.
+4. If it prints `accounts=<ids>` and exits 3, the address belongs to an
+   account (in any letter case). The tool still erases the copies in other
+   people's data, never the account or what the account owns (its own
+   bookings on its own links, its own roster entries, entries and invitations
+   it authored, its own keyed creations): those are reported as
+   `kept_account_own`. To go on, rerun with `-account-held-acknowledged`; the
+   record names the account ids. The copies come back through normal use
+   while the account exists; deleting the account is not this tool (no
+   account deletion exists yet). The account's connected calendar address is
+   not considered and never changed.
+5. Run the erasure (same command without `-dry-run`). It is one transaction:
+   everything or nothing. Its output is counts, account ids and the record's
+   id (`audit=`), never the address.
 
-This covers: people added to teams; invitations of every status; Manager roster
-rows and their team assignments; 1:1 occurrences; cached Manager figures. It
-does not reach calendar events on other people's calendars, emails already
-sent, or backups taken before the erasure (kept until their retention deletes
-them). The cross-cutting "erase address" tool that will replace this procedure
-is tracked in PAC-134.
+What it does, per place: deletes team entries, team invitations, Manager
+roster rows with their assignments, 1:1 occurrences, cached Manager figures
+and pending co-host invitations; clears the stored request digest and
+co-host outcomes of keyed link creations (a retry of that creation then gets
+"key reused"); anonymises bookings on any link, live, paused or deleted (name,
+email and notes blanked, the booking kept with its time, so busy time and use
+counts do not change; a keyed retry then gets "key reused"; the link's owner
+sees it as erased). It keeps and counts earlier operator records that hold the
+address (`operator_audit`). Matching ignores letter case (both Go's and the
+database's lowercasing) and the spaces PAC-129 trims; it does not equate
+sub-addresses (`a+tag@`), dots, domain aliases or punycode.
+
+What it cannot reach: free text (titles, other people's notes, activity
+entries, meeting briefs, calendar URLs), the backend's in-process free/busy
+cache (gone within 15 minutes), backups (until their 14-day retention),
+container logs (until rotation), Sentry, events on providers' calendars,
+emails already sent, and re-creation: a manager's calendar re-detects the
+person, and an existing account brings its address back through normal use.
+Free an account's address first (`free-address`) if the person wants their
+account's records treated as other people's copies: a freed account no longer
+matches, so a rerun erases them.
+
+Exit codes: 0 done (or dry run done); 1 failed, nothing changed (database,
+schema, migration refused while the app is serving, maintenance lock,
+statement logging that would record the address, duration bound, lock wait,
+deadlock, interrupted); 2 usage, nothing read; 3 an account holds the address
+and `-account-held-acknowledged` was not given (an erasure changed nothing; a
+dry run wrote its record).
+
+Duration: the whole run is bounded (`-max-duration`, 5 s by default, 1 s to
+8 s), measured from its start, below the live requests' 10 s lock-wait cap:
+past it the run is cancelled and rolled back. Every statement that takes a
+lock gets only the time left until that deadline, so a lock is held at most
+until the run's start plus the bound, plus 1 s if the command froze between
+two statements (9 s at most). Ctrl-C cancels the run the same way.
+
+If the person was active during the run (booked, was invited), rerun once:
+copies written during the run are new and are not erased by it. If the run
+stops at the duration bound, rerun off-peak, then with `-max-duration 8s` at
+most. If statement logging is on, turn `log_parameter_max_length` (and
+`log_parameter_max_length_on_error`) to 0 first; a loaded `auto_explain` must
+have `auto_explain.log_min_duration = -1`.
+
+Rollback: reverting the release removes the command; erasures stay done.
+Restoring a backup brings erased copies back: rerun every erasure recorded
+since that backup (`SELECT created_at, reason FROM operator_audit WHERE
+action = 'erase_address' ORDER BY created_at`). Rolling the web back after
+live bookings were erased shows those links' bookings as unreadable.
+
+The hand-written SQL this section held before PAC-134 is withdrawn.
 
 ## Account recovery
 

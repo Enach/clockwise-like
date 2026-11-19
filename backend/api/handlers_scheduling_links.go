@@ -990,11 +990,34 @@ func (h *schedulingLinkHandlers) listBookings(w http.ResponseWriter, r *http.Req
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if bookings == nil {
-		bookings = []*storage.Booking{}
+	out := make([]gen.SchedulingLinkBookingRecord, 0, len(bookings))
+	for _, b := range bookings {
+		out = append(out, liveBookingDTO(b))
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(bookings)
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// liveBookingDTO maps a stored booking to the live bookings record (PAC-134
+// contract md §1.1). A booking not erased answers exactly what the stored
+// booking encoded before PAC-134 (same keys and values; no
+// booker_erased_at key). An erased one (an operator erasure can erase a
+// booking on a live or paused link) answers booker_erased_at, UTC, with a
+// null name and email, never the empty strings the database keeps, as the
+// archive does (archivedBookingDTO).
+func liveBookingDTO(b *storage.Booking) gen.SchedulingLinkBookingRecord {
+	dto := gen.SchedulingLinkBookingRecord{
+		Id: b.ID, LinkId: b.LinkID, StartTime: b.StartTime, EndTime: b.EndTime,
+		Status: b.Status, Notes: b.Notes, CreatedAt: b.CreatedAt,
+	}
+	if b.BookerErasedAt != nil {
+		t := b.BookerErasedAt.UTC()
+		dto.BookerErasedAt = &t
+		return dto
+	}
+	name, email := b.BookerName, b.BookerEmail
+	dto.BookerName, dto.BookerEmail = &name, &email
+	return dto
 }
 
 // POST /api/scheduling-links/{id}/hosts
