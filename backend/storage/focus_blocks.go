@@ -38,6 +38,11 @@ func ListFocusBlocksForUserWeek(db DBTX, userID uuid.UUID, weekStart time.Time) 
 // ListFocusBlocksForUserWeekCtx is ListFocusBlocksForUserWeek bounded by ctx
 // (PAC-136).
 func ListFocusBlocksForUserWeekCtx(ctx context.Context, db DBTX, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
+	if hook, ok := focusBlocksRead.get(); ok {
+		if err := hook(userID); err != nil {
+			return nil, err
+		}
+	}
 	weekEnd := weekStart.AddDate(0, 0, 7)
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, google_event_id, start_time, end_time, date, created_at

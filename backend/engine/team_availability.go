@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -75,7 +76,9 @@ type memberBusyData struct {
 	focus []interval
 	// known is false when the member's calendar could not be read: no
 	// credential, a failed client or listing (PAC-129: counted unknown; as
-	// before, such a member does not block).
+	// before, such a member does not block), or when their focus blocks
+	// could not be read (PAC-141 SF-112: counted unknown; calendar windows
+	// already read still block).
 	known bool
 }
 
@@ -270,7 +273,15 @@ func (e *TeamAvailabilityEngine) memberBusy(ctx, dbCtx context.Context, userID u
 	}
 
 	// The member's own focus blocks for the day (soft-busy for scoring).
-	fbs, _ := storage.ListFocusBlocksForUserWeek(db, userID, day)
+	// PAC-141 SF-112: a failed read makes the member unknown, never free
+	// (PAC-133's rule): their focus time cannot be known. Busy windows already
+	// read from their calendar still block (PAC-133 D-11).
+	fbs, err := storage.ListFocusBlocksForUserWeek(db, userID, day)
+	if err != nil {
+		log.Printf("ERROR team availability: focus blocks of member %s: %v", userID, err)
+		md.known = false
+		return md
+	}
 	for _, fb := range fbs {
 		if fb.StartTime.Year() == day.Year() && fb.StartTime.Month() == day.Month() && fb.StartTime.Day() == day.Day() {
 			md.focus = append(md.focus, interval{fb.StartTime, fb.EndTime})

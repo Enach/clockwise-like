@@ -611,7 +611,7 @@ func sendSlackMessage(ctx context.Context, botToken, sendTo, channelID, workspac
 	}
 	body, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, slackAPIBase+"/chat.postMessage",
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, slackAPI()+"/chat.postMessage",
 		bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -643,7 +643,7 @@ func sendSlackMessage(ctx context.Context, botToken, sendTo, channelID, workspac
 }
 
 func resolveSlackUserID(ctx context.Context, botToken, _ string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, slackAPIBase+"/auth.test", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, slackAPI()+"/auth.test", nil)
 	if err != nil {
 		return "", err
 	}

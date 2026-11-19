@@ -4821,7 +4821,7 @@ type TeamInviteStatus string
 // TeamInviteOutcome PAC-129. What inviteTeamMember did. `added_and_invited` (201): the address was not on the team; it is now an added person and a new invitation was created. `invited` (201): the address already was an added person; a new invitation was created. `already_pending` (200): a pending invitation existed; no new invitation (the person may have been added by this call, step 3). `already_member` (200): a Paceday member holds the address; nothing written.
 type TeamInviteOutcome string
 
-// TeamInvitePreview A narrow projection of a pending invite, NOT a TeamInvite (no id, token, status, invitedBy or createdAt). The three original keys are camelCase and stay so for existing readers; the three keys added by PAC-34 are snake_case, the spelling the PAC-34 acceptance criteria name and the web normalizer reads (see contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and expires_at come from the invite row itself, so they are always present. The team and inviter rows are read separately and a failed read is not an error: teamName and inviterName become "" and inviter_email becomes null.
+// TeamInvitePreview A narrow projection of a pending invite, NOT a TeamInvite (no id, token, status, invitedBy or createdAt). The three original keys are camelCase and stay so for existing readers; the three keys added by PAC-34 are snake_case, the spelling the PAC-34 acceptance criteria name and the web normalizer reads (see contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and expires_at come from the invite row itself, so they are always present. The team and inviter rows are read separately. A failed read of either is the operation's 500, never a 200 with a blank name (PAC-141 SF-110; before PAC-141 it was a 200 with teamName and inviterName "" and inviter_email null). A row that does not exist (not a failed read) still gives "" and null; team_id and invited_by both cascade on delete, so it does not arise in practice.
 type TeamInvitePreview struct {
 	// Email The invitee email the invite was issued to.
 	Email openapi_types.Email `json:"email"`
@@ -4829,13 +4829,13 @@ type TeamInvitePreview struct {
 	// ExpiresAt team_invites.expires_at, RFC 3339 (PAC-34): createdAt + 7 days, computed in Go when the invite was created. A 200 is returned only while the invite is pending and ExpireOldInvites runs first, so a client normally sees a future instant; a client must still treat a past value as expired rather than assume otherwise.
 	ExpiresAt time.Time `json:"expires_at"`
 
-	// InviterName The inviter's DISPLAY NAME, not their email. Empty string when the user row could not be read.
+	// InviterName The inviter's DISPLAY NAME, not their email. Empty string when the user row does not exist or holds no name. A failed read is the 500 (PAC-141).
 	InviterName string `json:"inviterName"`
 
-	// InviterEmail The inviter's account email, users.email of team_invites.invited_by (PAC-34). null, never "", when the inviter's user row could not be read. invited_by is NOT NULL with ON DELETE CASCADE, so a deleted inviter removes the invite (404), and null only arises from a failed read.
+	// InviterEmail The inviter's account email, users.email of team_invites.invited_by (PAC-34). null, never "", when the inviter's user row holds no email or does not exist. invited_by is NOT NULL with ON DELETE CASCADE, so a deleted inviter removes the invite (404). A failed read of the row is the 500, never null (PAC-141).
 	InviterEmail *openapi_types.Email `json:"inviter_email"`
 
-	// TeamName Empty string when the team row could not be read.
+	// TeamName Empty string when the team row does not exist. A failed read is the 500 (PAC-141).
 	TeamName string `json:"teamName"`
 
 	// TeamId team_invites.team_id of this invite (PAC-34). Never empty.
