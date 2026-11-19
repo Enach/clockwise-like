@@ -1,10 +1,10 @@
 {
   "featureId": "PAC-148",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-148/security-the-organisation-member-list-lets-anyone-at-a-consumer-email",
-  "status": "draft, 2026-11-19: contract revision 1 by contract-author; next: contract-challenger",
-  "contractRevision": "1",
+  "status": "draft, 2026-11-19: contract revision 2 (answers the challenge of revision 1 at 2da61d8: REVISE, 2 blocking, 6 non-blocking); next: contract-challenger",
+  "contractRevision": "2",
   "contractHash": "21610e0ea3b88d11e506aab8a1d9d47f3e3d28ef8b9e87ccd116767391684c1e",
-  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) on factory/pac-148-contract after contract revision 1, which merged origin/main 05fff37 (PAC-150 #322; main bundle e831536e6a187bf49f88ecf6b49ff2149d54bfc97068dc54202474a48e6c84b7) into the spec head 1f8d077. Produced by python3 scripts/openapi_assemble.py; backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by python3 scripts/openapi_migration_report.py (no diff). Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and python3 scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) on factory/pac-148-contract after contract revision 2 (no fragment text change since revision 1, 565b7dd; same hash), which merged origin/main 05fff37 (PAC-150 #322; main bundle e831536e6a187bf49f88ecf6b49ff2149d54bfc97068dc54202474a48e6c84b7) into the spec head 1f8d077. Produced by python3 scripts/openapi_assemble.py; backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by python3 scripts/openapi_migration_report.py (no diff). Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and python3 scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
   "baseCommit": "05fff37 (clockwise-like origin/main, PAC-150 #322), merged into factory/pac-148-contract (merge, not rebase). Spec accepted at 1f8d077 (revision 2 at 0ef4c6f). Web origin/main af49732 (the spec read 5920bd6).",
   "contractDoc": "contracts/features/PAC-148.md",
   "specDoc": "docs/specs/PAC-148.md (revision 2, accepted by the challenge of revision 2 at 1f8d077; OQ-1, OQ-2, OQ-3 on their defaults)",
@@ -30,6 +30,7 @@
         "backend/api/handlers_org_ai.go, backend/api/handlers_sso.go, backend/api/handlers_sso_stepup.go: only to route a membership read through storage's rule if a reader there does not already receive the effective User.OrgID; no gate order, status or body change",
         "backend/auth/pac98_detect_test.go (per-entry rows, AC-11), backend/storage/pac98_org_skip_test.go (AC-2 extension)",
         "backend/api/pac148_*_test.go, backend/storage/pac148_*_test.go, backend/auth/pac148_*_test.go (new); mcp/**/pac148_*_test.go (AC-4 MCP parse leg, if it lives in the mcp module)",
+        "backend/api/pac122_b3_test.go (SF-071 regression pin, md 8, revision 2 B-1): each case signs in domain-confirmed at its own domain; the no-org assertion reads raw users.org_id by SQL; a leave sub-case with the leave UPDATE forced to fail",
         "Fixture sites of spec section 6 (md 8), amended to a domain-confirmed account at its organisation's domain, assertions kept: backend/api/pac22_sso_secrets_test.go, pac50_sso_helpers_test.go, pac50_sso_gate_test.go, pac50_sso_stepup_test.go, byok_test.go, pac142_test.go, pac71_migration_rules_test.go, pac73p2_rows_test.go, pac87_test.go, pac130_test.go (including the AC-10 uOrg sub-case, rewritten); backend/storage/org_ai_test.go, sso_stepup_test.go, pac142_test.go, pac87_test.go, settings_ai_test.go, encryption_test.go, pac130_migration_test.go",
         "e2e/tests/pac148-*.spec.ts (new), e2e/tests/llm-bring-your-own.spec.ts, e2e/tests/llm-org-ai.spec.ts, e2e/tests/sso-stepup.spec.ts (fixtures only), e2e/seed/** (two ISP accounts associated with the ISP organisation for AC-13), e2e/fake.ts and e2e/fake-google/** (a verified ISP address with no hd)",
         "scripts/ops/rehearse-backup-restore.sh (lines 197-200: users domain_confirmed, organisation domain example.com)",
@@ -152,13 +153,14 @@
   ],
   "nonHttpInterface": {
     "rule": "md 2.1: org_id = O.id AND domain_confirmed AND O.domain not listed AND O.domain = addrDomain(email).",
-    "addrDomainSQL": "md 2.2: CASE WHEN strpos(e,'@')=0 THEN '' ELSE lower(btrim(substr(e, strpos(e,'@')+1), <the 25 unicode.IsSpace code points>)) END; default collation (not ICU); verified 25/25 equal to ExtractDomain on postgres:16.15-alpine en_US.utf8; used verbatim by the read rule, migration 043 and pre-deploy query 1.",
+    "addrDomainSQL": "md 2.2: CASE WHEN strpos(e,'@')=0 THEN '' ELSE lower(btrim(substr(e, strpos(e,'@')+1), <the 25 unicode.IsSpace code points>)) END; default collation (not ICU); verified 25/25 equal to ExtractDomain on postgres:16.15-alpine en_US.utf8; used verbatim by the read rule, migration 043 and pre-deploy query 1. The test reads the production tag from docker-compose.prod.yml and compares it with server_version (N-4); scripts/test-backend.sh pinned to the production tag; e2e and dev compose stay on floating 16-alpine.",
     "effectiveOrgSQL": "md 2.2: one storage expression, consumer list as a literal built once from domain.GenericDomains(); reads only the account's row and the organisation its org_id names.",
-    "readers": "md 2.3: getUserRow/GetUserByEmail (User.OrgID is the effective organisation), orgMemberSetSQL (both sides), ReadOrgAIState, UserInOrganization, lockUserRow. Writers keep the raw column.",
-    "signIn": "md 2.4: ReconcileUserOrg after binding: lock the users row FOR NO KEY UPDATE, decide from stored standing and address in Go, then join (UpsertOrg + SetUserOrg semantics) or leave (delete every confirmation, org_id NULL); nothing keyed on the domain before the decision; a failure is lifecycle.Fail org-association, the sign-in goes on.",
-    "memberSet": "md 2.5: orgMemberSetSQL keyed by the viewer and exclusion list, both sides through effectiveOrgSQL; PAC-130 AC-17 unchanged.",
+    "readers": "md 2.3: getUserRow/GetUserByEmail (User.OrgID is the effective organisation), orgMemberSetSQL (both sides), ReadOrgAIState, UserInOrganization, lockUserRow. Writers keep the raw column. User.OrgID means the effective organisation; any caller needing the stored value reads users.org_id with SQL directly (revision 2, B-1). lockUserRow locks only the users row (scalar subquery or FOR NO KEY UPDATE OF u), never organizations (N-2). GetUserByEmail has no production caller. The operator tools neither read nor write org_id (N-6).",
+    "signIn": "md 2.4: ReconcileUserOrg after binding: lock the users row FOR NO KEY UPDATE, decide from stored standing and address in Go, then join (UpsertOrg + SetUserOrg semantics) or leave (delete every confirmation, org_id NULL); nothing keyed on the domain before the decision; a failure is lifecycle.Fail org-association, the sign-in goes on. Lock order: users row, then organizations (UpsertOrg); a deadlock victim is reported through SF-071 and the sign-in goes on (N-2). SF-071 covers both branches, join and leave (B-1).",
+    "memberSet": "md 2.5 (binding shape, revision 2 N-1): the viewer's effective organisation computed once; listed side o.org_id = <it> AND effectiveOrgSQL(o) = o.org_id, so idx_users_org_id carries the join; never two correlated effectiveOrgSQL subqueries as the join; PAC-130 AC-17 unchanged.",
     "equalWork": "md 2.6: for a non-member, the same statements whatever accounts exist at the domain; none keyed on the domain.",
-    "seams": "md 7: InstallOrgMembershipStatement (user-row, membership-lock, org-upsert, membership-set, membership-leave, members-read; observe only); existing InstallUserRead, InstallOrgRead, InstallOrgMembersExclude."
+    "seams": "md 7: InstallOrgMembershipStatement (user-row, membership-lock, org-upsert, membership-set, membership-leave, members-read; observe only); existing InstallUserRead, InstallOrgRead, InstallOrgMembersExclude.",
+    "reviewLog": "md 4 (revision 2 N-3): PAC-71's 'pac71: REVIEW ...' line (storage/signin.go:277) stops firing for a mailbox binding at the 17 added domains (consumer domains); intended."
   },
   "migration": {
     "number": "043_org_membership_rule (free on origin/main 05fff37 and on every origin branch, checked 2026-11-19; P = 42, N = 43)",
@@ -166,13 +168,14 @@
     "down": "no-op (comment plus SELECT 1); cannot restore memberships or confirmations",
     "gateSQL": "pre-deploy query 2 (verbatim from spec 7.1): SELECT 'sso_provider' AS kind, lower(domain) AS domain FROM sso_providers WHERE lower(domain) = ANY(:listed) UNION ALL SELECT 'org_ai_configuration', o.domain FROM org_ai_configurations c JOIN organizations o ON o.id = c.org_id WHERE o.domain = ANY(:listed); stop on any row. Query 1 (ending memberships per domain, addrDomainSQL verbatim) reported to the owner; query 0 (datctype en_US.utf8) reported.",
     "abort": "no data row changes (one statement rolled back); schema_migrations = 43, dirty = true (golang-migrate marks dirty before the file); neither the new nor the previous image starts (ErrDirty).",
-    "forceRecovery": "runbook 'PAC-148 migration gate' (md 5.4): only after this abort; 1) compose stop backend on every host and check it is not Restarting; 2) SELECT version, dirty FROM schema_migrations must be 43|t; 3) UPDATE schema_migrations SET version = 42, dirty = false (P = 42, the version immediately before this release's migration); 4) start the previous release's image; 5) resolve each named configuration (owner: delete it or drop the domain from the list in a new build); 6) re-run pre-deploy query 2, which must return no row, then redeploy the new image. Alternative: 'Rollback on the same host'.",
+    "forceRecovery": "runbook 'PAC-148 migration gate' (md 5.4): only after this abort; 1) compose stop backend on every host and check it is not Restarting; 2) SELECT version, dirty FROM schema_migrations must be 43|t; 3) UPDATE schema_migrations SET version = 42, dirty = false (P = 42, the version immediately before this release's migration); 4) start a backend image whose highest embedded migration is 42 (the PAC-130 release, the previous release under the precondition); if none is available, stop and follow 'Rollback on the same host' (revision 2, B-2 (b)); 5) resolve each named configuration (owner: delete it or drop the domain from the list in a new build); 6) re-run pre-deploy query 2, which must return no row, then redeploy the new image. Alternative: 'Rollback on the same host'.",
     "pac116": "applied with no backend serving (stop-migrate-start). Image-only rollback refused on a database at 043: fix forward or restore the pre-deploy backup.",
-    "releaseNote": "md 5.6: who leaves (unconfirmed, legacy not signed in since PAC-71, mismatched organisation) and what they lose; legacy accounts rejoin at a company sign-in and re-confirm; mailbox-bound accounts never rejoin on their own, support uses operator reassign; irreversible (snapshot advice); run query 0/1/2 before deploy, stop on query 2; detection generic for the added domains; some legacy accounts become bindable under PAC-71 rule (b).",
-    "locks": "ROW EXCLUSIVE on users and org_ai_confirmations, row locks on the changed rows, ACCESS SHARE on the read tables; no backend serving, so contention is nil."
+    "releaseNote": "md 5.6: who leaves (unconfirmed, legacy not signed in since PAC-71, mismatched organisation) and what they lose; legacy accounts rejoin at a company sign-in and re-confirm; mailbox-bound accounts never rejoin on their own, support uses operator reassign; irreversible (snapshot advice); run query 0/1/2 before deploy, stop on query 2; detection generic for the added domains; some legacy accounts become bindable under PAC-71 rule (b). Revision 2: the database must read 42 | f before deploy (PAC-130's release first); PAC-71's REVIEW log line stops firing for mailbox bindings at the 17 added domains.",
+    "locks": "ROW EXCLUSIVE on users and org_ai_confirmations, row locks on the changed rows, ACCESS SHARE on the read tables; no backend serving, so contention is nil.",
+    "releasePrecondition": "binding (revision 2, B-2 (a)): before the PAC-148 release is deployed, docker compose -f docker-compose.prod.yml exec postgres psql -U clockwise -d clockwise -c 'SELECT version, dirty FROM schema_migrations' must read exactly 42 | f; otherwise stop: PAC-130's release (042_manager_member_link_erase) is deployed and settled first. P = 42 is the data state."
   },
   "gates": {
-    "contractApproval": "pending contract-challenger",
+    "contractApproval": "revision 1 (565b7dd): REVISE by contract-challenger at 2da61d8 (2 blocking, 6 non-blocking); revision 2 pending contract-challenger",
     "assembler": "Revision 1 (base origin/main 05fff37, merged): python3 scripts/openapi_assemble.py (wrote; 112 paths, 134 operations, 218 schemas, x-uncertain 3) and --check ('OK: bundle is in sync (112 paths)'); python3 scripts/openapi_migration_report.py (no diff) and --check ('OK: MIGRATION.md covers all 134 operations (14 generated)'); bash scripts/openapi_gen_go.sh and --check ('OK: backend/api/gen matches the contract'); cd backend && go build ./... ok. make is not installed on the authoring host. Cross-repo half (openapi-check-web) not run: web types drift until the web PR.",
     "executedEvidence": "postgres:16.15-alpine (en_US.utf8): addrDomainSQL equal to ExtractDomain on 25/25 fixtures (und-x-icu: 23/25); md 5.1 SQL on a minimal schema: gate abort changed nothing, clean run ended 4 memberships and 4 confirmations as expected.",
     "webGate": "Stage 4: smart-calendar-flow PR regenerating src/api/generated against the merged bundle; regression pins of md 6; cross-repo openapi-check on the pair.",
@@ -185,20 +188,21 @@
     "AC-1  [contract] ISP with I1 (mailbox), I2 (unbound legacy), I3 (confirmed, break-glass stand-in); S signs in via fake Google, verified ISP address, no hd: member list 200 [], no org on /api/auth/me, S in no organisation, no ISP organisation row created by S; rerun without I1-I3 byte-identical modulo S's id, name, timestamps; equal InstallOrgMembershipStatement sequences for S's sign-in step and member-list read, no org-upsert, no organisation read by domain.",
     "AC-2  [unit] every consumer-list entry (enumerated from GenericDomains, includes md 4's 17): a domain-confirmed account, the sign-in step -> no membership, no organisation row. Extends TestPAC98_AC21.",
     "AC-3  [contract] A1 (Google hd ACME), A2 (Microsoft tenant verifies ACME), U (mailbox): A1's and A2's lists = {A1, A2}, never U; U's list 200 []; U's /me no org; also with U signing in first: U creates no organisation row, A1 does.",
-    "AC-4  [contract] ACME with complete organisation AI (personal keys not allowed) and an SSO provider; U: org-AI read/confirm/patch 403 org membership required; SSO list/options/create 403, step-up start refused before any redirect; inOrganization false; U's own key accepted; rule (b) false for U for A1; A1 as today. Plants with no sign-in or migration: P1 U in ACME with a current confirmation; P2 A3 (confirmed at OTHER) in ACME: same answers, plus own list [] and absent from A1's (G-1), no org on /me (G-3), parse, brief refresh, probe and MCP clockwise_parse_command do not use ACME's configuration or key (fake LLM sees no ACME key; row 6) (G-4), deleteSsoProvider 403 and nothing deleted, callback with a minted valid state for ACME -> state_mismatch, no grant (G-5, G-6).",
+    "AC-4  [contract] ACME with complete organisation AI (personal keys not allowed) and an SSO provider; U: org-AI read/confirm/patch 403 org membership required (compared with gen.OrgMembershipRequired); SSO list/options/create 403, step-up start refused before any redirect; inOrganization false; U's own key accepted; rule (b) false for U for A1; A1 as today. Plants with no sign-in or migration: P1 U in ACME with a current confirmation; P2 A3 (confirmed at OTHER) in ACME: same answers, plus own list [] and absent from A1's (G-1), no org on /me (G-3), parse, brief refresh, probe and MCP clockwise_parse_command do not use ACME's configuration or key (fake LLM sees no ACME key; row 6) (G-4), deleteSsoProvider 403 and nothing deleted, callback with a minted valid state for ACME -> state_mismatch, no grant (G-5, G-6).",
     "AC-5  [unit] leaving at sign-in: (i) U with a confirmation; (ii) a domain-confirmed account at a newly listed domain: no organisation, confirmations gone, sign-in succeeds.",
     "AC-6  [unit] L (legacy, unbound, unconfirmed, detached by 043) signs in with Google hd = ACME: member of ACME; organisation-AI state row 5 even if L had confirmed before.",
-    "AC-7  [unit] migration 043 on a fixture at 42 (U, L, A1 with confirmations; X confirmed at hotmail.fr in org hotmail.fr; A3 confirmed at OTHER in ACME; I1, I2, I3 in ISP; ACME's configuration, SSO provider, sso_events, A1's live grant): U, L, I1, I2, X, A3 detached with confirmations gone; A1 and I3 kept; every organisation row, configuration, provider, event and grant unchanged; no other column or row changes; count reported.",
+    "AC-7  [unit] migration 043 on a fixture at 42 (U, L, A1 with confirmations; X confirmed at hotmail.fr in org hotmail.fr; A3 confirmed at OTHER in ACME; I1, I2, I3 in ISP; ACME's configuration, SSO provider, sso_events, A1's live grant): U, L, I1, I2, X, A3 detached with confirmations gone; A1 and I3 kept; every organisation row, configuration, provider, event and grant unchanged; no other column or row changes; count reported, observed through a pgx OnNotice handler running the up file on a copy of the fixture (golang-migrate does not surface notices; revision 2 N-5).",
     "AC-8  [contract] InstallUserRead fault on the caller -> 500 {\"error\":\"internal\"}, never 200 []; sql.ErrNoRows -> 200 []; readable caller with no organisation -> 200 [].",
     "AC-9  [contract] A1's member-list 200 decodes strictly against the bundle (gen.OrgMember, unknown fields disallowed); provider in {google, microsoft, sso}; no x-uncertain on OrgMember.",
     "AC-10 [contract] A1 owns T; roster U, A2, N (nobody, same length as U's): A2 flag true, no data; U and N byte-identical (address, row id, timestamps replaced) in roster and analytics, flag false, same estimate; PAC-130 AC-17 passes; viewer S with I1 and I3 on the roster: both byte-identical to N. TestPAC130_AC10 uOrg sub-case rewritten to the estimate.",
     "AC-11 [contract] each md 4 domain: POST /api/auth/detect -> generic, no SSO read, no MX query; PAC-98's per-entry table has a row for each.",
     "AC-12 withdrawn by the spec (regression pin, md 6).",
+    "SF-071 [contract, regression pin] TestPAC122_SF071_OrgAssociationFailureIsReported amended: each case domain-confirmed at its own domain; raw users.org_id by SQL; plus a leave case whose UPDATE users SET org_id = NULL is forced to fail: sign-in succeeds, one org-association report under the account id (no address, no domain), raw org_id and confirmations unchanged.",
     "AC-13 [e2e] fake Google user with a verified ISP address and no hd; two seeded ISP accounts associated with the ISP organisation: member list []; Settings shows no organisation AI section and no SSO step-up entry; no 'On Paceday' badge for the seeded addresses on that user's Manager roster.",
     "AC-14 [contract] the bundle states the rule on listOrgMembers with pointers on CurrentUserResponse.org, AIStatus.inOrganization and the organisation and SSO membership 403s; rule (b) is still the list; the 500; the provider enum; is_paceday_user's PAC-148 sentence rewritten; AC-1, AC-3, AC-8 answers validate against the bundle. Sub-test: addrDomainSQL equals ExtractDomain on md 7's fixtures, on a database asserted to be 16.15 with datctype en_US.utf8.",
     "AC-15 [unit, regression pin] U after 043: Workspace sign-in for U's address (hd ACME, other subject) refused by rule 3, no session, standing unconfirmed, no organisation; U's mailbox sign-in still succeeds and joins nothing; after operator reassign to the Workspace identity, that sign-in joins ACME.",
     "AC-16 [unit] the consumer-list block of 043's up file is set-equal to domain.GenericDomains(); applied to one domain-confirmed member per listed domain it detaches all and keeps A1.",
-    "AC-17 [unit] at 42 with an SSO provider for hotmail.fr, and separately an organisation AI configuration on organisation hotmail.fr: the real runner fails naming kind and domain; no data row changes; schema_migrations 43 dirty; after UPDATE schema_migrations SET version = 42, dirty = false the previous release's start-up check accepts it; with neither present, 043 applies (AC-7)."
+    "AC-17 [unit] at 42 with an SSO provider for hotmail.fr, and separately an organisation AI configuration on organisation hotmail.fr: the real runner fails naming kind and domain; no data row changes; schema_migrations 43 dirty; after UPDATE schema_migrations SET version = 42, dirty = false the start-up classification with the highest embedded version set to 42 (readState with highestFor(42), standing in for the PAC-130 image) is VersionCurrent; with neither present, 043 applies (AC-7)."
   ],
   "resolvesFindings": [
     "API-047 and SF-075: contract states the 500 (md 3); annotated in the registers; Fixed (PAC-148) when stage 4 merges with TestPAC148_AC8_UnreadableCallerIs500.",
@@ -255,6 +259,11 @@
       "detail": "md 8; each keeps the outcome the plan names"
     },
     {
+      "consumer": "backend/api/pac122_b3_test.go (SF-071)",
+      "breaks": "amended",
+      "detail": "domain-confirmed sign-ins, raw org_id by SQL, a leave failure case (md 8, revision 2 B-1)"
+    },
+    {
       "consumer": "backend/auth/pac98_detect_test.go, backend/storage/pac98_org_skip_test.go",
       "breaks": "extended",
       "detail": "AC-2, AC-11"
@@ -284,6 +293,7 @@
     "This revision (or a later one) accepted by contract-challenger.",
     "The plan records every md 4 entry dropped by the MX admission rule, and the reviewer checks it against the diff.",
     "The stage-4 PR's bundle sha256 equals contractHash, or a recorded rebased hash with no fragment text change.",
+    "Release precondition (md 5.5): the production database reads 42 | f before the PAC-148 release is deployed; PAC-130's release (042) is deployed and settled first.",
     "The release manager runs md 5.5 (stop on query 2) before deploying the server PR; the server PR (migration 043) deploys before the web PR.",
     "make verify output pasted in each PR body (factory section 3)."
   ],
@@ -293,5 +303,15 @@
     "The backend test suite (no code changed in this stage).",
     "Migration 043 on the real schema (AC-7, AC-16, AC-17 are stage 4); its SQL ran only on a minimal schema on postgres:16.15-alpine.",
     "The MX admission rule for the 17 entries (the plan runs it)."
+  ],
+  "resolvesChallenge": [
+    "B-1: pac122_b3_test.go in md 8 and allowedPaths; domain-confirmed sign-ins at own domain; raw users.org_id by SQL; leave failure case; User.OrgID is the effective organisation, stored value read by SQL.",
+    "B-2: (a) release precondition 42 | f with the exact query (md 5.5, 5.6, mergeConditions); (b) step 4 names an image with highest migration 42, else Rollback on the same host; AC-17 uses highestFor(42).",
+    "N-1: member set joins on raw o.org_id = viewer's effective org, then effectiveOrgSQL(o) = o.org_id.",
+    "N-2: lockUserRow locks only users (scalar subquery or FOR NO KEY UPDATE OF u); lock order users then organizations; deadlock reported via SF-071.",
+    "N-3: PAC-71 REVIEW log line stops for the 17 domains (md 4, 5.6).",
+    "N-4: test reads the tag from docker-compose.prod.yml; e2e and dev compose stay on 16-alpine.",
+    "N-5: AC-7 count via pgx OnNotice handler.",
+    "N-6: operator.go wording; GetUserByEmail has no production caller; spec AC-4 and 3.8 spelling corrected to 'org membership required'."
   ]
 }
