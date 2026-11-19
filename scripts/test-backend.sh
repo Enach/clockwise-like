@@ -54,7 +54,10 @@ fi
 
 # The whole repository is mounted, with backend/ as the working directory, not
 # backend/ alone: the PAC-21 contract test (backend/api/pac21_contract_5xx_test.go)
-# reads contracts/openapi/openapi.yaml.
+# reads contracts/openapi/openapi.yaml, and the PAC-139 deny-all proxy is built
+# from tools/denyproxy. scripts/test-backend-in-container.sh downloads modules
+# first, then runs `go test` with HTTP(S)_PROXY pointed at that proxy, and
+# fails the run if any test tried to reach a real host through it.
 docker run --rm --network host \
   -e "PACEDAY_TEST_DATABASE_URL=postgres://test:test@127.0.0.1:${DB_PORT}/testdb?sslmode=disable" \
   -e "GO_TEST_FLAGS=$GO_TEST_FLAGS" \
@@ -62,4 +65,4 @@ docker run --rm --network host \
   -v "$ROOT_DIR:/repo" \
   -w /repo/backend \
   golang:1.26-alpine \
-  sh -c 'go test -p 1 $GO_TEST_FLAGS ./...'
+  sh /repo/scripts/test-backend-in-container.sh
