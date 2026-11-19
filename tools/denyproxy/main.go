@@ -26,9 +26,13 @@ import (
 )
 
 // handler answers every request 403 and appends "<METHOD> <host>" to out.
+// A request it cannot record calls fatal (os.Exit in main): an unrecorded
+// request would let "0 denied" pass vacuously, and the script's liveness
+// check after the suite catches a dead proxy.
 type handler struct {
-	mu  sync.Mutex
-	out *os.File
+	mu    sync.Mutex
+	out   *os.File
+	fatal func(error)
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +45,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, err := h.out.WriteString(line)
 	h.mu.Unlock()
 	if err != nil {
-		log.Printf("denyproxy: could not record %q: %v", line, err)
+		h.fatal(fmt.Errorf("could not record %q: %w", line, err))
+		return
 	}
 	log.Printf("denyproxy: denied %s %s", r.Method, host)
 	http.Error(w, "denyproxy: outbound calls are not allowed from the test suite (PAC-139): "+host, http.StatusForbidden)
@@ -60,7 +65,11 @@ func run(addrFile, logFile string) error {
 	if err := os.WriteFile(addrFile, []byte(ln.Addr().String()), 0o644); err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: &handler{out: out}, ReadHeaderTimeout: 10 * time.Second}
+	fatal := func(err error) {
+		log.Printf("denyproxy: %v", err)
+		os.Exit(3)
+	}
+	srv := &http.Server{Handler: &handler{out: out, fatal: fatal}, ReadHeaderTimeout: 10 * time.Second}
 	return srv.Serve(ln)
 }
 

@@ -20,7 +20,7 @@ func TestDeniesAndRecordsPlainAndConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer out.Close()
-	proxy := httptest.NewServer(&handler{out: out})
+	proxy := httptest.NewServer(&handler{out: out, fatal: func(err error) { t.Errorf("fatal: %v", err) }})
 	defer proxy.Close()
 	pu, _ := url.Parse(proxy.URL)
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
@@ -59,5 +59,22 @@ func TestDeniesAndRecordsPlainAndConnect(t *testing.T) {
 	want := "GET slack.example\nCONNECT slack.example:443\n"
 	if string(got) != want {
 		t.Fatalf("log = %q, want %q", got, want)
+	}
+}
+
+// A request the proxy cannot record is fatal, never a silent 403: otherwise
+// an empty log would not mean "no outbound call".
+func TestUnrecordableRequestIsFatal(t *testing.T) {
+	out, err := os.Create(filepath.Join(t.TempDir(), "denied.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Close() // every write now fails
+	var fatalErr error
+	h := &handler{out: out, fatal: func(err error) { fatalErr = err }}
+	req := httptest.NewRequest(http.MethodGet, "http://slack.example/x", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if fatalErr == nil || !strings.Contains(fatalErr.Error(), "GET slack.example") {
+		t.Fatalf("fatal = %v, want a fatal error naming the request", fatalErr)
 	}
 }
