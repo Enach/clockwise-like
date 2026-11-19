@@ -155,7 +155,7 @@ script is not committed. All mutations were killed:
 | M12 | M11 plus the route moved outside the `requireAuth` group | `NoUserInContextIsRefused`, `AC7` |
 | M13 | handler references `gen.ListAuditEntries400JSONResponse` | `AC12` |
 
-The e2e changes were not mutated locally (see §6).
+The e2e changes were not mutated locally (§6).
 
 ## 5. Gates run (commands, results)
 
@@ -181,9 +181,18 @@ from the worktree, Git Bash on Windows, with Go 1.26.0 (auto toolchain):
 - Full backend suite with coverage, on a throwaway `postgres:16.15-alpine`
   (port 15493):
   `PACEDAY_TEST_DB_PORT=15493 PACEDAY_GO_TEST_FLAGS="-coverprofile=coverage.out -covermode=atomic" bash scripts/test-backend.sh`
-  → see the PR body for the result and the `scripts/coverage-gate.sh` total.
+  → exit 0. All 20 packages are `ok` (`backend/api` 85.8%), and the denyproxy
+  reports 0 outbound requests denied during the suite.
+  `bash scripts/coverage-gate.sh backend/coverage.out 64 backend` →
+  "backend coverage: 80.5% (floor 64%)".
 - e2e typecheck: `cd e2e && npm ci && npm run typecheck` → exit 0.
-- e2e run: see the PR body.
+- e2e, audit spec only, on the real compose stack. The backend was built from
+  this worktree; the frontend is the local `paceday-frontend-e2e:local` image
+  built from smart-calendar-flow main, since the web change is regeneration
+  only:
+  `cd e2e && E2E_FRONTEND_IMAGE=paceday-frontend-e2e:local npx playwright test tests/audit.spec.ts --reporter=line`
+  → "9 passed (56.2s)". That count includes the setup projects; all five
+  audit.spec.ts tests passed, including PAC-53 AC-9 and AC-10.
 
 ## 6. Not run here
 
@@ -193,6 +202,11 @@ from the worktree, Git Bash on Windows, with Go 1.26.0 (auto toolchain):
   is changed by this PR. CI runs them.
 - `make verify` as one command (no `make` on the host). CI's `verify` job is the
   authority.
+- The full e2e suite. Only `tests/audit.spec.ts` was run locally; CI runs the
+  rest.
+- e2e mutations. The e2e assertions were not observed red against the old
+  backend locally. The unit tests that pin the same rows were observed red
+  (§3).
 
 ## 7. Deviations
 
