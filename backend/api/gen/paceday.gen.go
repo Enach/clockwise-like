@@ -2207,8 +2207,8 @@ type InviteEmailRequest struct {
 
 // InviteSchedulingLinkHostRequest defines model for InviteSchedulingLinkHostRequest.
 type InviteSchedulingLinkHostRequest struct {
-	// Email PAC-149: the address to invite. Must be non-empty after trimming ECMA-262 `\s` from both ends (400 "email is required"), and, unless it is the owner's address or a current entry's ignoring case, a well-formed address (400 "email must be a valid email address"). Stored trimmed with its letter case kept. It is never looked up against accounts (before PAC-149 it had to match an account).
-	Email openapi_types.Email `json:"email"`
+	// Email No `format: email`: the server's rule below is the only check, and it accepts some addresses JSON Schema's email format refuses (e.g. `user@localhost`). PAC-149: the address to invite. Must be non-empty after trimming ECMA-262 `\s` from both ends (400 "email is required"), and, unless it is the owner's address or a current entry's ignoring case, a well-formed address (400 "email must be a valid email address"). Stored trimmed with its letter case kept. It is never looked up against accounts (before PAC-149 it had to match an account).
+	Email string `json:"email"`
 }
 
 // LLMApiKeysSet NEW-llm-bring-your-own (spec D-5). For each key-based provider, whether a key bound to it is on file for the caller. The only thing a reader learns about the keys; the keys themselves are never returned.
@@ -3614,9 +3614,9 @@ type SchedulingLinkHost struct {
 	// AvatarUrl Omitted when empty. PAC-149, never present on a `pending` or `declined` entry.
 	AvatarUrl *string `json:"avatar_url,omitempty"`
 
-	// Email The entry's address: for a pending invitation the recorded address (trimmed, letter case kept as typed); for the owner and an accepted or declined entry the account's stored address. Never empty: every operation that answers a roster reads it strictly, and a host's user record that cannot be loaded is that operation's 500 (PAC-25, PAC-122, PAC-132; SF-029).
-	Email   openapi_types.Email `json:"email"`
-	IsOwner bool                `json:"is_owner"`
+	// Email No `format: email` (PAC-149 contract revision 2): an address that passed the well-formedness rule (`net/mail`, the team invitation's rule, e.g. `user@localhost`) or an account's stored address can be narrower than JSON Schema's email format, and a read must never fail on one. An entry of an account an operator freed shows the placeholder `freed+<account id>@paceday.invalid` (an operator act, PAC-71; accepted). The entry's address: for a pending invitation the recorded address (trimmed, letter case kept as typed); for the owner and an accepted or declined entry the account's stored address. Never empty: every operation that answers a roster reads it strictly, and a host's user record that cannot be loaded is that operation's 500 (PAC-25, PAC-122, PAC-132; SF-029).
+	Email   string `json:"email"`
+	IsOwner bool   `json:"is_owner"`
 
 	// Name Omitted when empty. PAC-149, never present on a `pending` or `declined` entry.
 	Name *string `json:"name,omitempty"`

@@ -8417,16 +8417,20 @@ paths:
 
         PAC-149 (spec §3.3, D-5, D-10; contract md §2.4), which decides what "the caller''s host row"
         above means now that a pending invitation is to an address. Under the link''s lock, in this order:
-        (1) the caller owns the link or has an accepted or declined entry on it: that entry is updated
-        exactly as before (so the owner still gets 200 on the owner''s row, PAC-30), and in the same write
-        any pending invitation of the link whose address equals the caller''s stored address ignoring
-        case is removed (a state no product path creates; never a 500 from a uniqueness rule); (2) otherwise,
-        when the caller''s account is the single domain-confirmed holder of its stored address and the
-        link has a pending invitation whose address equals it ignoring case, that invitation becomes the
-        caller''s entry with this status, bound to the caller''s account, keeping its invitation time
-        and its place in the roster; (3) otherwise the 404 below, nothing written. An unconfirmed carrier
-        or either account of a letter-case pair falls in (3). A storage error on the match (the caller''s
-        account row or the invitation read) is the 500 with nothing changed, never the 404.'
+        (1) the caller owns the link: its owner row is updated exactly as before when it exists (the owner
+        still gets 200, PAC-30), and in the same write any pending invitation of the link whose address
+        equals the owner''s stored address ignoring case is removed; when the link has no owner row (created
+        before PAC-112) the answer is the 404 below and nothing is written, the stray invitation included.
+        The owner is never matched by (2). (1'') The caller has an accepted or declined entry on the link:
+        that entry is updated exactly as before and, in the same write, any pending invitation of its
+        stored address on the link is removed. Both removals concern a state no product path creates;
+        never a 500 from a uniqueness rule. (2) Otherwise, when the caller''s account is the single domain-confirmed
+        holder of its stored address and the link has a pending invitation whose address equals it ignoring
+        case, that invitation becomes the caller''s entry with this status, bound to the caller''s account,
+        keeping its invitation time and its place in the roster; (3) otherwise the 404 below, nothing
+        written. An unconfirmed carrier or either account of a letter-case pair falls in (3). A storage
+        error on the match (the caller''s account row or the invitation read) is the 500 with nothing
+        changed, never the 404.'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -8482,8 +8486,8 @@ paths:
         no host row changes (PAC-40 AC-5). PAC-101: as for accept, a delete committed while the request
         is handled is a 404 with nothing changed, a decline committed first is kept, and the wait for
         a delete or edit, or a co-host invitation (PAC-120), in progress is at most 10 seconds (then the
-        500). PAC-149: the same three cases as accept (accept''s description); a declined entry made from
-        an invitation is shown by address and status only (`SchedulingLinkHost`) and keeps counting toward
+        500). PAC-149: the same cases as accept (accept''s description); a declined entry made from an
+        invitation is shown by address and status only (`SchedulingLinkHost`) and keeps counting toward
         the 5 co-hosts (PAC-120).'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
@@ -9115,9 +9119,12 @@ paths:
               $ref: '#/components/schemas/InviteSchedulingLinkHostRequest'
       responses:
         '200':
-          description: 'The address is the owner''s own, or equals the address of a current entry of the
-            link ignoring case: that entry, unchanged, as the link reads show it (PAC-61; PAC-149 rules
-            (1) and (2)). Nothing written.'
+          description: 'The address is the owner''s own (rule (1)): the owner''s entry as the link reads
+            show it, or, for a link with no owner row (created before PAC-112), an owner entry synthesized
+            from the owner''s account (`user_id`, `email`, `name`, `avatar_url`, `is_owner: true`, `status:
+            accepted`) that the link reads do not show. Or it equals the address of a current entry of
+            the link ignoring case (rule (2)): that entry, unchanged, as the link reads show it (PAC-61).
+            Nothing written.'
           content:
             application/json:
               schema:
@@ -13359,12 +13366,12 @@ components:
       properties:
         email:
           type: string
-          format: email
-          description: 'PAC-149: the address to invite. Must be non-empty after trimming ECMA-262 `\s`
-            from both ends (400 "email is required"), and, unless it is the owner''s address or a current
-            entry''s ignoring case, a well-formed address (400 "email must be a valid email address").
-            Stored trimmed with its letter case kept. It is never looked up against accounts (before PAC-149
-            it had to match an account).'
+          description: 'No `format: email`: the server''s rule below is the only check, and it accepts
+            some addresses JSON Schema''s email format refuses (e.g. `user@localhost`). PAC-149: the address
+            to invite. Must be non-empty after trimming ECMA-262 `\s` from both ends (400 "email is required"),
+            and, unless it is the owner''s address or a current entry''s ignoring case, a well-formed
+            address (400 "email must be a valid email address"). Stored trimmed with its letter case kept.
+            It is never looked up against accounts (before PAC-149 it had to match an account).'
     LLMApiKeysSet:
       type: object
       description: 'NEW-llm-bring-your-own (spec D-5). For each key-based provider, whether a key bound
@@ -15928,12 +15935,15 @@ components:
             including the id of a pending invitee: oracle C-4).'
         email:
           type: string
-          format: email
-          description: 'The entry''s address: for a pending invitation the recorded address (trimmed,
-            letter case kept as typed); for the owner and an accepted or declined entry the account''s
-            stored address. Never empty: every operation that answers a roster reads it strictly, and
-            a host''s user record that cannot be loaded is that operation''s 500 (PAC-25, PAC-122, PAC-132;
-            SF-029).'
+          description: 'No `format: email` (PAC-149 contract revision 2): an address that passed the well-formedness
+            rule (`net/mail`, the team invitation''s rule, e.g. `user@localhost`) or an account''s stored
+            address can be narrower than JSON Schema''s email format, and a read must never fail on one.
+            An entry of an account an operator freed shows the placeholder `freed+<account id>@paceday.invalid`
+            (an operator act, PAC-71; accepted). The entry''s address: for a pending invitation the recorded
+            address (trimmed, letter case kept as typed); for the owner and an accepted or declined entry
+            the account''s stored address. Never empty: every operation that answers a roster reads it
+            strictly, and a host''s user record that cannot be loaded is that operation''s 500 (PAC-25,
+            PAC-122, PAC-132; SF-029).'
         name:
           type: string
           description: Omitted when empty. PAC-149, never present on a `pending` or `declined` entry.
