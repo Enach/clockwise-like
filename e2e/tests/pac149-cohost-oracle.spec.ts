@@ -41,7 +41,7 @@ async function freshUser(db: Db, email: string, name: string): Promise<SessionUs
   return { id: row!.id, email, name };
 }
 
-async function newLink(api: ApiClient, title: string): Promise<string> {
+async function newLink(api: ApiClient, title: string): Promise<{ id: string; slug: string }> {
   const created = await api.post('/api/scheduling-links', {
     title,
     duration_options: [30],
@@ -52,7 +52,7 @@ async function newLink(api: ApiClient, title: string): Promise<string> {
     usage_type: 'reusable',
   });
   expect(created.status(), await created.text()).toBe(201);
-  return ((await created.json()) as { id: string }).id;
+  return (await created.json()) as { id: string; slug: string };
 }
 
 async function openEditor(page: Page, title: string) {
@@ -69,7 +69,7 @@ async function openEditor(page: Page, title: string) {
  * the editor and returns its rendered text with addr and title masked.
  */
 async function inviteThroughTheEditor(page: Page, api: ApiClient, title: string, addr: string): Promise<string> {
-  const id = await newLink(api, title);
+  const { id, slug } = await newLink(api, title);
   const drawer = await openEditor(page, title);
   await drawer.getByLabel('Co-host email').fill(addr);
   await drawer.getByRole('button', { name: 'Add', exact: true }).click();
@@ -90,7 +90,9 @@ async function inviteThroughTheEditor(page: Page, api: ApiClient, title: string,
   await expect(again.getByText('Invite pending')).toBeVisible();
   const text = await again.innerText();
   expect(text).not.toContain("couldn't be added");
-  return text.split(addr).join('<ADDR>').split(title).join('<TITLE>');
+  // The generated slug (owner name + duration + a suffix when taken) is the
+  // server's, not the address's.
+  return text.split(addr).join('<ADDR>').split(title).join('<TITLE>').split(slug).join('<SLUG>');
 }
 
 test.describe('PAC-149 the link editor shows an invitation the same whoever holds the address', () => {
