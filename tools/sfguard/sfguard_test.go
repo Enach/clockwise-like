@@ -37,6 +37,13 @@ var fixtureKeys = map[string]int{
 	"api/seams.go handles storage.Find":         1,
 	"api/seams.go handles sql.Tx.Exec":          1,
 	"api/seams.go handles sql.Conn.ExecContext": 1,
+	// PAC-142: the `if v, err := target(); err == nil` swallow, no else and
+	// no later use of err: alone, reversed, leftmost of &&, and with `=`.
+	// handled() holds the shapes that are not it (else, err != nil, an
+	// untargeted call, err read after the if, ||, a separate line).
+	"api/errnil.go swallows errnil:storage.GetUser":   2,
+	"api/errnil.go swallows errnil:storage.Store.Get": 1,
+	"api/errnil.go swallows errnil:auth.LoadToken":    1,
 }
 
 func fixtureFindings(t *testing.T) []Finding {
@@ -275,6 +282,31 @@ func TestParseBaselineRefusesPACZero(t *testing.T) {
 	}
 	if _, problems, _ := ParseBaseline(strings.NewReader("a.go F storage.X # PAC-140 why\n")); len(problems) != 0 {
 		t.Errorf("PAC-140 refused: %q", problems)
+	}
+}
+
+// TestErrNilShapeIsKeyedApart pins that the PAC-142 shape is its own
+// baseline key: a baselined `_ =` discard of a call does not accept an
+// `err == nil` swallow of the same call in the same function, and the
+// reverse.
+func TestErrNilShapeIsKeyedApart(t *testing.T) {
+	blank := Finding{File: "a.go", Func: "F", Callee: "storage.X", Why: "storage"}
+	errNil := blank
+	errNil.Shape = ErrNil
+	if errNil.Key() != "a.go F errnil:storage.X" || blank.Key() != "a.go F storage.X" {
+		t.Fatalf("keys: blank %q, errnil %q", blank.Key(), errNil.Key())
+	}
+	b, _, _ := ParseBaseline(strings.NewReader("a.go F storage.X # PAC-1\n"))
+	if r := Ratchet([]Finding{errNil}, b); len(r.New) != 1 || len(r.Stale) != 1 {
+		t.Fatalf("a baselined blank discard accepted an errnil swallow: %+v", r)
+	}
+	var out bytes.Buffer
+	Render(&out, []Finding{errNil}, b)
+	if !strings.HasPrefix(out.String(), "a.go  F  errnil:storage.X  # TODO") {
+		t.Fatalf("Render = %q", out.String())
+	}
+	if s := errNil.String(); !strings.Contains(s, "err == nil") || !strings.Contains(s, "errnil:storage.X") {
+		t.Fatalf("message = %q", s)
 	}
 }
 

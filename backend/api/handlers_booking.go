@@ -121,7 +121,7 @@ func (h *bookingHandlers) publicLink(link *storage.SchedulingLink, loc *time.Loc
 // missing record is an error like a failed read: host rows cascade with
 // their user, so a host without one is never a legitimate empty answer.
 func hostUser(db storage.DBTX, host *storage.LinkHost) (*storage.User, error) {
-	user, err := storage.GetUserByID(db, host.UserID)
+	user, err := storage.GetUserByIDNoOrg(db, host.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("host %s user record: %w", host.UserID, err)
 	}

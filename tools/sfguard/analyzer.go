@@ -47,17 +47,43 @@ var seams = map[string]string{
 	backendModule + "/auth.zoomStore":            "storage-seam",
 }
 
-// Finding is one blank-assigned error from a targeted call.
+// Shape is which form of dropped error a finding is.
+type Shape int
+
+const (
+	// Blank: the error result is assigned to `_` (PAC-122).
+	Blank Shape = iota
+	// ErrNil: `if v, err := target(...); err == nil { ... }` with no else
+	// and no later use of err: the failure takes the same path as "absent"
+	// (PAC-142).
+	ErrNil
+)
+
+// errNilPrefix marks an ErrNil finding's callee in the baseline, so the two
+// shapes of one call are counted apart.
+const errNilPrefix = "errnil:"
+
+// Finding is one dropped error from a targeted call.
 type Finding struct {
 	File   string // slash path relative to the repo root
 	Line   int    // for the message only; never part of the fingerprint
 	Func   string // enclosing top-level declaration, e.g. (*Handler).Create
 	Callee string // e.g. storage.GetUser, storage.DBTX.ExecContext, sql.DB.Exec
 	Why    string // which target set matched
+	Shape  Shape
+}
+
+// calleeField is the third baseline field: the callee, prefixed with
+// errnil: for the ErrNil shape.
+func (f Finding) calleeField() string {
+	if f.Shape == ErrNil {
+		return errNilPrefix + f.Callee
+	}
+	return f.Callee
 }
 
 // Key is the line-insensitive fingerprint the baseline records.
-func (f Finding) Key() string { return f.File + " " + f.Func + " " + f.Callee }
+func (f Finding) Key() string { return f.File + " " + f.Func + " " + f.calleeField() }
 
 // target reports whether a call to fn is in the guarded set, and why.
 //
@@ -192,8 +218,9 @@ func funcName(d *ast.FuncDecl) string {
 	return name + "." + d.Name.Name
 }
 
-// checkPackage returns every blank-assigned error from a targeted call in the
-// package's non-test, non-generated files.
+// checkPackage returns every blank-assigned error from a targeted call, and
+// every `err == nil` swallow of one (errNilSwallow), in the package's
+// non-test, non-generated files.
 func checkPackage(pkg *packages.Package, root string) []Finding {
 	var out []Finding
 	for _, file := range pkg.Syntax {
@@ -212,6 +239,13 @@ func checkPackage(pkg *packages.Package, root string) []Finding {
 				encl = funcName(fd)
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
+				if is, ok := n.(*ast.IfStmt); ok {
+					if f, ok := errNilSwallow(pkg, is); ok {
+						f.File, f.Func = rel, encl
+						out = append(out, f)
+					}
+					return true
+				}
 				var lhs, rhs []ast.Expr
 				switch s := n.(type) {
 				case *ast.AssignStmt:
@@ -293,6 +327,105 @@ func blankErrors(pkg *packages.Package, lhs, rhs []ast.Expr) []Finding {
 	return out
 }
 
+// errNilSwallow matches the PAC-142 shape:
+//
+//	if v, err := storage.Get(...); err == nil { use(v) }
+//
+// an if statement whose init assigns one targeted call's results (:= or =),
+// whose error result lands in a named variable, whose condition is
+// `err == nil` (or `nil == err`), alone or as the first operand of an &&
+// chain (`err == nil && v != nil`: a failure still takes the false branch),
+// with no else branch, and with no use of that variable after the if
+// statement. A failed call then takes the path of "absent": nothing is said.
+// Not matched: a separate `v, err := f()` line followed by `if err == nil`
+// (the error outlives the if, and errcheck-style review sees it), `||`
+// conditions, and an if with an else (which handles the failure, or at
+// least sees it).
+func errNilSwallow(pkg *packages.Package, is *ast.IfStmt) (Finding, bool) {
+	if is.Else != nil || is.Init == nil {
+		return Finding{}, false
+	}
+	as, ok := is.Init.(*ast.AssignStmt)
+	if !ok || (as.Tok != token.DEFINE && as.Tok != token.ASSIGN) || len(as.Rhs) != 1 {
+		return Finding{}, false
+	}
+	call, ok := ast.Unparen(as.Rhs[0]).(*ast.CallExpr)
+	if !ok {
+		return Finding{}, false
+	}
+	fn := calleeFunc(pkg.TypesInfo, call)
+	if fn == nil {
+		return Finding{}, false
+	}
+	why, ok := target(fn)
+	if !ok {
+		return Finding{}, false
+	}
+	errVar := nilComparedIdent(is.Cond)
+	if errVar == nil {
+		return Finding{}, false
+	}
+	obj := pkg.TypesInfo.ObjectOf(errVar)
+	if obj == nil || !types.Identical(obj.Type(), errorType) {
+		return Finding{}, false
+	}
+	// The compared variable must be one the init assigned from the call.
+	assigned := false
+	for _, l := range as.Lhs {
+		if id, ok := l.(*ast.Ident); ok && id.Name != "_" && pkg.TypesInfo.ObjectOf(id) == obj {
+			assigned = true
+		}
+	}
+	if !assigned {
+		return Finding{}, false
+	}
+	// A later read of the variable (only possible for `=`, where it outlives
+	// the if) means the failure is looked at after all.
+	for id, o := range pkg.TypesInfo.Uses {
+		if o == obj && id.Pos() > is.End() {
+			return Finding{}, false
+		}
+	}
+	return Finding{
+		Line:   pkg.Fset.Position(call.Pos()).Line,
+		Callee: calleeLabel(fn),
+		Why:    why,
+		Shape:  ErrNil,
+	}, true
+}
+
+// nilComparedIdent returns x for a condition `x == nil` or `nil == x`, or
+// such a comparison as the leftmost operand of an && chain.
+func nilComparedIdent(cond ast.Expr) *ast.Ident {
+	b, ok := ast.Unparen(cond).(*ast.BinaryExpr)
+	if !ok {
+		return nil
+	}
+	if b.Op == token.LAND {
+		return nilComparedIdent(b.X)
+	}
+	if b.Op != token.EQL {
+		return nil
+	}
+	isNil := func(e ast.Expr) bool {
+		id, ok := ast.Unparen(e).(*ast.Ident)
+		return ok && id.Name == "nil"
+	}
+	x, y := ast.Unparen(b.X), ast.Unparen(b.Y)
+	if isNil(y) {
+		id, _ := x.(*ast.Ident)
+		return id
+	}
+	if isNil(x) {
+		id, _ := y.(*ast.Ident)
+		return id
+	}
+	return nil
+}
+
 func (f Finding) String() string {
+	if f.Shape == ErrNil {
+		return fmt.Sprintf("%s:%d: %s acts only when %s succeeds (`if ...; err == nil` with no else): its error is dropped (%s, %s)", f.File, f.Line, f.Func, f.Callee, f.Why, errNilPrefix+f.Callee)
+	}
 	return fmt.Sprintf("%s:%d: %s discards the error from %s (%s)", f.File, f.Line, f.Func, f.Callee, f.Why)
 }

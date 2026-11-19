@@ -213,7 +213,7 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 // row that does not exist is no name (the greeting has none, as before); any
 // other failed read is the error (PAC-141 SF-109), never an empty name.
 func recapUserName(ctx context.Context, db *sql.DB, userID uuid.UUID) (string, error) {
-	u, err := storage.GetUserByID(storage.Bind(ctx, db), userID)
+	u, err := storage.GetUserByIDNoOrg(storage.Bind(ctx, db), userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

@@ -287,7 +287,7 @@ func (h *teamHandlers) sendInviteEmail(inviterID, teamID uuid.UUID, invite *stor
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		lifecycle.Fail(unit, fmt.Errorf("read team %s for the invite email: %w", teamID, err))
 	}
-	inviter, err := storage.GetUserByID(h.db, inviterID)
+	inviter, err := storage.GetUserByIDNoOrg(h.db, inviterID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		lifecycle.Fail(unit, fmt.Errorf("read inviter %s for the invite email: %w", inviterID, err))
 	}
@@ -334,7 +334,7 @@ func (h *teamHandlers) getInvite(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, "getInvite: team", err, http.StatusInternalServerError)
 		return
 	}
-	inviter, err := storage.GetUserByID(h.db, invite.InvitedBy)
+	inviter, err := storage.GetUserByIDNoOrg(h.db, invite.InvitedBy)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		writeServerError(w, r, "getInvite: inviter", err, http.StatusInternalServerError)
 		return
@@ -399,7 +399,7 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Ensure the logged-in user's email matches the invite.
-	user, err := storage.GetUserByID(h.db, userID)
+	user, err := storage.GetUserByIDNoOrg(h.db, userID)
 	// PAC-71 (granting site): only an account that holds the invitee address
 	// domain-confirmed may accept; an unconfirmed holder is answered as a
 	// different address (spec AC-28).

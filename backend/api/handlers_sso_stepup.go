@@ -239,7 +239,7 @@ type ssoCaller struct {
 // callerOrg is gate step 2, membership: it runs before anything else,
 // break-glass included, and its 403 carries no stepup_url.
 func (h *ssoHandlers) callerOrg(w http.ResponseWriter, r *http.Request) (*ssoCaller, bool) {
-	user, err := storage.GetUserByID(h.ah.db, userIDFromCtx(r.Context()))
+	user, err := storage.GetUserByIDNoOrg(h.ah.db, userIDFromCtx(r.Context()))
 	if err != nil || user == nil || user.OrgID == nil {
 		writeError(w, "org membership required", http.StatusForbidden)
 		return nil, false
@@ -361,7 +361,7 @@ func stepupPurposeParam(r *http.Request) (string, bool) {
 // make. Read-only: no grant is consulted, no cookie set, nothing recorded,
 // and the answer does not depend on the caller beyond membership.
 func (s *generatedServer) GetSsoStepupOptions(ctx context.Context, req gen.GetSsoStepupOptionsRequestObject) (gen.GetSsoStepupOptionsResponseObject, error) {
-	user, err := storage.GetUserByID(s.db, auth.UserIDFromContext(ctx))
+	user, err := storage.GetUserByIDNoOrg(s.db, auth.UserIDFromContext(ctx))
 	if err != nil || user == nil || user.OrgID == nil {
 		return gen.GetSsoStepupOptions403JSONResponse{Error: gen.OrgMembershipRequired}, nil
 	}
@@ -500,7 +500,7 @@ func (h *ssoHandlers) startStepup(w http.ResponseWriter, r *http.Request) {
 	if purpose == storage.SSOGrantPurposeSSOWrite {
 		purpose = "" // sso_write is the default and is not written into the state
 	}
-	user, err := storage.GetUserByID(h.ah.db, userIDFromCtx(r.Context()))
+	user, err := storage.GetUserByIDNoOrg(h.ah.db, userIDFromCtx(r.Context()))
 	if err != nil || user == nil || user.OrgID == nil {
 		// Spec Decisions, D-1: no org, no org domain to step up for.
 		writeError(w, "org membership required", http.StatusForbidden)
@@ -549,7 +549,7 @@ func (h *ssoHandlers) stepupCallback(w http.ResponseWriter, r *http.Request) {
 	// once decided, the decided outcome's answer (finishStepup). Step 5 (the
 	// record) is waited for.
 	h.stepupExpiry(ctx, "", reasonStateMismatch)
-	user, err := storage.GetUserByID(h.ah.db, userIDFromCtx(ctx))
+	user, err := storage.GetUserByIDNoOrg(h.ah.db, userIDFromCtx(ctx))
 	if err != nil || user == nil {
 		// requireAuth answers a missing session; this is a session whose user
 		// no longer exists. Never proceed as nobody (spec §4.3).

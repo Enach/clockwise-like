@@ -28,6 +28,11 @@ func UpsertOrg(db DBTX, domain, name string) (*Org, error) {
 }
 
 func GetOrgByID(db DBTX, id uuid.UUID) (*Org, error) {
+	if hook, ok := orgRead.get(); ok {
+		if err := hook(id); err != nil {
+			return nil, err
+		}
+	}
 	row := db.QueryRow(`SELECT id, name, domain, created_at FROM organizations WHERE id = $1`, id)
 	o := &Org{}
 	return o, row.Scan(&o.ID, &o.Name, &o.Domain, &o.CreatedAt)

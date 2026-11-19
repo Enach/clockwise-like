@@ -335,7 +335,7 @@ func createAccount(ctx context.Context, db DBTX, req SignInRequest) (*SignInResu
 }
 
 func finish(db DBTX, uid uuid.UUID, gen int64, how SignInHow) (*SignInResult, error) {
-	u, err := GetUserByID(db, uid)
+	u, err := GetUserByIDNoOrg(db, uid)
 	if err != nil {
 		return nil, err
 	}

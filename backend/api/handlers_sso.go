@@ -449,7 +449,7 @@ var listSSOProvidersByOrg = storage.ListSSOProvidersByOrg
 // ListSsoProviders answers listSsoProviders: the caller's organisation's
 // configurations as an SsoProviderList, never carrying either secret.
 func (s *generatedServer) ListSsoProviders(ctx context.Context, _ gen.ListSsoProvidersRequestObject) (gen.ListSsoProvidersResponseObject, error) {
-	user, err := storage.GetUserByID(s.db, auth.UserIDFromContext(ctx))
+	user, err := storage.GetUserByIDNoOrg(s.db, auth.UserIDFromContext(ctx))
 	if err != nil || user == nil || user.OrgID == nil {
 		return gen.ListSsoProviders403JSONResponse{Error: "org membership required"}, nil
 	}

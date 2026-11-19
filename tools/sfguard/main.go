@@ -1,6 +1,8 @@
 // Command sfguard refuses new blank-assigned errors from storage, auth and
 // calendar calls in non-test backend code (PAC-122, silent-failure register
-// docs/factory/silent-failures.md §8).
+// docs/factory/silent-failures.md §8), and new `if v, err := call(); err ==
+// nil { ... }` swallows of the same calls: no else, no later use of err
+// (PAC-142).
 //
 // golangci-lint's errcheck runs with check-blank: false, so it accepts every
 // `_ = storage.X(...)` and `v, _ := storage.Y(...)`. That shape — an error
@@ -40,7 +42,9 @@ const help = `
 A blank-assigned error from a storage, auth.Load* or calendar call is the
 register's most common silent failure: the zero value becomes "absent", "none"
 or "not connected" and the user is told something false
-(docs/factory/silent-failures.md, the SF rows; §8 is this guard).
+(docs/factory/silent-failures.md, the SF rows; §8 is this guard). The same
+holds for ` + "`if v, err := call(); err == nil { ... }`" + ` with no else and no
+later use of err: a failure takes the "absent" path (errnil: in the baseline).
 
 Fix it: handle the error — return it, or log it and answer with an error the
 caller can see. If discarding it really is right, the baseline is the only

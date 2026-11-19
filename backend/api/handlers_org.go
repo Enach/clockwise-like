@@ -22,7 +22,7 @@ func (h *orgHandlers) members(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := storage.GetUserByID(h.db, userID)
+	user, err := storage.GetUserByIDNoOrg(h.db, userID)
 	if err != nil || user.OrgID == nil {
 		_ = json.NewEncoder(w).Encode([]interface{}{})
 		return

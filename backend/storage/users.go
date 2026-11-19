@@ -2,6 +2,8 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,7 +65,42 @@ func GetUserByEmail(db DBTX, email string) (*User, error) {
 	return u, nil
 }
 
+// GetUserByID reads the user with its organisation (User.Org), for the
+// callers that answer with the whole user (GET /api/auth/me). A user row that
+// does not exist is sql.ErrNoRows. An organisation that no longer exists is
+// no organisation (Org nil, OrgID still set); any other failed organisation
+// read is the error (PAC-142), never a user without an org, which a
+// serialised User (org is omitempty) would show as "no organisation".
+// Callers that do not read Org use GetUserByIDNoOrg.
 func GetUserByID(db DBTX, id uuid.UUID) (*User, error) {
+	u, err := getUserRow(db, id)
+	if err != nil {
+		return nil, err
+	}
+	if u.OrgID != nil {
+		org, err := GetOrgByID(db, *u.OrgID)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return nil, fmt.Errorf("read organisation of user %s: %w", id, err)
+		default:
+			u.Org = org
+		}
+	}
+	return u, nil
+}
+
+// GetUserByIDNoOrg reads the user row only: OrgID is set, Org is always nil.
+// It is for callers that read the user's name, email, picture or OrgID and
+// never Org (PAC-142): a failed organisation read must not fail them, and
+// they save the query. A user row that does not exist is sql.ErrNoRows.
+func GetUserByIDNoOrg(db DBTX, id uuid.UUID) (*User, error) {
+	return getUserRow(db, id)
+}
+
+// getUserRow is the users-row read both readers share. The InstallUserRead
+// seam fires here, so it covers both.
+func getUserRow(db DBTX, id uuid.UUID) (*User, error) {
 	if hook, ok := userRead.get(); ok {
 		if err := hook(id); err != nil {
 			return nil, err
@@ -81,9 +118,6 @@ func GetUserByID(db DBTX, id uuid.UUID) (*User, error) {
 	}
 	if orgID.Valid {
 		u.OrgID = &orgID.UUID
-		if org, err := GetOrgByID(db, orgID.UUID); err == nil {
-			u.Org = org
-		}
 	}
 	return u, nil
 }

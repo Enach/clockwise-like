@@ -118,7 +118,7 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 		// dashboard load, and asking Google's userinfo endpoint each time sent
 		// the user's access token outside the calendar seam (PAC-65).
 		email := ""
-		if u, err := storage.GetUserByID(h.db, userID); err == nil && u != nil {
+		if u, err := storage.GetUserByIDNoOrg(h.db, userID); err == nil && u != nil {
 			email = u.Email
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
