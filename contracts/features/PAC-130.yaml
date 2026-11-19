@@ -182,7 +182,7 @@
     "PAC-71 D12 emptiness rule (D-12).",
     "Removal of member_user_id (a later ticket, no earlier than the release after PAC-130's).",
     "SF-106, API-086, SF-074, SF-107.",
-    "Purging old team_analytics_cache rows (spec section 5; PAC-134 or PAC-148's data-minimisation pass)."
+    "Purging old team_analytics_cache rows (spec section 5; PAC-134 or PAC-148's data-minimisation pass). (Amended by PAC-134, 2026-11-19: PAC-134 erases one person's rows on request, not old rows; the purge stays open.)"
   ],
   "documentsAmended": [
     "contracts/features/PAC-71.yaml:85 (addManagerTeamMember) and :87 (previewManagerDetection): 'Amended by PAC-130 (2026-11-19, ...)' suffix.",

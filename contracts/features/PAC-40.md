@@ -111,6 +111,8 @@ would weaken the live operation's type for every consumer, although a live or
 paused link never holds an erased booking. The archive gets its own schema.
 The live schema stays `required` strings.
 
+
+> **Amended by PAC-134 (2026-11-19, contract `contracts/features/PAC-134.md`).** A live or paused link **can** now hold an erased booking: an operator's erasure of one person's address (`paceday-operator erase-address`) anonymises that person's bookings on any link, and also blanks their notes (PAC-134 OQ-2). `listSchedulingLinkBookings` therefore answers an erased booking explicitly, the way the archive does: `SchedulingLinkBookingRecord` gained nullable `booker_name`/`booker_email` and an optional `booker_erased_at`, **absent** unless erased, so every answer without an erased booking is unchanged byte for byte. The reason above for rejecting the nullable record no longer holds; the archive keeps its own schema. The automatic job (this contract) is unchanged.
 ### 2.3 The archive entry's erasure fields
 
 `ArchivedSchedulingLink` has these fields:

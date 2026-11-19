@@ -131,5 +131,8 @@
     "Implemented on impl/pac-101-api (Enach/clockwise-like#268), paired with Enach/smart-calendar-flow#153 (regeneration only). Bundle sha256 unchanged: equals contractHash; no fragment change.",
     "Deviation from allowedPaths: backend/storage/guarded.go is changed. The accept/decline wrapper RespondToHostInviteCtx lives there, not in guarded_writes.go; its body now runs through withLinkWriteTx with the FOR SHARE lock step (section 3.2), so no unlocked accept/decline path remains. No other change in that file except its package comment naming the exception. Accepted by the stage-4 review (#268, review 5900804017).",
     "RemoveLinkHostsExceptCtx (no longer called by a handler) also runs through withLinkWriteTx with the lock step, so every exported scheduling-link writer is locked."
+  ],
+  "amendments": [
+    "2026-11-19, PAC-134 (spec docs/specs/PAC-134.md revision 3, contract contracts/features/PAC-134.md revision 1), no revision bump (PAC-14 convention): dated 'Amended by PAC-134' note in md section 4.1: a new transaction, the operator erasure (paceday-operator erase-address): teams FOR NO KEY UPDATE, then team rows, then scheduling_links FOR SHARE by id, then host rows, booking rows (NO KEY UPDATE), keyed-create rows; never a users row; transaction bounded at 5 s (1-9 s), below the 10 s cap."
   ]
 }

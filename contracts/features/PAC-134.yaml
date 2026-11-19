@@ -1,0 +1,203 @@
+{
+  "featureId": "PAC-134",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-134/operator-tool-erase-an-email-address-across-all-tables-gdpr",
+  "status": "proposed, 2026-11-19: contract revision 1 on factory/pac-134; next: contract-challenger",
+  "contractRevision": "1",
+  "contractHash": "2d4714f28d73a5b5f2e950f6b932b4f8435024a38a63e2b59a15a39444064751",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) on factory/pac-134 after contract revision 1, on base origin/main c1b6564 (PAC-149 #325; main bundle 2af3afd511aa13a483d9dd12ced8617893c1e99c2d0f885f7f979e4e5af4766c). Produced by python scripts/openapi_assemble.py; backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by python scripts/openapi_migration_report.py (unchanged). Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and python scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
+  "baseCommit": "c1b6564 (clockwise-like origin/main, PAC-149 #325) = merge base of factory/pac-134; origin/main had not moved (no merge). Spec approved at 2bc02a2 (revision 3, round 4); round-4 notes folded in at e7eb949. Web origin/main bebfcdd.",
+  "contractDoc": "contracts/features/PAC-134.md",
+  "specDoc": "docs/specs/PAC-134.md (revision 3, approved by challenge round 4 on 2bc02a2; notes folded in at e7eb949; OQ-1 to OQ-6 on their defaults, OQ-8 and OQ-9 answered by md 7 and md 4)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "followUps": [
+    "Spec OQ-1: an operator account-deletion ticket (GDPR erasure of users), which must also decide the fate of the account ids in erase_address records and of 'kept: account's own' rows.",
+    "Free text holding an address (spec section 5) stays out of scope."
+  ],
+  "scope": "paceday-operator erase-address: one address on standard input (trimmed of the PAC-129 set, the one normaliser's validity rule), -operator, -reason, -dry-run, -account-held-acknowledged, -max-duration (1s-9s, default 5s). In one READ COMMITTED transaction: a statement-logging preflight; the account check (users matching by Go lowercasing OR database lower() of both trimmed sides, decided in the database through paceday_go_lower, migration 045); discovery of every matching row of T1-T9 and T10 into a temporary table without row locks; then (erasure only) team locks, T1, T2, roster, T4, T3, T5, T6, link locks FOR SHARE, T7, T9, T8, each in a fixed key order with match and ownership re-checked under the lock; delete T1-T7, clear T8's digest and outcomes, anonymise T9 (name, email, notes blanked, booker_erased_at set) on any link; rows of records owned (T1/T2: authored) by a matching account kept and counted; T10 kept and counted; one address-free operator_audit record (erase_address / erase_address_dry_run) per committed run. Exit 0/1/2/3; class-only errors. Three live writers aligned to the tool's lock order (L-1 invite expiry sweep, L-2 keyed-create cleanup, L-3 Manager confirm). listSchedulingLinkBookings answers an erased live booking as booker_erased_at present with null name/email; non-erased records unchanged byte for byte. Runbook 'Erasing an address' replaced.",
+  "interfaceKind": "HTTP: listSchedulingLinkBookings description; SchedulingLinkBookingRecord.booker_name/booker_email nullable (still required), booker_erased_at optional date-time (absent unless erased), descriptions; descriptions on ArchivedSchedulingLinkBooking.notes, ArchivedSchedulingLink.erased_at, BookerErasurePolicy.enabled. No operation, path, parameter or status added or removed. Non-HTTP and binding: the command (md 2), matching and statements (md 3), migration 045 (md 4), web (md 5), locks and L-1..L-3 (md 6), duration bound (md 7), audit record (md 8), runbook (md 9), seams (md 10).",
+  "mergeAfter": "origin/main c1b6564 or later. Migration 045. Backend before web (README section 1); the erasure is not run in production until the web half is deployed (runbook precondition, md 5).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/storage/migrations/045_erase_address.up.sql, .down.sql (committed with this contract; binding in substance, md 4; renumbered only if 045 is taken first)",
+        "backend/storage/erase_address.go (new: the transaction of md 3), backend/storage/test_seams.go (InstallEraseStatement, InstallEraseAfterStatement, md 10)",
+        "backend/storage/address_trim.go or a new storage file: the address validity rule shared by normalizeManagerEmail and the command (md 2.1 item 3); backend/api/handlers_manager.go (normalizeManagerEmail calls it)",
+        "backend/cmd/paceday-operator/erase_address.go (new), backend/cmd/paceday-operator/main.go (dispatch only, before runPAC71's error printing)",
+        "backend/storage/teams.go (ExpireOldInvites, L-1), backend/storage/scheduling_links.go (ClearExpiredLinkCreateKeyData L-2; GetBookingsByLink reads booker_erased_at), backend/storage/manager.go (ConfirmManagerTeamMembers, L-3)",
+        "backend/api/handlers_scheduling_links.go (listBookings answers gen.SchedulingLinkBookingRecord, md 1.1)",
+        "backend/engine/booker_erasure.go (ErasureErrorClass reused or widened, md 2.6)",
+        "backend/storage/pac134_*_test.go, backend/cmd/paceday-operator/pac134_*_test.go, backend/api/pac134_*_test.go (new); backend/internal/testdb (a C-locale database option, AC-20)",
+        "backend/storage/pac129_runbook_test.go (the two mutations of TestPAC129_AC27_DocsCheckFailsWithoutTheSection only, md 9); backend/storage/encryption_test.go (the AC-32 comment 'eight actions' only)",
+        "docs/runbook.md ('Erasing an address' replaced by md 9; exit-code table if it lists operator commands)",
+        "docs/plans/PAC-134.md",
+        "contracts/features/PAC-134.{md,yaml} (contractHash and stage-4 notes only)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; openapi.yaml and backend/api/gen by hand",
+        "users, settings, user_identities and every account-owned row (spec 3.2): the tool never writes them",
+        "backend/storage/booker_erasure.go's due rule, bookerErasureSet and per-link transaction (PAC-40 unchanged, spec 6)",
+        "any index, CHECK or generated column using paceday_go_lower (md 4.1)",
+        "exported or package-level func variables as new seams (PAC-80)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/generated/** (regeneration only, against the merged bundle)",
+        "src/api/schedulingLinks.ts (listBookings mapping and LinkBooking's erased state), src/components/links/LinkBookingsDialog.tsx and their tests (md 5)"
+      ],
+      "forbiddenPaths": [
+        "src/api/generated/** by hand",
+        "the archive dialog's wording (ArchivedLinkDialog.tsx), which the live list reuses unchanged"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {
+      "operationId": "listSchedulingLinkBookings",
+      "change": "a live or paused link can hold an erased booking (operator erasure, any link); erased record: booker_erased_at present, booker_name and booker_email null, notes ''; non-erased records byte-for-byte unchanged (no booker_erased_at key)"
+    }
+  ],
+  "componentsChanged": [
+    "SchedulingLinkBookingRecord: booker_name, booker_email nullable (required kept); booker_erased_at optional date-time, absent unless erased; descriptions (gen: BookerName/BookerEmail *string, BookerErasedAt *time.Time omitempty)",
+    "ArchivedSchedulingLinkBooking.notes, ArchivedSchedulingLink.erased_at, BookerErasurePolicy.enabled: descriptions"
+  ],
+  "refusals": [],
+  "nonHttpInterface": {
+    "command": "md 2: paceday-operator erase-address -operator -reason [-dry-run] [-account-held-acknowledged] [-max-duration 1s..9s, default 5s]; address on standard input only (<= 4096 bytes, UTF-8, no NUL, one line); exit 2 before any connection on every input refusal; the erasure migrates when stopped (PAC-116), the dry run never migrates; holdPresence; schema >= 045 else exit 1; output key=value lines of md 2.5; class-only errors md 2.6.",
+    "matching": "md 3.1: M(c) = (char_length(trim(c)) = char_length(:g) AND paceday_go_lower(trim(c)) = :g) OR lower(trim(c)) = :d, trim = paceday_trim_ecma, :g = Go strings.ToLower of the trimmed input, :d = the database's lower() of it; J(k) over co_host_changes addresses[].email and removed[].email. In-database only; binds only.",
+    "places": "md 3.2: T1 delete (own: added_by), T2 delete (own: invited_by), T3 delete with T4 (own: manager), T5, T6 delete (own: manager), T7 delete (own: link owner), T8 clear digest and outcomes (own: owner), T9 anonymise incl. notes on any link (own: link owner), T10 kept and counted.",
+    "transaction": "md 3.3: settings + logging preflight, input_lower, accounts (exit 3 path), temp table pac134_found, find_t1..t9, count_t10, counts; erasure only: lock_teams, erase_t1, erase_t2, lock_roster, erase_t4, erase_t3, erase_t5, erase_t6, lock_links, erase_t7, erase_t9, erase_t8; audit; commit.",
+    "locks": "md 6.1: teams FOR NO KEY UPDATE by id -> T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> links FOR SHARE by id -> T7 -> T9 (NO KEY UPDATE) -> T8, each by the stated key (COLLATE \"C\" on text keys); no users or advisory lock. Lock-order table md 6.3: 29 live writers (W1-W29), each S/1/O/N.",
+    "liveAlignments": "md 6.2: L-1 ExpireOldInvites locks by id; L-2 ClearExpiredLinkCreateKeyData locks by (owner_user_id, idempotency_key COLLATE \"C\"); L-3 ConfirmManagerTeamMembers de-duplicates first, iterates in byte order, existence read FOR KEY SHARE. Answers unchanged.",
+    "bound": "md 7: client context deadline around the whole transaction (default 5 s, 1-9 s), plus transaction-local statement_timeout, lock_timeout, idle_in_transaction_session_timeout = the bound.",
+    "audit": "md 8: operator_audit action erase_address | erase_address_dry_run, account columns NULL, removed [], details {schema 1, dry_run, places{...: erased|would_erase, kept_account_own; operator_audit: kept}, total, accounts, account_acknowledged, max_duration_ms}.",
+    "seams": "md 10: storage.InstallEraseStatement, storage.InstallEraseAfterStatement; MaxDuration a parameter of the storage entry point."
+  },
+  "migration": {
+    "number": "045_erase_address (free on origin/main c1b6564 and on every origin branch, checked 2026-11-19; P = 44, N = 45)",
+    "up": "md 4.1: paceday_go_lower(text) LANGUAGE sql IMMUTABLE PARALLEL SAFE, not STRICT (inlined): ASCII text -> lower(t COLLATE \"C\"); else translate() over 1798 code points (U+0001..U+024F with Go lowercase, identity included, then every higher code point Go changes; Unicode 15.0.0, go1.26.0, 1433 changed), built in a DO block from integer lists with chr() (file is ASCII); refuses a non-UTF8 database. operator_audit_action_check restated with ten actions (+ erase_address, erase_address_dry_run).",
+    "down": "md 4.2: DROP FUNCTION paceday_go_lower only; the ten-action CHECK and every erase record kept (PAC-71, PAC-84 7.2).",
+    "pac116": "applied with the app stopped, or by the erasure command itself when the app is not serving; the dry run never applies it.",
+    "locks": "ACCESS EXCLUSIVE on operator_audit for the CHECK swap; nothing else."
+  },
+  "gates": {
+    "contractApproval": "pending: contract-challenger.",
+    "assembler": "Revision 1 (base c1b6564), run on the authoring host (Windows, Git Bash): python scripts/openapi_assemble.py (wrote; 112 paths, x-uncertain 3) and --check ('OK: bundle is in sync (112 paths)'); bash scripts/openapi_gen_go.sh ('wrote backend/api/gen/paceday.gen.go') and --check ('OK: backend/api/gen matches the contract'); python scripts/openapi_migration_report.py (134 operations, 14 generated, 120 handwritten; file unchanged) and --check ('OK: MIGRATION.md covers all 134 operations (14 generated)'); sha256sum contracts/openapi/openapi.yaml = contractHash; cd backend && go build ./... ok and go vet ./... ok (go1.26.0); golangci-lint v1.64.8 built with go1.26.0, run --config ../.golangci.yml --fast ./... exit 0 and run --config ../.golangci.yml ./... exit 0. make is not installed on the authoring host. Not run: openapi-check-web (no web branch), the backend test suite (no behaviour changed in this stage).",
+    "executedEvidence": "postgres:16.15-alpine (throwaway, 127.0.0.1:5544), migrations 001-045 with psql -1 per file on an en_US.utf8 database and on a LC_COLLATE/LC_CTYPE 'C' database. AC-21: paceday_go_lower(chr(cp)) for cp 1..1114111 minus surrogates (1,112,063 rows) compared with Go 1.26.0 strings.ToLower: 0 differences on both databases (1433 changed by each side); 21 sample addresses (AC-20 values, Kelvin sign, dotted I, sharp s, sigma, Deseret) and 20,000 random mixed strings: 0 differences on both. 045 down kept two erase records and the ten-action CHECK, up re-applied. Scale (md 7): 1,000,006 bookings and ~100,000 rows in each other place, serial: dry run 1.68 s, erasure 2.30 s (locked phase ~20 ms), rerun 1.82 s with zero erased; erased counts equal to the dry run's. C database: the AC-20 rows matched (account by the Go half; T9, T7, T1, T3), the three negative controls did not; an account-owned booking was kept.",
+    "webGate": "Stage 4: smart-calendar-flow factory/pac-134 regenerating src/api/generated against the merged bundle and the md 5 changes; cross-repo openapi-check on the pair.",
+    "stage4": "make verify in both repos (factory section 3); DB-backed tests need Docker; 'could not run' stated, never silent.",
+    "defaultBranch": "main",
+    "ci": "GitHub Actions .github/workflows/ci.yml; required check verify",
+    "deployment": "server PR (migration 045, stop-migrate-start), then the paired web PR; the erasure is used only after the web release is deployed (runbook precondition)"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit] dry run for ' PAT@ext.example ' on stdin: per-place counts incl. case/space variants, exit 0, every table unchanged but one address-free erase_address_dry_run record, no migration.",
+    "AC-2  [unit] erasure for X: exit 0; no row of any place matches X by the rule; every control row byte-for-byte unchanged.",
+    "AC-3  [unit] added person, every invitation of X, roster entry with assignments, 1:1s, cached figures, both co-host invitations gone; other hosts of L1/L2 and other TA entries unchanged.",
+    "AC-4  [unit] X's bookings on L1, L3, L2 kept with start, end, status, link, calendar refs, created_at; name, email and notes blank, erasure time set; L1 uses_count and busy time unchanged.",
+    "AC-5  [unit] keyed creation: outcomes and digest cleared, owner/key/link/time kept; retry with the same key: key reused, nothing created.",
+    "AC-5b [contract] X's keyed public booking on L1 retried with the same key and details: key reused, no booking, uses_count unchanged.",
+    "AC-6  [contract] L1's owner lists L1's bookings: X's booking has booker_erased_at and null name/email; the answer conforms to the corrected contract (strict decode into gen.SchedulingLinkBookingRecord).",
+    "AC-6w [unit] (web) a list with one erased booking renders (no BookingsUnreadableError), others as today, the erased one shows no name and no email ('Name and email erased on <date>').",
+    "AC-7  [unit] exactly one erase_address record: operator, reason, per-place erased counts equal AC-1's, operator_audit kept 1, no account ids; no column of either new record, stdout or stderr holds X (any case), its display name, or SHA-1/SHA-256/MD5 hex of the trimmed address in either lowercasing.",
+    "AC-8  [unit] second erasure: exit 0, zero erased counts, no data row changes, one more record.",
+    "AC-9  [unit] account Pat@Ext.Example: exit 3 (erasure, no record), exit 3 (dry run, its record), acknowledged erasure exit 0 with account ids and acknowledgement recorded and the account unchanged; records (a)-(d), (h) kept, (e)-(g) erased; after free-address a rerun erases (a)-(d), (h) kept, the account unchanged by the rerun; (a) still replays after the first erasure.",
+    "AC-10 [unit] empty stdin, not-an-address, two @, address as argument, no operator, no reason, reason containing PAT@EXT.EXAMPLE: each exit 2, fixed usage text without the address, no database connection.",
+    "AC-11 [unit] another transaction holds one of X's bookings past the bound: exit 1 within bound + margin, class only, nothing changed, no record.",
+    "AC-11b [unit] one case per row W1-W29 of md 6.3, both start orders, real contention (W19, W26: none by design), each completes with its normal answer, never 500 or 40P01.",
+    "AC-12 [unit] two concurrent erasures: both exit 0, erased counts sum to AC-1's, nothing matches afterwards.",
+    "AC-13 [unit] after the run's statement on bookings and before commit, a new booking by X commits on L1: still holds X after commit; a rerun erases 1 booking.",
+    "AC-14 [unit] app serving and a migration pending: erasure exit 1, nothing changed; dry run on schema 044: exit 1, 'schema too old', nothing applied.",
+    "AC-15 [unit] a database error whose message would contain X: neither stream contains X; no statement text contains X (binds only).",
+    "AC-16 [unit] PAC-40 job after AC-2 on L2: X's erased booking not awaiting, no second erasure; existing PAC-40 tests pass.",
+    "AC-17 [unit] catalogue test with md 11's five classes; an unclassified new column turns the build red.",
+    "AC-18 [unit] runbook docs check of md 9 (command, stdin, dry run, account case, web precondition, every place, unreachable copies, exit codes, no hand-written DELETE); PAC-129 AC-27's check passes.",
+    "AC-19 [unit] nobody@ext.example: exit 0, all zero, one record.",
+    "AC-20 [unit] C-locale database, inputs ünal@ext.example and ÜNAL@EXT.EXAMPLE: account named (exit 3 without ack), with ack booking erased, invitation and added person and btrim-only roster entry deleted, account unchanged; negative controls unchanged; every statement filters in the database.",
+    "AC-21 [unit] paceday_go_lower vs strings.ToLower over U+0001..U+10FFFF minus surrogates (one set-returning query) and the sample; any difference either direction fails; on a default and on a C database.",
+    "AC-22a [unit] bound forced below the run's need: in-flight statement cancelled, rollback, exit 1 with the class, nothing changed, no record.",
+    "AC-22b [perf, evidence] md 7: dry run 1.68 s, erasure 2.30 s, rerun 1.82 s at 1,000,006 bookings and ~100,000 rows per other place, no index on the matched expressions, serial."
+  ],
+  "resolvesFindings": [],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "OQ-8: bound 5 s default (1-9 s), client-enforced; scale and measurement md 7.",
+    "OQ-9: paceday_go_lower, migration 045 (md 4).",
+    "OQ-1 to OQ-6: defaults (no account deletion; notes blanked; silent; T10 kept, no suppression list; stdin only; dry run audited)."
+  ],
+  "doesNotResolve": [
+    "Account deletion (OQ-1).",
+    "Free text holding an address (spec section 5).",
+    "SF-005 (booker email not validated)."
+  ],
+  "documentsAmended": [
+    "docs/specs/PAC-134.md: round-4 notes folded in (e7eb949).",
+    "contracts/features/PAC-40.md section 2.2 and PAC-40.yaml amendments (live list can hold an erased booking; nullable record reused).",
+    "contracts/features/PAC-101.md section 4.1 and PAC-101.yaml amendments (operator erasure row).",
+    "contracts/features/PAC-129.md sections 4, 4.2, 10 and PAC-129.yaml amendments (L-1, team locks first, runbook replaced, negative docs test adapted).",
+    "contracts/features/PAC-119.md sections 1.2, 3.3 and PAC-119.yaml amendments (NULL digest after operator erasure; L-2).",
+    "contracts/features/PAC-84.md 7.1 and PAC-84.yaml amendments (ten actions after 045).",
+    "contracts/features/PAC-130.yaml doesNotResolve (team_analytics_cache purge is not PAC-134)."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "smart-calendar-flow listBookings (strict parse, src/api/schedulingLinks.ts:491)",
+      "breaks": "only for a list holding an erased booking, before the web half is deployed",
+      "detail": "non-erased answers are byte-identical; runbook precondition (md 5, md 9)"
+    },
+    {
+      "consumer": "smart-calendar-flow src/api/generated",
+      "breaks": "drift only",
+      "detail": "SchedulingLinkBookingRecord nullable strings and optional booker_erased_at"
+    },
+    {
+      "consumer": "backend Go code using gen.SchedulingLinkBookingRecord",
+      "breaks": "no",
+      "detail": "none uses it today"
+    },
+    {
+      "consumer": "e2e scheduling-links.spec.ts",
+      "breaks": "no",
+      "detail": "objectContaining on a non-erased booking"
+    },
+    {
+      "consumer": "TestPAC129_AC27_DocsCheckFailsWithoutTheSection",
+      "breaks": "would pass vacuously on the new runbook text",
+      "detail": "two mutations retargeted in stage 4 (md 9)"
+    },
+    {
+      "consumer": "MCP",
+      "breaks": "no",
+      "detail": "no bookings tool"
+    }
+  ],
+  "deviationsFromSpec": [
+    "D-1: live writers aligned to the tool's lock order (L-1, L-2, L-3; md 6.2), behaviour unchanged.",
+    "D-2: AC-11b for W19 (booking save) and W26 (link create) asserts no wait (no shared row by design).",
+    "D-3: 'committed after the run's statement on that place' = after its discovery statement.",
+    "D-4: T7 'account's own' by the link owner (spec 3.2's general rule; not in its case list).",
+    "D-5: statement-logging preflight, exit 1 (md 2.3).",
+    "D-6: operator/reason containment by Go lowercasing and Unicode simple folding (no database before the check).",
+    "D-7: stdin limits (4096 bytes, UTF-8, no NUL, one line), exit 2.",
+    "D-8: -max-duration flag, 1-9 s.",
+    "D-9: AC-17 fifth class 'free text, not searched'.",
+    "D-10: PAC-129's negative docs test retargeted (its check function unchanged)."
+  ],
+  "mergeConditions": [
+    "This revision (or a later one) accepted by contract-challenger.",
+    "The stage-4 PR's bundle sha256 equals contractHash, or a recorded rebased hash with no fragment text change.",
+    "Server PR (migration 045) before the web PR; no production erasure before the web half is deployed.",
+    "make verify output pasted in each PR body (factory section 3)."
+  ],
+  "rollback": "Reverting the code removes the command; erasures already done stay done (only a backup taken before them holds the values; after a restore, rerun every erase_address recorded since). Migration 045's down drops paceday_go_lower and keeps the ten-action CHECK and every record. The live-list shape: a web rolled back after live bookings were erased shows those links' bookings list as unreadable (no data loss); a backend rolled back answers erased live bookings with empty strings again (PAC-40's stored form). L-1..L-3 revert with the code, behaviour identical.",
+  "notVerified": [
+    "openapi-check-web (no web branch yet).",
+    "The backend test suite (no behaviour changed in this stage).",
+    "Migration 045 through the golang-migrate runner (it ran with psql -1 on postgres:16.15-alpine).",
+    "The lock-order table's absence of cycles is reasoned (md 6.3), not yet observed: AC-11b in stage 4.",
+    "Parallel query and production hardware timings; the scale measurement ran serial on a workstation."
+  ]
+}

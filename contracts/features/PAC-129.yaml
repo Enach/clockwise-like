@@ -388,5 +388,8 @@
     "P2-B1: paceday_trim_ecma from chr() only; the 26-code-point set listed once (md 2.2); SQL and Go enumeration tests.",
     "P2-M1: one address normaliser (md 3.0) on every request path and in storage; set includes U+0085 and U+FEFF; BOM tests T-BOM-1..3.",
     "P2-m1: up step deletes and logs empty-after-trim invitations; runbook pre-flight count (md 10.1)."
+  ],
+  "amendments": [
+    "2026-11-19, PAC-134 (spec docs/specs/PAC-134.md revision 3, contract contracts/features/PAC-134.md revision 1), no revision bump (PAC-14 convention): dated 'Amended by PAC-134' notes in md sections 4, 4.2 and 10: ExpireOldInvites (the global sweep, outside the team lock) locks its rows by id (L-1); the operator erasure takes team rows FOR NO KEY UPDATE before membership, added-person and invitation rows (D-8 order); ConfirmManagerTeamMembers iterates in byte order with a FOR KEY SHARE existence read (L-3); the runbook 'Erasing an address' SQL is replaced by the command (the AC-27 check function unchanged; its negative test's two mutations retargeted)."
   ]
 }

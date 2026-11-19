@@ -328,5 +328,8 @@
     "OQ-4 race (createBooking reads the link unlocked and inserts after host calendar reads): file before B ships.",
     "K4-9: check production data for bookings ending near year 9999 (archive JSON would fail on erasure_due_at)."
   ],
-  "challenge": "K4 2026-11-13 accept-with-changes, applied in contracts/features/PAC-40.md 'Challenge - 2026-11-13' and this manifest."
+  "challenge": "K4 2026-11-13 accept-with-changes, applied in contracts/features/PAC-40.md 'Challenge - 2026-11-13' and this manifest.",
+  "amendments": [
+    "2026-11-19, PAC-134 (spec docs/specs/PAC-134.md revision 3, contract contracts/features/PAC-134.md revision 1), no revision bump (PAC-14 convention): dated 'Amended by PAC-134' note in md section 2.2: a live or paused link can now hold an erased booking (an operator's erasure of one person's address, any link); listSchedulingLinkBookings answers it with booker_erased_at present and null name/email (SchedulingLinkBookingRecord made nullable, booker_erased_at optional, absent unless erased); that erasure also blanks notes (PAC-134 OQ-2). The automatic job, its due rule and its kept notes are unchanged."
+  ]
 }
