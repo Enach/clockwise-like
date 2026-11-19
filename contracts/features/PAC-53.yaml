@@ -1,7 +1,7 @@
 {
   "featureId": "PAC-53",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-53/audithandler-discards-strconvatois-error-so-two-servers-in-this-repo",
-  "status": "draft, 2026-11-19: contract revision 1 written on factory/pac-53; next: contract-challenger",
+  "status": "approved, 2026-11-19: contract revision 1 APPROVED by contract-challenger at dff3eb2 (two non-blocking notes, folded into stage 4: the MIGRATION.md notes cell opener and the stale docs/factory/codebase-notes.md limit bullet); stage 4 (handler, tests, plan docs/plans/PAC-53.md) on factory/pac-53, same api PR; next: independent review",
   "contractRevision": "1",
   "contractHash": "45d87ca302897e7ee9ed1a8a64e00b1018e28b020cdec33a38e550d277286b87",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF, as written by python scripts/openapi_assemble.py) on factory/pac-53 at contract revision 1, base origin/main f074b4d (main bundle d4e2763a8b778389208d48f6fd31519e8eaeac0b6e246147f57375f019574966). backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by python scripts/openapi_migration_report.py. Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and python scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
@@ -24,7 +24,9 @@
         "backend/storage/audit_log.go (only if the plan changes the defensive clamp; it must not become reachable with a value the handler refuses, spec section 5)",
         "e2e/tests/audit.spec.ts (drop 10000 from the 200 loop; replace the PAC-23 AC-11 expectation with AC-10)",
         "docs/plans/PAC-53.md",
-        "contracts/features/PAC-53.{md,yaml} (contractHash and stage-4 notes only)"
+        "contracts/features/PAC-53.{md,yaml} (contractHash and stage-4 notes only)",
+        "contracts/openapi/MIGRATION.md (added 2026-11-19, stage 4, contract-challenger non-blocking note 1: the listAuditEntries notes cell now opens with 'PAC-53: parameter and responses modified, kept handwritten (spec section 5, contract alternative E).'; the cell is hand-kept and preserved by scripts/openapi_migration_report.py, which was re-run with --check; no bundle or generated-code change)",
+        "docs/factory/codebase-notes.md (added 2026-11-19, stage 4, contract-challenger non-blocking note 2: the stale `limit` bullet, which still described the pre-PAC-23 code, is corrected to the PAC-53 rule)"
       ],
       "forbiddenPaths": [
         "contracts/openapi/** except through a contract revision; openapi.yaml and backend/api/gen by hand",
@@ -74,10 +76,11 @@
   ],
   "precedence": "401 (requireAuth, text/plain MiddlewareUnauthorized) before any 400; C-9 before C-1..C-8.",
   "gates": {
-    "contractApproval": "pending: contract-challenger has not reviewed revision 1.",
+    "contractApproval": "APPROVED: contract-challenger approved revision 1 at dff3eb2 (2026-11-19), two non-blocking notes, both folded into stage 4 (allowedPaths entries dated 2026-11-19).",
     "assembler": "Revision 1 (base f074b4d): python scripts/openapi_assemble.py (112 paths, 134 operations, 217 schemas, 16 responses, 13 parameters, x-uncertain 3) and --check ('OK: bundle is in sync (112 paths)'); bash scripts/openapi_gen_go.sh and --check ('OK: backend/api/gen matches the contract'); python scripts/openapi_migration_report.py and --check ('OK: MIGRATION.md covers all 134 operations (14 generated)'); cd backend && go build ./... && go vet ./... ok; golangci-lint v1.64.8 (built with go1.26.0) run ./... exit 0. make is not installed on the authoring host; the targets' underlying scripts were run directly.",
     "crossRepo": "NOT RUN: the web half of openapi-check (openapi-check-web) was not run; the web regeneration is the paired PR's job and will show drift against smart-calendar-flow main until it lands.",
-    "tests": "NOT RUN at stage 2: no handler change yet. Existing tests that pin the superseded behaviour (handlers_audit_test.go invalid-limit cases and _OverMaximumLimitCaps; e2e audit.spec.ts 10000) still pass against the unchanged handler and are rewritten in stage 4."
+    "tests": "NOT RUN at stage 2: no handler change yet. Existing tests that pin the superseded behaviour (handlers_audit_test.go invalid-limit cases and _OverMaximumLimitCaps; e2e audit.spec.ts 10000) still pass against the unchanged handler and are rewritten in stage 4.",
+    "stage4": "See docs/plans/PAC-53.md section 5 for the commands run and their results, and section 6 for what was not run. The bundle, fragments and backend/api/gen are unchanged by stage 4, so contractHash is unchanged."
   },
   "acceptanceTests": [
     "AC-1  [unit] 120 entries, no count -> 200, exactly 50.",

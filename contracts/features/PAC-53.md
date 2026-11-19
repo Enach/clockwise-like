@@ -124,3 +124,15 @@
 The contract describes the server *after* stage 4. It ships in the same api PR as
 the handler change and its tests and must not merge ahead of them (factory §7
 rule 2).
+
+## 7. Approval and stage 4
+
+- **Approved**: contract-challenger approved revision 1 at `dff3eb2` (2026-11-19),
+  with two non-blocking notes. Stage 4 handles both:
+  1. The `listAuditEntries` notes cell in `MIGRATION.md` now opens with "PAC-53:
+     parameter and responses modified, kept handwritten (spec §5, contract
+     alternative E)."
+  2. The stale `limit` bullet in `docs/factory/codebase-notes.md` is corrected.
+  Both paths were added to the manifest's `allowedPaths` with a dated note.
+- **Stage 4** is recorded in `docs/plans/PAC-53.md`. It makes no fragment, bundle
+  or generated-code change, so the `contractHash` is unchanged.

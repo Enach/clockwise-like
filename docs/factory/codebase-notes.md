@@ -116,10 +116,16 @@ Saving settings takes effect at the next minute; there is no `Reload`.
 - Auto-decline, personal blocker and daily recap write **no audit entries at all**.
 - Four writers build `details` by unescaped string concatenation, so a meeting
   title containing `"` yields malformed JSON. The fourth is `handlers_nlp.go:67`.
-- **`limit`**: `handlers_audit.go:14` discards `strconv.Atoi`'s error, so absent and
-  non-numeric both arrive as `0`; `audit_log.go:16-18` is
-  `if limit <= 0 || limit > 500 { limit = 100 }`. **Everything out of band becomes
-  100.** Neither 50 nor 500 is reachable, despite both appearing in documentation.
+- **`limit`** (corrected 2026-11-19, PAC-53; this bullet described the code
+  before PAC-23): absent → 50; present exactly once as a base-10 integer from 1
+  to 500 → at most that many. Since PAC-53 every other request (empty or bare,
+  non-integer, below 1, above 500, repeated, or a raw query with an unencoded `;`
+  or an undecodable `%` anywhere) is a 400 with the fixed JSON body
+  `{"error":"limit must be an integer from 1 to 500"}` (`auditLimit` in
+  `backend/api/handlers_audit.go`; the rule is C-1..C-10 on `listAuditEntries`
+  in `contracts/openapi/paths/calendar.yaml`). Between PAC-23 and PAC-53 the
+  handler discarded `strconv.Atoi`'s error and `storage.ListAuditLog` mapped
+  `<= 0` to 50 and `> 500` to 500, which it still does defensively.
 
 ## The LLM / NLP layer
 
