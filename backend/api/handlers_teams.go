@@ -97,7 +97,7 @@ func (h *teamHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 
 	caller, err := h.requireMember(teamID, userID)
 	if err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeMemberRefusal(w, r, "getTeam: member check", err)
 		return
 	}
 	if getTeamAfterMembershipHook != nil {
@@ -558,7 +558,7 @@ func (h *teamHandlers) listZones(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.requireMember(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeMemberRefusal(w, r, "listZones: member check", err)
 		return
 	}
 	zones, err := storage.ListNoMeetingZones(h.db, teamID)
@@ -609,7 +609,7 @@ func (h *teamHandlers) availability(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.requireMember(teamID, userID); err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeMemberRefusal(w, r, "availability: member check", err)
 		return
 	}
 
@@ -657,7 +657,7 @@ func (h *teamHandlers) analyticsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	caller, err := h.requireMember(teamID, userID)
 	if err != nil {
-		writeError(w, "forbidden", http.StatusForbidden)
+		writeMemberRefusal(w, r, "analyticsHandler: member check", err)
 		return
 	}
 
@@ -689,12 +689,33 @@ func (h *teamHandlers) analyticsHandler(w http.ResponseWriter, r *http.Request) 
 
 // --- Helpers ---
 
+// errNotTeamMember is requireMember's refusal: the caller holds no
+// membership of the team, or the team does not exist (the 403).
+var errNotTeamMember = errors.New("not a member")
+
+// requireMember returns the caller's membership of the team. PAC-122 SF-107:
+// only "no membership row" is the refusal (errNotTeamMember); a failed
+// membership read is returned as itself, so the caller answers it as the 500,
+// never as "forbidden".
 func (h *teamHandlers) requireMember(teamID, userID uuid.UUID) (*storage.TeamMember, error) {
 	m, err := storage.GetTeamMember(h.db, teamID, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errNotTeamMember
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("member check: %w", err)
 	}
 	return m, nil
+}
+
+// writeMemberRefusal answers a failed requireMember: the 403 for a caller who
+// is not a member, the 500 for a failed read (PAC-122 SF-107).
+func writeMemberRefusal(w http.ResponseWriter, r *http.Request, op string, err error) {
+	if errors.Is(err, errNotTeamMember) {
+		writeError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	writeServerError(w, r, op, err, http.StatusInternalServerError)
 }
 
 // errNotTeamOwner is requireOwner's refusal: the caller holds no owner

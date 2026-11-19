@@ -1545,9 +1545,9 @@ components:
         JSON error "forbidden". Emitted when the caller is not a member of `team_id`, when
         the route requires ownership and the caller's role is not "owner", AND when the
         team simply does not exist (no membership row either way). A failed membership
-        read is not a 403 on the manager routes' `team_id` scope or on any owner check: it
-        is the 500 (PAC-122 SF-074). The formal-team member checks (team detail, zone list,
-        availability, analytics) still answer a failed read with this 403.
+        read is never this 403: on the manager routes' `team_id` scope and on any owner
+        check (PAC-122 SF-074), and on the formal-team member checks (team detail, zone
+        list, availability, analytics; PAC-122 SF-107), it is the 500.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
