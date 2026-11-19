@@ -223,6 +223,7 @@ func funcName(d *ast.FuncDecl) string {
 // non-test, non-generated files.
 func checkPackage(pkg *packages.Package, root string) []Finding {
 	var out []Finding
+	writes := plainAssignTargets(pkg)
 	for _, file := range pkg.Syntax {
 		name := pkg.Fset.File(file.Pos()).Name()
 		if strings.HasSuffix(name, "_test.go") || isGenerated(file) {
@@ -240,7 +241,7 @@ func checkPackage(pkg *packages.Package, root string) []Finding {
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
 				if is, ok := n.(*ast.IfStmt); ok {
-					if f, ok := errNilSwallow(pkg, is); ok {
+					if f, ok := errNilSwallow(pkg, is, writes); ok {
 						f.File, f.Func = rel, encl
 						out = append(out, f)
 					}
@@ -335,14 +336,17 @@ func blankErrors(pkg *packages.Package, lhs, rhs []ast.Expr) []Finding {
 // whose error result lands in a named variable, whose condition is
 // `err == nil` (or `nil == err`), alone or as the first operand of an &&
 // chain (`err == nil && v != nil`: a failure still takes the false branch),
-// with no else branch, and with no use of that variable after the if
-// statement. A failed call then takes the path of "absent": nothing is said.
-// Not matched: a separate `v, err := f()` line followed by `if err == nil`
-// (the error outlives the if, and errcheck-style review sees it), `||`
-// conditions, and an if with an else (which handles the failure, or at
-// least sees it).
-func errNilSwallow(pkg *packages.Package, is *ast.IfStmt) (Finding, bool) {
-	if is.Else != nil || is.Init == nil {
+// whose else branch (if any) never reads that variable, and with no read of
+// it after the if statement. A failed call then takes the path of "absent":
+// nothing is said. An else, or an else-if chain, that does not read the
+// error (`} else if other {`) does not handle it, so it exempts nothing; one
+// that reads it (`} else if !errors.Is(err, sql.ErrNoRows) {`) does. A later
+// write (`err = storage.Save(...)`) is not a read. Not matched: a separate
+// `v, err := f()` line followed by `if err == nil` (the error outlives the
+// if, and errcheck-style review sees it), `||` conditions, `err == nil` that
+// is not the leftmost operand of &&, and a switch init.
+func errNilSwallow(pkg *packages.Package, is *ast.IfStmt, writes map[*ast.Ident]bool) (Finding, bool) {
+	if is.Init == nil {
 		return Finding{}, false
 	}
 	as, ok := is.Init.(*ast.AssignStmt)
@@ -379,10 +383,14 @@ func errNilSwallow(pkg *packages.Package, is *ast.IfStmt) (Finding, bool) {
 	if !assigned {
 		return Finding{}, false
 	}
+	// An else (or else-if chain) that reads the variable sees the failure.
+	if is.Else != nil && readsVar(pkg, is.Else, obj, writes) {
+		return Finding{}, false
+	}
 	// A later read of the variable (only possible for `=`, where it outlives
-	// the if) means the failure is looked at after all.
+	// the if) means the failure is looked at after all. A write is not a read.
 	for id, o := range pkg.TypesInfo.Uses {
-		if o == obj && id.Pos() > is.End() {
+		if o == obj && id.Pos() > is.End() && !writes[id] {
 			return Finding{}, false
 		}
 	}
@@ -392,6 +400,39 @@ func errNilSwallow(pkg *packages.Package, is *ast.IfStmt) (Finding, bool) {
 		Why:    why,
 		Shape:  ErrNil,
 	}, true
+}
+
+// readsVar reports whether n reads obj (a use that is not the target of a
+// plain `=` assignment).
+func readsVar(pkg *packages.Package, n ast.Node, obj types.Object, writes map[*ast.Ident]bool) bool {
+	found := false
+	ast.Inspect(n, func(c ast.Node) bool {
+		if id, ok := c.(*ast.Ident); ok && !writes[id] && pkg.TypesInfo.Uses[id] == obj {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// plainAssignTargets is every identifier written by a plain `=` assignment
+// (`err = f()`, `v, err = f()`) in the package: a use that is a write, not a
+// read.
+func plainAssignTargets(pkg *packages.Package) map[*ast.Ident]bool {
+	out := map[*ast.Ident]bool{}
+	for _, f := range pkg.Syntax {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if as, ok := n.(*ast.AssignStmt); ok && as.Tok == token.ASSIGN {
+				for _, l := range as.Lhs {
+					if id, ok := ast.Unparen(l).(*ast.Ident); ok {
+						out[id] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	return out
 }
 
 // nilComparedIdent returns x for a condition `x == nil` or `nil == x`, or
@@ -425,7 +466,7 @@ func nilComparedIdent(cond ast.Expr) *ast.Ident {
 
 func (f Finding) String() string {
 	if f.Shape == ErrNil {
-		return fmt.Sprintf("%s:%d: %s acts only when %s succeeds (`if ...; err == nil` with no else): its error is dropped (%s, %s)", f.File, f.Line, f.Func, f.Callee, f.Why, errNilPrefix+f.Callee)
+		return fmt.Sprintf("%s:%d: %s acts only when %s succeeds (`if ...; err == nil`, no else that reads err): its error is dropped (%s, %s)", f.File, f.Line, f.Func, f.Callee, f.Why, errNilPrefix+f.Callee)
 	}
 	return fmt.Sprintf("%s:%d: %s discards the error from %s (%s)", f.File, f.Line, f.Func, f.Callee, f.Why)
 }

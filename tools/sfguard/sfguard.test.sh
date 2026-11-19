@@ -93,6 +93,13 @@ awk '/ swallows +errnil:storage[.]GetUser / && !d {d=1; next} {print}' "$TMP/ful
 expect "a second err == nil swallow of one call fails" 1 "$TMP/minus-errnil-one" "^NEW .*errnil:storage.GetUser"
 { grep -v 'errnil:storage.Store.Get' "$TMP/full"; echo "api/errnil.go  swallows  storage.Store.Get  # PAC-142 a blank entry"; } > "$TMP/errnil-as-blank"
 expect "a blank-shape entry does not accept an err == nil swallow" 1 "$TMP/errnil-as-blank" "^STALE api/errnil.go swallows storage.Store.Get"
+grep -v 'errnil:storage.Count' "$TMP/full" > "$TMP/minus-errnil-elseif"
+expect "an else-if that never reads err does not exempt the swallow" 1 "$TMP/minus-errnil-elseif" "^NEW .*errnil:storage.Count"
+awk '/ swallows +errnil:storage[.]GetUser / && n++ < 3 {next} {print}' "$TMP/full" > "$TMP/minus-errnil-getuser"
+got=$("$BIN" -root "$FIX" -baseline "$TMP/minus-errnil-getuser" . 2>&1 | grep -c '^NEW .*swallows.*errnil:storage.GetUser')
+runs=$((runs + 1))
+if [ "$got" = 3 ]; then echo "ok   the three GetUser swallows (alone, \`=\`, \`=\` then only a write) are all reported"
+else fails=$((fails + 1)); echo "FAIL want 3 GetUser swallows reported, got $got"; fi
 expect "err == nil shapes that handle or see the error are never reported" 1 "$TMP/empty" "errnil" "handled|Atoi"
 
 # An interface that wraps storage and is in neither seam list fails the run.

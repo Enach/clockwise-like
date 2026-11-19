@@ -23,11 +23,12 @@
 #                 PAC-141 its six (SF-109 to SF-112); both removed their lines)
 #   fine          the discard carries no default anyone reads as an answer
 #
-# Totals: 20 entries = 6 known SF + 14 fine.
+# Totals: 19 entries = 6 known SF + 13 fine.
 #   blank `_`:      14 = 5 known SF + 9 fine (24 at landing; PAC-140 removed
 #                   its 4, PAC-141 its 6)
-#   errnil (PAC-142): 6 = 1 known SF + 5 fine (7 at landing; PAC-142 fixed
-#                   storage.GetUserByID's org read, SF-113)
+#   errnil (PAC-142): 5 = 1 known SF + 4 fine (7 at landing; PAC-142 fixed
+#                   storage.GetUserByID's org read, SF-113, and the
+#                   refresher's ActiveDataKey read, now reported)
 # mcp/: 0 (it is an HTTP client of the API and calls none of the targeted
 # packages).
 
@@ -51,8 +52,7 @@ backend/storage/migrate_when_stopped.go  MigrateWhenStopped  sql.Conn.ExecContex
 backend/storage/migrate_when_stopped.go  MigrateWhenStopped  storage.MaintenanceHolder  # PAC-122 fine: the migration is refused either way; a failed holder read only picks the lock-held wording over in-progress
 
 # ── fine, `err == nil` shape (PAC-142) ────────────────────────────────────────
-backend/api/handlers_booking.go  (*bookingHandlers).publicLink  errnil:auth.LoadUserToken  # PAC-142 fine: a failed token load leaves the host out of coverage.checked only, the cautious side ("calendar not checked", never more coverage); total is strict (SF-027)
+backend/api/handlers_booking.go  (*bookingHandlers).publicLink  errnil:auth.LoadUserToken  # PAC-142 fine: a failed token load leaves the host out of coverage.checked only, the cautious side ("calendar not checked", never more coverage); total is strict (SF-027). Not reported: a decrypt failure or a transient DB error shows that host as "not checked" with nothing logged
 backend/api/handlers_conferencing.go  (*conferencingHandlers).providers  errnil:storage.DecodeZoomCredential  # PAC-142 fine: a stored Zoom credential that does not decode cannot be used; "not connected" invites the reconnect that replaces it, as for an undecryptable one (PAC-84)
 backend/storage/credentials.go  SaveZoomCredential  errnil:storage.DecodeZoomCredential  # PAC-142 fine: an old value that does not decode keeps no refresh token, by design (AC-16c b); the new credential is still written
-backend/storage/encryption_keys.go  (*Refresher).Tick  errnil:storage.ActiveDataKey  # PAC-142 fine: a failed read skips this tick's rotation check only; the next tick retries, and a persistent read failure is reported by the tick's own LoadDataKeys read (r.fail)
 backend/storage/encryption_keys.go  (*Refresher).Tick  errnil:storage.LoadDataKeys  # PAC-142 fine: after a rotation, a failed reload keeps the current keyring this tick; the next tick reloads it and reports a failed read (r.fail)

@@ -38,12 +38,15 @@ var fixtureKeys = map[string]int{
 	"api/seams.go handles sql.Tx.Exec":          1,
 	"api/seams.go handles sql.Conn.ExecContext": 1,
 	// PAC-142: the `if v, err := target(); err == nil` swallow, no else and
-	// no later use of err: alone, reversed, leftmost of &&, and with `=`.
-	// handled() holds the shapes that are not it (else, err != nil, an
-	// untargeted call, err read after the if, ||, a separate line).
-	"api/errnil.go swallows errnil:storage.GetUser":   2,
+	// no later read of err: alone, reversed, leftmost of &&, with `=`, with
+	// `=` and only a later write of err, and with an else-if that never
+	// reads err. handled() holds the shapes that are not it (an else or
+	// else-if that reads err, err != nil, an untargeted call, err read after
+	// the if, ||, a separate line).
+	"api/errnil.go swallows errnil:storage.GetUser":   3,
 	"api/errnil.go swallows errnil:storage.Store.Get": 1,
 	"api/errnil.go swallows errnil:auth.LoadToken":    1,
+	"api/errnil.go swallows errnil:storage.Count":     1,
 }
 
 func fixtureFindings(t *testing.T) []Finding {

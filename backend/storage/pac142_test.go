@@ -1,10 +1,15 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Enach/paceday/backend/internal/lifecycle/lifecycletest"
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -118,5 +123,32 @@ func TestPAC142_UserReadSeamCoversBothReaders(t *testing.T) {
 	}
 	if _, err := GetUserByIDNoOrg(db, user); !errors.Is(err, boom) {
 		t.Fatalf("GetUserByIDNoOrg: %v", err)
+	}
+}
+
+// PAC-142 review: the keyring refresher reports a failed read of the active
+// data key, sql.ErrNoRows included, instead of reading it as "no rotation
+// due"; the tick carries on.
+func TestPAC142_RefresherReportsActiveDataKeyReadFailure(t *testing.T) {
+	db, _, _ := openEncDB(t)
+	cfg := encKeys(t, "pac142")
+	inst := Instance{ID: uuid.New()}
+	load, err := LoadKeyring(context.Background(), db, cfg, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := secretbox.Current()
+	secretbox.Install(load.Keyring)
+	defer secretbox.Install(prev)
+	// No row is active any more: ActiveDataKey answers sql.ErrNoRows.
+	if _, err := db.Exec(`UPDATE encryption_data_keys SET state = 'retired', retired_at = now() WHERE state = 'active'`); err != nil {
+		t.Fatal(err)
+	}
+	rec := lifecycletest.Record(t)
+	r := &Refresher{DB: db, Cfg: cfg, Inst: inst, Lease: NewLease(time.Now()), Logf: func(string, ...any) {}}
+	r.Tick(context.Background())
+	got := rec.Matching("encryption", "read the active data key")
+	if len(got) != 1 || !strings.Contains(got[0].Err.Error(), sql.ErrNoRows.Error()) {
+		t.Fatalf("want one report of the active data key read, got %+v", rec.All())
 	}
 }

@@ -218,7 +218,7 @@ web `web H*`, `web M*` and `web L*`; MCP `M1`..`M11` (no hyphen) and `X1`.
 | SF-072 | low | auth | confirmed | no | light | — | **/api/auth/me and SSO lookups answer 404 on a storage error** | `api/handlers_me.go:22-25`; `api/handlers_sso.go:58-61`, `:128-131` | Any error reads as "user not found" / "SSO not configured for this domain". **Fixed (PAC-122)** (batch 3): `/api/auth/me` answers 404 `user not found` only for `sql.ErrNoRows`; `startSsoLogin` and `ssoOidcCallback` answer 404 `SSO not configured for this domain` only when no active row exists. Any other lookup error is the documented 500 `{"error":"internal error"}` (steps `current user`, `SSO provider lookup`). Pinned by `TestPAC122_SF072_LookupFailureIs500` (`backend/api/pac122_b3_test.go`); the 404s stay pinned by the PAC-35 tests. The `getCurrentUser`, `startSsoLogin` and `ssoOidcCallback` descriptions, which said a lookup error was the 404 (or answered as before), are corrected (prose only, `contracts/openapi/paths/auth.yaml`). | L-k (part) |
 | SF-073 | low | auth | confirmed | no | light | — | **A failed save of a renewed token is logged only** | `auth/credential_lifecycle.go:206-213` | For a provider that rotates refresh tokens the stored one is now dead, so the user is later asked to reconnect with no trace in Sentry. **Fixed (PAC-122)** (batch O): the failed save is reported through the lifecycle hook as `credential-renewal/<owner id>`; the action still gets the renewed token. Pinned by `TestPAC122_RenewedTokenSaveFailureReported` (`backend/auth/pac122_test.go`). | F21 |
 | SF-105 | low | auth | confirmed | yes | full | — | **Attaching a Teams meeting reads a failed Outlook token read as "not connected"** | `api/handlers_conferencing.go:67-71` | The Teams branch of the conference provider factory turns any `LoadMicrosoftTokenCtx` error other than the PAC-84 decrypt failure into `errTeamsNotConnected`, so `createConferenceLink` and `addEventConference` answer 400 "teams: not connected — connect Outlook in Settings …" when the stored credential exists but could not be read, and the user is told to reconnect. Since SF-007 (PAC-122 batch 3) the load returns read errors instead of nil, so the error now reaches this site and is still discarded here. Both 400 descriptions (`contracts/openapi/paths/booking.yaml`) document the sentence as also covering a failed read, so the fix (the documented 500) is a contract edit. Fix: only no credential is the 400; any other read error is the 500. | PAC-122 b3 review (#299) |
-| SF-113 | low | auth | confirmed | no | light | — | **The current user reads a failed organisation read as "no organisation"** | `storage/users.go` (`GetUserByID`: `if org, err := GetOrgByID(...); err == nil { u.Org = org }`) | A failed read of the user's organisation left `User.Org` nil with no error, so `GET /api/auth/me` answered 200 with `org` left out (it is `omitempty`): the user read as belonging to no organisation. Found by the PAC-142 review of the `err == nil` swallow shape. **Fixed (PAC-142)**: `GetUserByID` returns a failed organisation read as its error, and `GET /api/auth/me` answers its documented 500 `internal error` (reported); an organisation that no longer exists (`sql.ErrNoRows`) is still no organisation. Every other caller of `GetUserByID` reads only the name, email, picture or `OrgID`, never `Org`, so it moved to the new `GetUserByIDNoOrg` (the users row only, no organisation query): an organisation failure cannot fail sign-in, the org members list, the SSO and organisation-AI gates, booking hosts, invites or the recap. `getCurrentUser` 500 prose updated (no status or shape change). The guardrail now refuses the shape (§8). Pinned by `TestPAC142_GetUserByIDOrgReadErrorIsAnError`, `TestPAC142_GetUserByIDDeletedOrgIsNoOrg`, `TestPAC142_GetUserByIDNoOrgNeverReadsTheOrg` (`backend/storage/pac142_test.go`), `TestPAC142_MeOrgReadErrorIs500` and `TestPAC142_OrgMembersUnaffectedByOrgReadError` (`backend/api/pac142_test.go`), through the new storage seam `InstallOrgRead`. | — |
+| SF-113 | low | auth | confirmed | no | light | — | **The current user reads a failed organisation read as "no organisation"** | `storage/users.go` (`GetUserByID`: `if org, err := GetOrgByID(...); err == nil { u.Org = org }`) | A failed read of the user's organisation left `User.Org` nil with no error, so `GET /api/auth/me` answered 200 with `org` left out (it is `omitempty`): the user read as belonging to no organisation. Found by the PAC-142 review of the `err == nil` swallow shape. **Fixed (PAC-142)**: `GetUserByID` returns a failed organisation read as its error, and `GET /api/auth/me` answers its documented 500 `internal error` (reported); an organisation that no longer exists (`sql.ErrNoRows`) is still no organisation. Every other caller of `GetUserByID` reads only the name, email, picture or `OrgID`, never `Org`, so it moved to the new `GetUserByIDNoOrg` (the users row only, no organisation query): an organisation failure cannot fail sign-in, the org members list, the SSO and organisation-AI gates, booking hosts, invites or the recap. `getCurrentUser` 500 prose updated (no status or shape change). The guardrail now refuses the shape (§8). Pinned by `TestPAC142_GetUserByIDOrgReadErrorIsAnError`, `TestPAC142_GetUserByIDDeletedOrgIsNoOrg`, `TestPAC142_GetUserByIDNoOrgNeverReadsTheOrg` (`backend/storage/pac142_test.go`), `TestPAC142_GetUserByIDCallersArePinned` (`backend/storage/pac142_callers_test.go`: `api/handlers_me.go` is the only non-test caller of `GetUserByID`), `TestPAC142_MeOrgReadErrorIs500` and `TestPAC142_OrgMembersUnaffectedByOrgReadError` (`backend/api/pac142_test.go`), through the new storage seam `InstallOrgRead`. | — |
 | SF-074 | low | teams/manager | confirmed | no | light | API-090 (note) | **Owner checks answer 403 on a storage error** | `api/handlers_manager.go:644-647`; `api/handlers_teams.go:190-193` (requireOwner) | `err != nil \|\| role != owner` → 403, so an outage reads as "forbidden". **Partly fixed (PAC-129), for its new operations only** (`addTeamPerson`, `removeTeamPerson`: a storage error in the owner or membership check is the 500; spec OQ-12). The existing owner checks are unchanged. Pinned by `TestPAC129_AC5_TBOM1_OwnAndMemberAddressesAreRefused` and the storage-error branch of `generatedServer.AddTeamPerson` (500, never 403). **Fixed (PAC-122)** (batch 4) for the remaining owner checks: `requireOwner` (team PATCH and DELETE, member removal by another member, zone create, update and delete) and the manager `team_id` scope (`managerTeamScope`, which also holds the membership check of the manager read routes), and the in-transaction owner check of the invitation (`InviteTeamPersonCtx`) and of the manager's scoped removal (`RemoveManagerTeamPersonCtx`), left open by PAC-129 (OQ-12), answer 403 only for no membership row or a non-owner role; a failed membership read is the 500 (`writeOwnerRefusal`; step `manager team scope: membership`). Pinned by `TestPAC122_SF074_OwnerCheckReadErrorIs500`, `TestPAC122_SF074_InTransactionOwnerCheckReadErrorIs500` and `TestPAC122_SF074_NonOwnerStillForbidden` (`backend/api/pac122_b4_test.go`). The formal-team *membership* check `requireMember` (team detail, zone list, availability, analytics), the same pattern but not an owner check, was left open by batch 4 as SF-107 and is now **Fixed (PAC-122)** there (batch 4 follow-up). | L-k (part) |
 | SF-075 | low | teams/manager | confirmed | yes | full | API-047 | **GET /api/org/members answers 200 [] when the caller cannot be read** | `api/handlers_org.go:24-28` | Documented in the contract as current behaviour; no web consumer (API-091). | API-047 |
 | SF-076 | low | teams/manager | confirmed | no | light | API-086 | **A failed count reads as team_member_count 0** | `api/handlers_manager.go:69-70` | `_ = ...Scan(&count)`. Nothing reads the field. **Fixed (PAC-122)** (batch 4): the count moves to `storage.CountManagerTeamMembers`; a failed count is the documented 500 (step `getProfile: roster count`), never `team_member_count: 0`. Pinned by `TestPAC122_SF076_FailedRosterCountIs500` (`backend/api/pac122_b4_test.go`). | L-a |
@@ -458,13 +458,16 @@ swallow of one, below.
 
   An `if` whose init assigns one targeted call's results (`:=` or `=`), whose
   condition is `err == nil` or `nil == err` (alone, or as the leftmost operand
-  of an `&&` chain, as in `err == nil && v != nil`), with **no `else`** and
-  **no later use** of that error variable after the `if`. A failure then takes
-  the "absent" path and nothing is said. Not matched: an `if` with an `else`,
-  `err != nil` and `||` conditions, an error read after the `if` (possible
-  with `=`), an untargeted call (`strconv`, `time.Parse`, `r.Cookie`), and a
-  separate `v, err := f()` line followed by `if err == nil` (the variable
-  outlives the `if`; review catches that one). Its baseline entries carry the
+  of an `&&` chain, as in `err == nil && v != nil`), with **no `else` that
+  reads** that error variable and **no later read** of it after the `if`. A
+  failure then takes the "absent" path and nothing is said. An `else`, or an
+  `else if` chain, that never reads the error (`} else if name == "" {`)
+  exempts nothing; one that does (`} else if !errors.Is(err, sql.ErrNoRows) {`,
+  as in `handlers_manager.go`) handles it. A later write (`err = storage.Save(...)`)
+  is not a read. Not matched: `err != nil` and `||` conditions, an error read
+  after the `if` (possible with `=`), an untargeted call (`strconv`,
+  `time.Parse`, `r.Cookie`), and a separate `v, err := f()` line followed by
+  `if err == nil` (the variable outlives the `if`; review catches that one). Its baseline entries carry the
   callee prefixed `errnil:` (`storage.GetOrgByID` becomes
   `errnil:storage.GetOrgByID`), so the two shapes of one call are counted
   apart and one never accepts the other.
@@ -516,8 +519,9 @@ swallow of one, below.
     store-seam, generic, `h.db`, and a file carrying the generated phrase
     mid-file;
   - a new `err == nil` swallow fails (alone, reversed `nil == err`, leftmost of
-    `&&`, assigned with `=`), a blank-shape entry does not accept it, and the
-    shapes that handle or see the error are never reported
+    `&&`, assigned with `=`, followed only by a write of `err`, or with an
+    `else if` that never reads `err`), a blank-shape entry does not accept it,
+    and the shapes that handle or see the error are never reported
     (`testdata/fixture/api/errnil.go`);
   - a baselined discard passes;
   - a second identical discard in one function fails;
@@ -538,6 +542,9 @@ swallow of one, below.
     followed by no check (`ineffassign` or `staticcheck` catch some of these),
     or followed by `if err == nil { ... }` on its own line (only the if-init
     form is the `err == nil` swallow above);
+  - **`err == nil` that is not the leftmost operand of `&&`:**
+    `if v, err := storage.Get(...); v != nil && err == nil { ... }`;
+  - **a `switch` init:** `switch v, err := storage.Get(...); { case err == nil: ... }`;
   - **anonymous-interface calls:** `interface{ Get() (T, error) }` declared
     inline;
   - **`sql.Result.RowsAffected`:** excluded on purpose, since the drivers in
@@ -577,8 +584,8 @@ swallow of one, below.
   - `TeamAvailabilityEngine.memberBusy`: a failed focus-block read counts the
     member unknown, never free (SF-112).
 - **The `err == nil` shape at landing (PAC-142): 7 occurrences**, each read
-  against this register. Totals now: **20 entries** = 14 blank (5 known,
-  9 fine) + 6 `errnil:` (1 known, 5 fine).
+  against this register. Totals now: **19 entries** = 14 blank (5 known,
+  9 fine) + 5 `errnil:` (1 known, 4 fine).
   - **Fixed in PAC-142 (1):** `storage.GetUserByID`'s organisation read
     (SF-113). Its callers were audited: only `GET /api/auth/me` reads `Org`
     (now its documented 500 on a failed read); the other 19 call sites read
@@ -589,19 +596,27 @@ swallow of one, below.
   - **1 known row:** SF-038, `authHandlers.status`: a failed user read for
     the connected Google account's email answers `connected:true` with
     `email: ""` (same handler, same full-process fix; noted on the row).
-  - **5 fine:**
+  - **Also fixed in PAC-142 (1):** `Refresher.Tick`'s read of the active data
+    key (`storage.ActiveDataKey`). A failed read, `sql.ErrNoRows` included
+    (no active row, which the one-active index and `RotateStep1`'s single
+    transaction rule out while the refresher runs), skipped the automatic
+    rotation check with nothing said; it is now reported through the
+    lifecycle hook (`read the active data key`) and the tick carries on.
+    Pinned by `TestPAC142_RefresherReportsActiveDataKeyReadFailure`.
+  - **4 fine:**
     - `bookingHandlers.publicLink`, `auth.LoadUserToken`: a failed token load
       only leaves the host out of `coverage.checked`, the cautious side;
-      `total` is strict (SF-027);
+      `total` is strict (SF-027). It is not reported: a decrypt failure or a
+      transient DB error shows that host as "not checked" with nothing
+      logged;
     - `conferencingHandlers.providers` and `SaveZoomCredential`,
       `storage.DecodeZoomCredential`: a stored Zoom credential that does not
       decode cannot be used ("not connected" invites the reconnect that
       replaces it, as PAC-84 does for an undecryptable one), and keeps no old
       refresh token by design (AC-16c b);
-    - `Refresher.Tick`, `storage.ActiveDataKey` and `storage.LoadDataKeys`:
-      a failed read skips this tick's rotation check or keyring reload; the
-      next tick retries, and its own `LoadDataKeys` read reports a failure
-      (`r.fail`).
+    - `Refresher.Tick`, `storage.LoadDataKeys` (after a rotation): a failed
+      reload keeps the current keyring this tick; the next tick reloads it,
+      and its own `LoadDataKeys` read reports a failure (`r.fail`).
 
 The web counterpart is the **optimistic UI claim** (29 rows). It matches
 `@typescript-eslint/no-floating-promises` (which catches `void
