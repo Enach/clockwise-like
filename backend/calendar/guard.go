@@ -22,7 +22,9 @@ type dialHooks struct {
 	// resolver replaces the system resolver.
 	resolver *net.Resolver
 	// record is called after the guard, with each address the guard let
-	// through, immediately before connect.
+	// through. In a test binary testdial.Check runs after record (PAC-145),
+	// so a recorded address can still be refused: recorded means "the guard
+	// let it through", not "connected".
 	record func(network, address string)
 }
 

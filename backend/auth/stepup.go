@@ -148,6 +148,21 @@ var errPeerRefused = errors.New("identity provider: peer address refused by the 
 // Inside a test binary (and only there) it also connects only to loopback,
 // guard or not (PAC-145, backend/internal/testdial).
 func newIdPHTTPClient(guard bool) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.DialContext = newIdPDialer(guard).DialContext
+	return &http.Client{
+		Transport: t,
+		Timeout:   15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// newIdPDialer is newIdPHTTPClient's dialler: the connection guard when guard
+// is on, testdial.Check in a test binary, and no Control otherwise.
+func newIdPDialer(guard bool) *net.Dialer {
 	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	if inTest := testdial.Active(); guard || inTest {
 		d.Control = func(_, address string, _ syscall.RawConn) error {
@@ -163,16 +178,7 @@ func newIdPHTTPClient(guard bool) *http.Client {
 			return nil
 		}
 	}
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = nil
-	t.DialContext = d.DialContext
-	return &http.Client{
-		Transport: t,
-		Timeout:   15 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	return d
 }
 
 // AuthURL is the provider's authorization URL for one step-up. state and

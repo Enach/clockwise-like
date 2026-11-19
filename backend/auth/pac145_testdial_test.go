@@ -32,14 +32,16 @@ func TestPAC145IdPClientRefusesNonLoopbackInTests(t *testing.T) {
 		}
 	}
 	// A guarded private peer the production guard permits is still refused.
-	tr := newIdPHTTPClient(true).Transport.(*http.Transport)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	conn, err := tr.DialContext(ctx, "tcp", "10.255.255.1:443")
-	if conn != nil {
-		conn.Close()
+	// Control is called directly, with no socket, so nothing is ever sent to
+	// 10.255.255.1: a real LAN host there is never dialled.
+	d := newIdPDialer(true)
+	if d.Control == nil {
+		t.Fatal("guarded dialler has no Control")
 	}
-	if !errors.Is(err, testdial.ErrRealHost) {
-		t.Errorf("guard=true private peer: dial = %v, want testdial.ErrRealHost", err)
+	if err := d.Control("tcp4", "10.255.255.1:443", nil); !errors.Is(err, testdial.ErrRealHost) {
+		t.Errorf("guard=true private peer: Control = %v, want testdial.ErrRealHost", err)
+	}
+	if err := d.Control("tcp4", "127.0.0.1:443", nil); err != nil {
+		t.Errorf("guard=true loopback: Control = %v, want nil", err)
 	}
 }

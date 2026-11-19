@@ -41,18 +41,19 @@ func TestPAC145DiallerRefusesNonLoopbackInTests(t *testing.T) {
 	}
 }
 
-// The guard does not get in the way of the loopback stand-ins every calendar
-// test uses: a guarded private (non-loopback) peer the production guard
-// permits is still refused in a test binary.
+// A private peer the production guard permits is still refused in a test
+// binary. Control is called directly, with no socket, so nothing is ever sent
+// to 10.255.255.1, whatever the guard does: a real LAN host there is never
+// dialled.
 func TestPAC145PrivatePeerRefusedInTests(t *testing.T) {
-	s := newSetup(config.CalendarEndpoint{BaseURL: "http://127.0.0.1:1", Guard: true}, dialHooks{})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	conn, err := s.base.DialContext(ctx, "tcp", "10.255.255.1:443")
-	if conn != nil {
-		conn.Close()
+	d := newDialer(true, dialHooks{})
+	if d.Control == nil {
+		t.Fatal("guarded dialler has no Control")
 	}
-	if !errors.Is(err, testdial.ErrRealHost) {
-		t.Fatalf("dial 10.255.255.1:443 = %v, want testdial.ErrRealHost", err)
+	if err := d.Control("tcp4", "10.255.255.1:443", nil); !errors.Is(err, testdial.ErrRealHost) {
+		t.Fatalf("Control(10.255.255.1:443) = %v, want testdial.ErrRealHost", err)
+	}
+	if err := d.Control("tcp4", "127.0.0.1:443", nil); err != nil {
+		t.Fatalf("Control(127.0.0.1:443) = %v, want nil: loopback stand-ins must still work", err)
 	}
 }
