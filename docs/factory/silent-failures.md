@@ -58,9 +58,9 @@ Contract is `yes`, and `light` otherwise.
 
 ## 2. Summary
 
-113 register rows from about 90 candidates (101, plus SF-102 and SF-103 added by the PAC-133 contract, SF-104 added by PAC-125, SF-105 added by the PAC-122 batch 3 review, SF-106 and SF-107 added by the PAC-122 batch 4 review, SF-108 added by PAC-140, SF-109 to SF-112 added by PAC-141, and SF-113 added by PAC-142). Duplicates across reports were merged
+114 register rows from about 90 candidates (101, plus SF-102 and SF-103 added by the PAC-133 contract, SF-104 added by PAC-125, SF-105 added by the PAC-122 batch 3 review, SF-106 and SF-107 added by the PAC-122 batch 4 review, SF-108 added by PAC-140, SF-109 to SF-112 added by PAC-141, SF-113 added by PAC-142, and SF-114 added by PAC-150). Duplicates across reports were merged
 (see §9); F3, F6, F14, F24 and L-k were split because their parts differ in
-severity or domain. In total, 102 rows are confirmed and 11 are likely. Four candidates
+severity or domain. In total, 103 rows are confirmed and 11 are likely. Four candidates
 or parts were rejected (§4), and seven finder claims were corrected in place.
 SF-100 was added after review (PR #288) and keeps its number; it sits in its
 sorted position in the register. SF-101 was added by the PAC-120 contract (from
@@ -92,13 +92,18 @@ SF-113 was added by PAC-142 (`storage.GetUserByID` read a failed organisation
 read as "no organisation"; the `err == nil` swallow shape the guardrail now
 refuses, §8). It sits after SF-105, at the end of the low auth rows; it is in
 the domain counts below and in the "Discarded error becomes a default" pattern.
+SF-114 was added by PAC-150 (Manager patch and schedule read a failed holder
+lookup in the formal-member match as "not matched", the `err != nil || !ok`
+shape). It sits after SF-110, at the end of the low teams/manager rows; it is
+in the domain counts below and in the "Discarded error becomes a default"
+pattern.
 
 | Domain | critical | high | medium | low | total |
 |---|---:|---:|---:|---:|---:|
 | scheduling-links/booking | · | 1 | 4 | 4 | 9 |
 | calendar | · | 1 | 9 | 3 | 13 |
 | auth | · | 1 | 1 | 5 | 7 |
-| teams/manager | 2 | 6 | 4 | 7 | 19 |
+| teams/manager | 2 | 6 | 4 | 8 | 20 |
 | habits/analytics | · | 5 | · | 2 | 7 |
 | focus | · | 2 | · | · | 2 |
 | personal-calendars | · | 2 | 3 | · | 5 |
@@ -107,20 +112,20 @@ the domain counts below and in the "Discarded error becomes a default" pattern.
 | web-only | 1 | 1 | 14 | 10 | 26 |
 | mcp | · | 2 | 6 | 2 | 10 |
 | observability | · | · | 2 | 4 | 6 |
-| **total** | **4** | **23** | **45** | **41** | **113** |
+| **total** | **4** | **23** | **45** | **42** | **114** |
 
 | | count |
 |---|---:|
-| confirmed | 102 |
+| confirmed | 103 |
 | likely | 11 |
 | contract change (`full` process) | 19 |
-| no contract change (`light` process) | 94 |
+| no contract change (`light` process) | 95 |
 
 By shape of failure:
 
 | Pattern | Rows | What it looks like |
 |---|---:|---|
-| Discarded error becomes a default | 47 | `_ = storage.X(...)`, `v, _ := storage.Y(...)`, `if v, err := storage.Z(...); err == nil` with no else, `err != nil \|\| ok` read as "absent", answered with 2xx, `[]`, `false` or 0 |
+| Discarded error becomes a default | 48 | `_ = storage.X(...)`, `v, _ := storage.Y(...)`, `if v, err := storage.Z(...); err == nil` with no else, `err != nil \|\| ok` read as "absent", answered with 2xx, `[]`, `false` or 0 |
 | Optimistic or invented UI claim | 29 | a success toast before or regardless of the answer, a field the request never carries, a count the client makes up, an error state never rendered |
 | Validation gap or silent coercion | 16 | input accepted that later fails or is replaced (priority 0 → 50, any booker email, any personal-calendar provider) |
 | Background failure logged only | 9 | a job or detached unit that logs (or says nothing) and never reaches Sentry |
@@ -226,6 +231,7 @@ web `web H*`, `web M*` and `web L*`; MCP `M1`..`M11` (no hyphen) and `X1`.
 | SF-078 | low | teams/manager | confirmed | yes | full | T6 | **Deleting an unknown no-meeting zone answers 204** | `api/handlers_teams.go:503-508`; `storage/teams.go:306-308` | No `RowsAffected` check; the operation lists no 404. | L-g |
 | SF-107 | low | teams/manager | confirmed | no | light | — | **Formal-team member checks answer 403 on a storage error** | `api/handlers_teams.go` (`requireMember`, used by `getTeam`, `listZones`, `availability`, `analyticsHandler`) | `GetTeamMember` errors of any kind are answered `403 forbidden`, so an outage reads as "not a member". The member-check twin of SF-074, which PAC-122 batch 4 fixed for the owner checks and the manager `team_id` scope only. The `JsonForbidden` description says these member checks still answer a failed read with 403. Fix: only `sql.ErrNoRows` is the 403, any other read error the 500 (all four routes document a 500), and correct that prose. **Fixed (PAC-122)** (batch 4 follow-up): `requireMember` answers no membership row (a non-member, or a team that does not exist) with `errNotTeamMember`, the 403; any other read error is returned as itself and `writeMemberRefusal` answers it as the 500 `{"error":"internal error"}`, reported to Sentry under the route's `member check` step, on all four routes. The `JsonForbidden` prose in `teams.yaml` now says a failed membership read is never this 403; no wire change (each route already documented the 500). Pinned by `TestPAC122_SF107_MemberCheckReadErrorIs500` and `TestPAC122_SF107_NonMemberStillForbidden` (`backend/api/pac122_sf107_test.go`). | PAC-122 b4 review (#304) |
 | SF-110 | low | teams/manager | confirmed | no | light | — | **The invite preview shows a blank team or inviter on a read error** | `api/handlers_teams.go` (`(*teamHandlers).getInvite`: `team, _ := storage.GetTeam`, `inviter, _ := storage.GetUserByID`) | A failed team or inviter read answered `GET /api/teams/invites/{token}` 200 with `teamName` or `inviterName` "" and `inviter_email` null, which the contract described as intended. The sibling of SF-077, which fixed only the email path. Found by the PAC-122 guardrail sweep (baseline lines tagged PAC-141). **Fixed (PAC-141)**: a failed read (anything but `sql.ErrNoRows`) is the operation's documented 500 `internal error`, logged and reported. A row that does not exist still gives "" and null as documented (both foreign keys cascade on delete, so it does not arise in practice). `TeamInvitePreview` prose updated (no status or shape change). Pinned by `TestPAC141_InvitePreviewReadErrorsAre500` and `TestPAC141_InvitePreviewMissingRowsAreEmpty` (`backend/api/pac141_test.go`), through `InstallTeamRead` and `InstallUserRead`. | — |
+| SF-114 | low | teams/manager | confirmed | no | light | — | **Manager patch and schedule answer 404 "not on the team" when the member match fails** | `api/handlers_manager.go` (`(*managerHandlers).getOrCreateScopedMember`: `if ok, herr := storage.HoldsConfirmed(...); herr != nil \|\| !ok { continue }`) | `PATCH /api/manager/team/members/{email}` and `POST /api/manager/team/members/{email}/schedule` with `team_id` match `{email}` to a formal member of the team only when that member's account holds the address domain-confirmed (PAC-71; kept as the entry check by PAC-130). A failed holder lookup was read as "not matched", so during a database fault the answer was the 404 `not found`: the manager was told the person is not on the team. The shape (`err != nil \|\| !ok`) is not one the guardrail (§8) detects. **Fixed (PAC-150)**: a failed lookup is the match's error, and patch and schedule answer every error of the match other than `sql.ErrNoRows` (and PAC-129's 422) with the documented 500 `{"error":"internal error"}` through `writeServerError` (op `manager member match`, no address in the body, the log line or the report; it was the 500 `db error` for the other reads, which were already checked); nothing is written. A genuine no-match is still the 404. Contract prose only (both 404s say what they mean, both operations name the 500; no status or shape change). Pinned by `TestPAC150_HolderLookupFailureIs500`, `TestPAC150_MemberListFailureIs500` and `TestPAC150_NoMatchIs404` (`backend/api/pac150_test.go`), through the existing seams `InstallConfirmedHolderLookup` and `InstallTeamMembersListRead`. | — |
 | SF-079 | low | habits/analytics | confirmed | yes | full | — | **Analytics accepts a malformed date and returns the current week** | `api/handlers_analytics.go:105-116` | Documented in the contract as "SILENTLY ignored" (habits.yaml analytics `date`), not pinned by a test. | L-d |
 | SF-080 | low | habits/analytics | confirmed | no | light | — | **Corrupt stored JSON and dates read as empty** | `storage/analytics.go:140`, `:176`; `storage/meeting_briefs.go:103-104`; `storage/habits.go:237`, `:248` | `_ = json.Unmarshal` / `time.Parse` errors give empty lists and the zero date. **Fixed (PAC-122)** (batch 5): `top_meeting_titles`, `slack_results` and `notion_results` that do not decode are an error naming the row id (a JSONB `null` is still `[]`, PAC-28), on the single reads and the lists. The occurrence date is scanned as a `time.Time`: it was scanned into a string the driver fills with RFC3339 text, so the discarded `time.Parse` error fired on **every** row and every `scheduled_date` read back as `0001-01-01` (and the engine's displaced write went to that date). Pinned by `TestPAC122_SF080_OccurrenceDateReadsBack`, `TestPAC122_SF080_UndecodableMeetingTitlesAreAnError` and `TestPAC122_SF080_UndecodableBriefResultsAreAnError` (`backend/storage/pac122_b5_test.go`). The `scheduled_date` and `top_meeting_titles` descriptions are corrected (prose only). | F25 |
 | SF-081 | low | integrations | confirmed | no | light | API-085 | **An empty redirect URI sends the user to the provider's error page** | `api/handlers_integrations.go:34-50`, `:174-190` | The 503 guard checks only the client id. **Fixed (PAC-122)** (batch 3): `connectSlack` and `connectNotion` answer the documented 503 `Slack not configured` / `Notion not configured` when the redirect URI is unset as well as when the client id is, and set no state cookie. Pinned by `TestPAC122_SF081_NoRedirectURIIsNotConfigured` (`backend/api/pac122_b3_test.go`). The 503 descriptions are extended (prose only, `contracts/openapi/paths/habits.yaml`). | API-085 |

@@ -451,6 +451,12 @@ paths:
         "this person was added to the team without Paceday access; add them with Add person to track 1:1s".
         Nothing is written: no roster row and no assignment. The check runs after the
         body is validated. Without `team_id` nothing changes.
+
+        PAC-150 (silent-failures SF-114): a storage error in any read of that match (the
+        roster entry, the team's formal members, the DOMAIN-CONFIRMED holder lookup, the
+        added-person read) is the 500 {"error":"internal error"}, logged and reported
+        without the address, and nothing is written. Before PAC-150 a failed holder
+        lookup was read as "not matched", so the answer was the 404.
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
       requestBody:
@@ -480,7 +486,11 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "404":
-          description: text/plain "not found" — no such member in scope.
+          description: >-
+            text/plain "not found" — no such member in scope: no roster entry of the
+            caller for `{email}` (in this team, with `team_id`), and, with `team_id`, no
+            formal member matched (PAC-71) and no person added to the team. Only a
+            genuine no-match: a failed read while matching is the 500 (PAC-150).
           content:
             text/plain:
               schema: { type: string }
@@ -517,6 +527,10 @@ paths:
         PAC-129 (spec §3.9, D-13, AC-31): the same refusal as patchManagerTeamMember for a
         person added to the team who has no roster entry on it: the 422 below, no roster
         row, no assignment, no prefill URL.
+
+        PAC-150 (silent-failures SF-114): the same match as patchManagerTeamMember, so a
+        storage error in any of its reads is the 500 {"error":"internal error"}, never
+        the 404, and nothing is written.
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
       requestBody:
@@ -540,7 +554,10 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "404":
-          description: text/plain "not found".
+          description: >-
+            text/plain "not found" — no such member in scope, as for
+            patchManagerTeamMember. Only a genuine no-match: a failed read while
+            matching is the 500 (PAC-150).
           content:
             text/plain:
               schema: { type: string }
