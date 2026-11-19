@@ -1,7 +1,7 @@
 # Spec — PAC-53: the activity-log endpoint silently accepts a `limit` it cannot read
 
 - **Linear**: https://linear.app/paceday/issue/PAC-53/audithandler-discards-strconvatois-error-so-two-servers-in-this-repo
-- **Status**: revision 1 — answers the 2026-11-19 challenge of `47c6ec7` (REQUEST_CHANGES: B-1, B-2 blocking; 7 non-blocking). Challenge record and responses at the end.
+- **Status**: approved, revision 1 (2 challenge rounds: the 2026-11-19 challenge of `47c6ec7` was REQUEST_CHANGES with B-1, B-2 blocking and 7 non-blocking; revision 1 at `1f88dfc` answers it and was approved on re-challenge). OQ-1 to OQ-4 stand on their defaults. Challenge record and responses at the end.
 - **Author**: spec-author
 - **Track**: full process (contract change: a new error response on `listAuditEntries`)
 - **Decision taken**: the ticket's option 1 ("validate in the hand-written handler, declare the 400 in the contract in the same change"), with the JSON error encoding. Option 2 (leave it) is rejected in §9.
