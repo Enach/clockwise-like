@@ -13,10 +13,12 @@
  * proven with the fake resolver by backend/auth/pac98_detect_test.go AC-1/AC-3),
  * so these journeys need no DNS stand-in fixture. Nothing is mocked on
  * Paceday's side: the dialog posts to the real /api/auth/detect and the
- * Google start is the real backend route. The browser's navigation to Google
- * is answered by a Playwright route on that host, as in
- * pac97-signin-detect.spec.ts (the helpers are repeated here because a spec
- * file cannot import another spec file without registering its tests twice).
+ * Google start is the real backend route. The journey stops at that start:
+ * lib/provider-start.ts reads the backend's real 302 and keeps the browser
+ * from following it, so Google is never loaded (CI run 44422703172 loaded the
+ * real Google page here, whose own CSP reports failed the test). The other
+ * helpers are repeated from pac97-signin-detect.spec.ts because a spec file
+ * cannot import another spec file without registering its tests twice.
  *
  * This stack configures Google sign-in only (Microsoft waits for PAC-99), so
  * "no Microsoft button although Microsoft is available" is the web's vitest
@@ -30,17 +32,7 @@ import { randomUUID } from 'node:crypto';
 import type { Page, Request, Route } from '@playwright/test';
 
 import { test, expect } from '../fixtures';
-
-const PROVIDER_HOSTS = ['accounts.google.com', 'login.microsoftonline.com'];
-
-/** Answers the browser's navigation to a real provider, so it never leaves the test host. */
-async function stopAtProviders(page: Page): Promise<void> {
-  for (const host of PROVIDER_HOSTS) {
-    await page.route(`https://${host}/**`, (route) =>
-      route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>provider stand-in</title>' }),
-    );
-  }
-}
+import { stopAtProviderStarts } from '../lib/provider-start';
 
 /** Every request this page makes to a path ending in /api/auth/login or /api/auth/register. */
 function recordPasswordRoutes(page: Page): Request[] {
@@ -114,30 +106,28 @@ test.describe('PAC-98 — personal addresses go to a provider, never a password 
   test('AC-18: a gmail.com address goes straight to the Google start with the typed address as hint', async ({
     page,
   }) => {
-    await stopAtProviders(page);
+    const providerStarts = await stopAtProviderStarts(page);
     const passwordRoutes = recordPasswordRoutes(page);
     const email = `${freshLocal()}@gmail.com`;
     await openSignIn(page);
 
-    const start = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/auth/google');
-    const startResponse = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/auth/google');
     expect(await continueWithEmail(page, email)).toBe('google');
 
     // The browser's next Paceday request is the API's Google start, with the hint.
-    expect(new URL((await start).url()).searchParams.get('login_hint')).toBe(email);
-    // The real start forwards it to Google, where the journey stops.
-    const res = await startResponse;
-    expect(res.status()).toBe(302);
-    const toGoogle = new URL(res.headers()['location'] ?? '');
-    expect(toGoogle.host).toBe('accounts.google.com');
-    expect(toGoogle.searchParams.get('login_hint')).toBe(email);
+    const start = await providerStarts.first;
+    expect(start.url.pathname).toBe('/api/auth/google');
+    expect(start.url.searchParams.get('login_hint')).toBe(email);
+    // The real start forwards it to Google; the journey stops before Google loads.
+    expect(start.status).toBe(302);
+    expect(start.location?.host).toBe('accounts.google.com');
+    expect(start.location?.searchParams.get('login_hint')).toBe(email);
     expect(passwordRoutes).toHaveLength(0);
   });
 
   test('AC-19: a yahoo.com address gets the personal-address step: Google with the hint, no password, no Microsoft', async ({
     page,
   }) => {
-    await stopAtProviders(page);
+    const providerStarts = await stopAtProviderStarts(page);
     const passwordRoutes = recordPasswordRoutes(page);
     const starts = recordProviderStarts(page);
     const email = `${freshLocal()}@yahoo.com`;
@@ -166,9 +156,14 @@ test.describe('PAC-98 — personal addresses go to a provider, never a password 
     ).toEqual([email, 'personal']);
 
     // A click checks /api/health (PAC-83), then starts Google with the hint.
-    const start = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/auth/google');
     await step.getByTestId('auth-personal-google').click();
-    expect(new URL((await start).url()).searchParams.get('login_hint')).toBe(email);
+    const start = await providerStarts.first;
+    expect(start.url.pathname).toBe('/api/auth/google');
+    expect(start.url.searchParams.get('login_hint')).toBe(email);
+    // The real start sends it on to Google, which is never loaded.
+    expect(start.status).toBe(302);
+    expect(start.location?.host).toBe('accounts.google.com');
+    expect(start.location?.searchParams.get('login_hint')).toBe(email);
     expect(starts.filter((r) => new URL(r.url()).pathname === '/api/auth/microsoft')).toHaveLength(0);
 
     // During the whole journey, no password route was requested.
