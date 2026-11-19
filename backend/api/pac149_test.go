@@ -768,6 +768,26 @@ func TestPAC149_AC7_HolderAcceptsAndDeclines(t *testing.T) {
 	if w := do(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", owner, `{"email":"`+hAddr+`"}`); w.Code != http.StatusCreated {
 		t.Fatalf("invite: %d %s", w.Code, w.Body.String())
 	}
+	// A second invitation after H's, so the roster order can show whether
+	// H's entry keeps its place when H answers (spec D-16).
+	later := "later-" + uuid.NewString()[:8] + "@ext.example"
+	if w := do(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", owner, `{"email":"`+later+`"}`); w.Code != http.StatusCreated {
+		t.Fatalf("invite later: %d %s", w.Code, w.Body.String())
+	}
+	rosterOrder := func() []string {
+		t.Helper()
+		w := do(http.MethodGet, "/api/scheduling-links/"+link.ID.String(), owner, "")
+		var out []string
+		for _, raw := range pac149Roster(t, w.Body.Bytes()) {
+			var x struct {
+				Email string `json:"email"`
+			}
+			_ = json.Unmarshal(raw, &x)
+			out = append(out, x.Email)
+		}
+		return out
+	}
+	orderBefore := rosterOrder()
 	if got := b.slots(link.Slug, "2030-01-08", 30); got.code != http.StatusOK || !got.offers(busy) {
 		t.Fatalf("pending: listing = %d %v, want 10:00 offered (a pending invitation is not a host)", got.code, got.starts())
 	}
@@ -776,6 +796,9 @@ func TestPAC149_AC7_HolderAcceptsAndDeclines(t *testing.T) {
 	}
 	if w := do(http.MethodPost, "/api/scheduling-links/host-invites/"+link.ID.String()+"/accept", h, ""); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"status":"accepted"}` {
 		t.Fatalf("accept: %d %s", w.Code, w.Body.String())
+	}
+	if after := rosterOrder(); strings.Join(after, ",") != strings.Join(orderBefore, ",") {
+		t.Errorf("roster order changed when H accepted: %v, was %v (an entry keeps its position, D-16)", after, orderBefore)
 	}
 	w := do(http.MethodGet, "/api/scheduling-links/"+link.ID.String(), owner, "")
 	entry := pac149Entry(t, pac149Roster(t, w.Body.Bytes()), hAddr)
@@ -1142,6 +1165,21 @@ func TestPAC149_AC19_StrayInvitationNever500(t *testing.T) {
 	if got := e.hostRows(l.ID); got[aID] != "declined" || len(got) != 2 {
 		t.Errorf("after A's decline: %v, want the owner and A declined, no invitation", got)
 	}
+	// Leave (contract md §2.4 case 1', deviation D-b): A leaves a link where it
+	// has an entry beside a stray invitation for its address; both go.
+	lLeave := e.link(owner, map[uuid.UUID]string{aID: "accepted"})
+	if _, err := storage.AddLinkInvitation(e.db, lLeave.ID, strings.ToUpper(aAddr)); err != nil {
+		t.Fatal(err)
+	}
+	if w := e.leave(aID, lLeave.ID); w.Code != http.StatusNoContent {
+		t.Fatalf("A leaves: %d %s", w.Code, w.Body.String())
+	}
+	if n := pac149InvitationsTo(t, e.db, aAddr); n != 0 {
+		t.Errorf("after A left: %d stray invitations to A's address, want 0", n)
+	}
+	if got := e.hostRows(lLeave.ID); len(got) != 1 || got[owner] != "accepted" {
+		t.Errorf("after A left: %v, want the owner alone", got)
+	}
 
 	// The owner's address, with an owner row.
 	l2 := e.link(owner, nil)
@@ -1165,6 +1203,9 @@ func TestPAC149_AC19_StrayInvitationNever500(t *testing.T) {
 	if _, err := storage.AddLinkInvitation(e.db, l3.ID, ownerAddr); err != nil {
 		t.Fatal(err)
 	}
+	if e.lists(owner, l3.ID) {
+		t.Error("the owner lists its own link with no owner row")
+	}
 	pac112Body(t, e.answer(owner, l3.ID, "accept"), http.StatusNotFound, `{"error":"not found"}`, "owner accepts (no owner row)")
 	var n, mine int
 	if err := e.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE user_id = $2) FROM scheduling_link_hosts WHERE link_id = $1`, l3.ID, owner).Scan(&n, &mine); err != nil {
@@ -1187,5 +1228,29 @@ func TestPAC149_NoUserNotFound(t *testing.T) {
 		if strings.Contains(w.Body.String(), "user not found") || w.Code == http.StatusNotFound {
 			t.Errorf("invite %d: %d %s", i, w.Code, w.Body.String())
 		}
+	}
+}
+
+// Spec §3.2 (the over-5 rule): a list longer than 5 is refused at the first
+// entry that equals neither the owner's address nor a current entry, a
+// malformed one included: six malformed entries are the 422, on create and
+// on PATCH, and nothing is written.
+func TestPAC149_OverFiveMalformedIsRefused(t *testing.T) {
+	e := newPAC112Env(t)
+	owner, _ := e.confirmed("over5-owner")
+	list := make([]string, 6)
+	for i := range list {
+		list[i] = fmt.Sprintf("not-an-address-%d", i)
+	}
+	before := e.linkCount(owner)
+	pac112Body(t, e.create(owner, map[string]any{"co_host_emails": list}), http.StatusUnprocessableEntity, pac112CapMsg, "create with 6 malformed")
+	if n := e.linkCount(owner); n != before {
+		t.Errorf("links %d -> %d after a refused create", before, n)
+	}
+	l := e.link(owner, nil)
+	pac112Body(t, e.patch(owner, l.ID, map[string]any{"title": "changed", "co_host_emails": list}),
+		http.StatusUnprocessableEntity, pac112CapMsg, "PATCH with 6 malformed")
+	if e.title(l.ID) != l.Title {
+		t.Error("a refused PATCH changed the title")
 	}
 }

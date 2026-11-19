@@ -405,7 +405,22 @@ contract `contracts/features/PAC-149.md` §4.3-§4.6.
      psql -U clockwise -d clockwise -c 'SELECT version, dirty FROM schema_migrations'
    ```
 
-2. **Pre-deploy count** (read only; record the seven counts in the release
+2. **Precheck: no pending row whose account has an empty address.** Migration
+   044 converts each pending row to an invitation for its account's stored
+   address and then adds `CHECK (invitee_email IS NULL OR invitee_email <> '')`;
+   a pending row of an account whose `email` is `''` would make it abort
+   (SQLSTATE 23514, `scheduling_link_hosts_invitation_address_not_empty`) and
+   leave version 44 dirty. This must read `0`:
+
+   ```
+   SELECT count(*) FROM scheduling_link_hosts h JOIN users u ON u.id = h.user_id
+    WHERE h.status = 'pending' AND u.email = '';
+   ```
+
+   **Stop condition: any other answer.** The release stops and the rows go to
+   the owner, who decides their fate (for example remove those pending rows)
+   before release; the migration's SQL is not changed for it.
+3. **Pre-deploy count** (read only; record the seven counts in the release
    record and report them to the owner). The categories and their precedence
    are exactly the migration's; `TestPAC149_AC10_Migration044` runs this text,
    verbatim, against the spec's fixture.
@@ -462,12 +477,12 @@ contract `contracts/features/PAC-149.md` §4.3-§4.6.
      address, the owner's own pending row on a link created without an owner
      row, a clash with an entry or the owner, a clash with another pending
      row of the same link). No step brings them back.
-3. **Snapshot** for rollback fidelity: `pg_dump -t scheduling_link_hosts`.
-4. Deploy as in [Applying migrations](#applying-migrations-stop-migrate-start)
+4. **Snapshot** for rollback fidelity: `pg_dump -t scheduling_link_hosts`.
+5. Deploy as in [Applying migrations](#applying-migrations-stop-migrate-start)
    (no backend serving while 044 runs). PostgreSQL's log carries `PAC-149
    migration 044: converted N with a holder, M without; dropped …` (`RAISE
-   LOG`), the same seven counts as step 2.
-5. **Web pairing.** The web half (`smart-calendar-flow`, branch
+   LOG`), the same seven counts as step 3.
+6. **Web pairing.** The web half (`smart-calendar-flow`, branch
    `factory/pac-149`) deploys after this server. In between (minutes) the old
    web still works: it never calls the single invite, reads the roster
    loosely, and for a save whose report removes a pending or declined co-host
@@ -482,7 +497,8 @@ Release note for PAC-149:
    tells the inviter whether they have a Paceday account; the invitee sees the
    invitation once their account is the address's verified holder. Paceday
    still sends no email: owners are told to let the invitee know.
-2. Run step 2 before deploying and record the seven counts. Invitations
+2. Run the step-2 precheck (must be 0) and step 3 before deploying; record the
+   seven counts. Invitations
    "converted without a holder" are no longer visible to their invitee until
    that account becomes the verified holder (an unbound legacy account binds
    on authoritative evidence; a letter-case pair never does; the owner still
