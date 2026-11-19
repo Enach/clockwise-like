@@ -30,6 +30,10 @@ export interface ProviderStart {
   status: number;
   /** The backend's Location (the provider URL), or null when there is none. */
   location: URL | null;
+  /** The browser requested the start as a navigation (not a fetch/XHR). */
+  isNavigation: boolean;
+  /** The request came from the page's main frame (not an iframe). */
+  isMainFrame: boolean;
 }
 
 export interface ProviderStarts {
@@ -47,12 +51,21 @@ export async function stopAtProviderStarts(page: Page): Promise<ProviderStarts> 
   await page.route(
     (url) => PROVIDER_START_PATHS.includes(url.pathname),
     async (route: Route) => {
+      const request = route.request();
       const response = await route.fetch({ maxRedirects: 0 });
       const location = response.headers()['location'];
+      let isMainFrame = false;
+      try {
+        isMainFrame = request.frame() === page.mainFrame();
+      } catch {
+        // A service-worker request has no frame: not the main frame.
+      }
       const start: ProviderStart = {
-        url: new URL(route.request().url()),
+        url: new URL(request.url()),
         status: response.status(),
-        location: location ? new URL(location, route.request().url()) : null,
+        location: location ? new URL(location, request.url()) : null,
+        isNavigation: request.isNavigationRequest(),
+        isMainFrame,
       };
       answered.push(start);
       resolveFirst(start);

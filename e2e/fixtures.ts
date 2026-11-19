@@ -107,6 +107,9 @@ async function watchCsp(context: BrowserContext, sink: CspViolation[]): Promise<
  * is any, naming each URL. Allowlist: OFF_STACK_ALLOWLIST, empty.
  *
  * How a request is caught:
+ *  - a context WebSocket route, for every WebSocket to an origin off the
+ *    stack (WebSockets never reach context.route): recorded and closed
+ *    before it connects;
  *  - the context route below, for every request no page.route answered. A
  *    test that fulfils a host with page.route (page routes run first) keeps
  *    that request in the browser, and it is not recorded. The app's own
@@ -126,7 +129,8 @@ async function watchCsp(context: BrowserContext, sink: CspViolation[]): Promise<
 export interface OffStackRequest {
   url: string;
   /**
-   * routed: aborted by the context route. redirect: a redirect's hop off the
+   * routed: aborted by the context route, or a WebSocket closed by the
+   * context's WebSocket route. redirect: a redirect's hop off the
    * stack (routes never see one; the resolver refuses it). unresolved: any
    * other request whose host the resolver refused.
    */
@@ -149,6 +153,16 @@ async function watchOffStack(context: BrowserContext, sink: OffStackRequest[]): 
       if (standIn) return route.fulfill(standIn);
       record(route.request(), 'routed');
       return route.abort('blockedbyclient');
+    },
+  );
+  // WebSockets do not go through context.route. A routed WebSocket that is
+  // never connectToServer()'d never reaches the server; it is recorded and
+  // closed.
+  await context.routeWebSocket(
+    (url) => !isOnStack(url.href),
+    async (ws) => {
+      sink.push({ url: ws.url(), how: 'routed' });
+      await ws.close();
     },
   );
   context.on('request', (r) => {

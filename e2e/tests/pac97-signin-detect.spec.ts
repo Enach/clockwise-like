@@ -89,6 +89,9 @@ test.describe('PAC-97 — sign-in detection by MX', () => {
     // The browser's next Paceday request is the API's Google start, with the hint.
     const start = await providerStarts.first;
     expect(start.url.pathname).toBe('/api/auth/google');
+    // The page itself navigated to the start, at the top level.
+    expect(start.isNavigation).toBe(true);
+    expect(start.isMainFrame).toBe(true);
     expect(start.url.searchParams.get('login_hint')).toBe(email);
     // The real start forwards it to the provider; the journey stops before it loads.
     expect(start.status).toBe(302);
@@ -129,6 +132,9 @@ test.describe('PAC-97 — sign-in detection by MX', () => {
     await page.getByTestId('auth-choose-google').click();
     const start = await providerStarts.first;
     expect(start.url.pathname).toBe('/api/auth/google');
+    // The page itself navigated to the start, at the top level.
+    expect(start.isNavigation).toBe(true);
+    expect(start.isMainFrame).toBe(true);
     expect(start.url.searchParams.get('login_hint')).toBe(email);
     expect(start.status).toBe(302);
     expect(start.location?.host).toBe('accounts.google.com');

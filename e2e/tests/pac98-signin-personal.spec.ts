@@ -116,6 +116,9 @@ test.describe('PAC-98 — personal addresses go to a provider, never a password 
     // The browser's next Paceday request is the API's Google start, with the hint.
     const start = await providerStarts.first;
     expect(start.url.pathname).toBe('/api/auth/google');
+    // The page itself navigated to the start, at the top level.
+    expect(start.isNavigation).toBe(true);
+    expect(start.isMainFrame).toBe(true);
     expect(start.url.searchParams.get('login_hint')).toBe(email);
     // The real start forwards it to Google; the journey stops before Google loads.
     expect(start.status).toBe(302);
@@ -159,6 +162,9 @@ test.describe('PAC-98 — personal addresses go to a provider, never a password 
     await step.getByTestId('auth-personal-google').click();
     const start = await providerStarts.first;
     expect(start.url.pathname).toBe('/api/auth/google');
+    // The page itself navigated to the start, at the top level.
+    expect(start.isNavigation).toBe(true);
+    expect(start.isMainFrame).toBe(true);
     expect(start.url.searchParams.get('login_hint')).toBe(email);
     // The real start sends it on to Google, which is never loaded.
     expect(start.status).toBe(302);

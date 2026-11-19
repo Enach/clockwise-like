@@ -109,6 +109,26 @@ test.describe('off-stack guard self-test', () => {
     }
   });
 
+  test('a WebSocket to an off-stack origin is closed before it connects and recorded', async ({
+    page,
+    offStackRequests,
+  }) => {
+    expectOffStack();
+    // WebSockets never reach context.route; only the context's WebSocket
+    // route sees this one. The page sees it close without ever opening.
+    const events = await page.evaluate(
+      () =>
+        new Promise<string[]>((resolve) => {
+          const seen: string[] = [];
+          const ws = new WebSocket('ws://ws-offstack.e2e.invalid/socket');
+          ws.onopen = () => seen.push('open');
+          ws.onclose = () => resolve([...seen, 'close']);
+        }),
+    );
+    expect(events).toEqual(['close']);
+    expect(offStackRequests).toEqual([{ url: 'ws://ws-offstack.e2e.invalid/socket', how: 'routed' }]);
+  });
+
   test('a page.route that lets an off-stack request through is refused and recorded', async ({
     page,
     offStackRequests,
