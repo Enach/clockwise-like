@@ -269,7 +269,7 @@ func TestPAC71_AC20_RefusalChangesNoOrganisationOrWorkCalendar(t *testing.T) {
 	d := pac71Domain()
 	henry := pac71Bound(t, "henry@"+d, googleIdentity(pac71GoogleID()), storage.AddressDomainConfirmed)
 	db := openTestDB(t)
-	if err := storage.AssociateUserWithOrg(db, henry, "henry@"+d); err != nil {
+	if err := storage.ReconcileUserOrg(db, henry); err != nil {
 		t.Fatal(err)
 	}
 	execT(t, `INSERT INTO settings (user_id, calendar_provider) VALUES ($1, 'google')`, henry)

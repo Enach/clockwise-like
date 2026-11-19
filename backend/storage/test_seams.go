@@ -495,3 +495,26 @@ func InstallOrgMembersExclude(tb TB, fn func(viewerID uuid.UUID) []uuid.UUID) (u
 	tb.Helper()
 	return orgMembersExclude.install(tb, fn)
 }
+
+// orgMembershipStatement observes the statements of the PAC-148 sign-in step
+// (ReconcileUserOrg) and of the member-list read path (contract md §7): it
+// fires once per statement, before it runs, with the statement's fixed name:
+// "user-row" (the caller's row through effectiveOrgSQL, getUserRow),
+// "membership-lock" (the sign-in step's users-row lock), "org-upsert"
+// (UpsertOrg), "membership-set" (the join), "membership-leave" (the leave),
+// "members-read" (GetOrgMembers). It observes only; it cannot fail a
+// statement.
+var orgMembershipStatement seam[func(name string)]
+
+// InstallOrgMembershipStatement installs the PAC-148 statement seam.
+func InstallOrgMembershipStatement(tb TB, fn func(name string)) (uninstall func()) {
+	tb.Helper()
+	return orgMembershipStatement.install(tb, fn)
+}
+
+// fireOrgMembershipStatement runs the PAC-148 statement seam, if installed.
+func fireOrgMembershipStatement(name string) {
+	if fn, ok := orgMembershipStatement.get(); ok {
+		fn(name)
+	}
+}

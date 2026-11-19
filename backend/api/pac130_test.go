@@ -148,7 +148,7 @@ func newPAC130(t *testing.T) *pac130Fix {
 	f := &pac130Fix{t: t, db: db, g: newPAC130Google(t), vDomain: "v" + run + ".pac130.test", ext: "ext" + run + ".pac130.test"}
 	f.vEmail = "v@" + f.vDomain
 	f.v = createConfirmedUser(t, f.vEmail)
-	if err := storage.AssociateUserWithOrg(db, f.v, f.vEmail); err != nil {
+	if err := pac148ConfirmAndJoin(t, db, f.v); err != nil {
 		t.Fatal(err)
 	}
 	f.token = "pac130-" + run
@@ -618,9 +618,9 @@ func TestPAC130_AC10_VisibleButNotEntitled(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	inOrg := func(id uuid.UUID, email string) {
+	inOrg := func(id uuid.UUID, _ string) {
 		t.Helper()
-		if err := storage.AssociateUserWithOrg(f.db, id, email); err != nil {
+		if err := pac148ConfirmAndJoin(t, f.db, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -628,8 +628,14 @@ func TestPAC130_AC10_VisibleButNotEntitled(t *testing.T) {
 	inT2(f.account(p, true, true, 300))
 	q := "q@" + f.vDomain
 	inOrg(f.account(q, true, true, 300), q)
+	// Amended by PAC-148 (spec §3.6, contract md §9): an unconfirmed carrier
+	// whose stored association names V's organisation is NOT a member of it
+	// (the membership rule needs domain_confirmed standing), so it is outside
+	// rule (b) and takes the estimate, like an address nobody holds. Planted
+	// directly, as an older release's join would have left it.
 	uOrg := "u-org@" + f.vDomain
-	inOrg(f.account(uOrg, false, true, 300), uOrg)
+	uOrgID := f.account(uOrg, false, true, 300)
+	pac148Plant(t, f.db, uOrgID, pac148OrgOf(t, f.db, f.v))
 	uTeam := "u-team@" + f.ext
 	inT2(f.account(uTeam, false, true, 300))
 	kim := "kim@" + f.ext
@@ -639,12 +645,19 @@ func TestPAC130_AC10_VisibleButNotEntitled(t *testing.T) {
 	alexID := f.account("Alex@"+f.vDomain, true, true, 300)
 	inOrg(alexID, "Alex@"+f.vDomain)
 
-	cases := []string{p, q, uOrg, uTeam, kim, alex}
-	for _, addr := range cases {
+	cases := []string{p, q, uTeam, kim, alex}
+	for _, addr := range append(cases, uOrg) {
 		w := f.add(addr, true)
 		if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"member_user_id":null`) {
 			t.Fatalf("add %s = %d %s", addr, w.Code, w.Body.String())
 		}
+	}
+	// PAC-148: the planted unconfirmed carrier takes the estimate.
+	if m := f.member(uOrg); m.IsPacedayUser || !m.ThisWeek.DataAvailable {
+		t.Errorf("%s (unconfirmed, planted in V's organisation) = %+v, want flag false and the estimate", uOrg, m)
+	}
+	if flag, wk := f.analyticsWeek(uOrg); flag || !wk.DataAvailable {
+		t.Errorf("%s analytics = %v %+v, want flag false and the estimate", uOrg, flag, wk)
 	}
 	steps := pac130RecordSteps(t)
 	for _, addr := range cases {
@@ -843,7 +856,7 @@ func TestPAC130_AC17_RuleBIsTheOrgList(t *testing.T) {
 	f := newPAC130(t)
 	q := "q@" + f.vDomain
 	qID := f.account(q, true, true, 300)
-	if err := storage.AssociateUserWithOrg(f.db, qID, q); err != nil {
+	if err := pac148ConfirmAndJoin(t, f.db, qID); err != nil {
 		t.Fatal(err)
 	}
 	f.mustAdd(q)

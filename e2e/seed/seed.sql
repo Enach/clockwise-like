@@ -517,4 +517,34 @@ ON CONFLICT (user_id) DO NOTHING;
 INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_with_manager) VALUES
   ('a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4', true, '2024-01-01T00:00:00Z', true);
 
+-- ── PAC-148: a consumer-domain account sees no one (AC-13) ──────────────────
+-- tests/pac148-org-oracle.spec.ts. ISP (pac148-isp.e2e.test) stands in for a
+-- mail provider on no consumer list. The viewer (seed/ids.ts PAC148_VIEWER,
+-- in ACCEPTED_CREDENTIALS) is bound on mailbox evidence (unconfirmed), as a
+-- Google sign-in with a verified ISP address and no hosted domain leaves it;
+-- I1 likewise, I3 domain-confirmed. All three are associated with ISP's
+-- organisation as the rule before PAC-148 left them at sign-in. Outside the
+-- e2e.%@paceday.test pattern, so they are deleted here by id.
+DELETE FROM users WHERE id IN ('a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5', 'a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6', 'a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7');
+DELETE FROM organizations WHERE domain = 'pac148-isp.e2e.test';
+INSERT INTO organizations (id, name, domain) VALUES
+  ('a8a8a8a8-a8a8-4a8a-8a8a-a8a8a8a8a8a8', 'Pac148-isp', 'pac148-isp.e2e.test');
+INSERT INTO users (id, email, email_key, name, avatar_url, provider, provider_id, address_standing, org_id) VALUES
+  ('a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5', 'e2e.pac148.viewer@pac148-isp.e2e.test', 'e2e.pac148.viewer@pac148-isp.e2e.test', 'E2E PAC-148 Viewer', '', 'google', '71480001', 'unconfirmed', 'a8a8a8a8-a8a8-4a8a-8a8a-a8a8a8a8a8a8'),
+  ('a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6', 'e2e.pac148.isp1@pac148-isp.e2e.test', 'e2e.pac148.isp1@pac148-isp.e2e.test', 'E2E PAC-148 Isp One', '', 'google', '71480002', 'unconfirmed', 'a8a8a8a8-a8a8-4a8a-8a8a-a8a8a8a8a8a8'),
+  ('a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7', 'e2e.pac148.isp3@pac148-isp.e2e.test', 'e2e.pac148.isp3@pac148-isp.e2e.test', 'E2E PAC-148 Isp Three', '', 'google', '71480003', 'domain_confirmed', 'a8a8a8a8-a8a8-4a8a-8a8a-a8a8a8a8a8a8');
+INSERT INTO user_identities (user_id, provider, tenant, subject, evidence, bound_by) VALUES
+  ('a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5', 'google', '', '71480001', 'mailbox', 'created'),
+  ('a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6', 'google', '', '71480002', 'mailbox', 'created'),
+  ('a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7', 'google', '', '71480003', 'authoritative', 'created');
+INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
+  ('a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5', 'e2e-pac148-viewer-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+INSERT INTO settings (user_id, timezone, work_start, work_end, focus_daily_target_minutes, calendar_provider)
+VALUES ('a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5', 'UTC', '09:00', '18:00', 240, 'google')
+ON CONFLICT (user_id) DO NOTHING;
+INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_with_manager) VALUES
+  ('a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5', true, '2024-01-01T00:00:00Z', true),
+  ('a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6', false, '2024-01-01T00:00:00Z', true),
+  ('a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7', false, '2024-01-01T00:00:00Z', true);
+
 COMMIT;

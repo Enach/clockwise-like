@@ -97,7 +97,10 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
     const user = await freshUser('orgmember');
     const domain = `byok-${user.id.slice(0, 8)}.paceday.test`;
     const org = await queryOne<{ id: string }>('INSERT INTO organizations (name, domain) VALUES ($1, $1) RETURNING id', [domain]);
-    await query('UPDATE users SET org_id = $1 WHERE id = $2', [org!.id, user.id]);
+    // PAC-148 (contract md §8): a member is domain-confirmed at an address
+    // whose domain is its organisation's, or it belongs to no organisation.
+    user.email = `e2e.byok.orgmember.${user.id.slice(0, 8)}@${domain}`;
+    await query(`UPDATE users SET org_id = $1, email = $3, address_standing = 'domain_confirmed' WHERE id = $2`, [org!.id, user.id, user.email]);
     const api = apiAs(user);
     const both = ['organization_admin', 'user'];
 

@@ -301,7 +301,7 @@ func (e *ssoEnv) memberOf(t *testing.T, email string) (*storage.User, *storage.O
 	// PAC-71: break-glass needs the account to hold the listed address
 	// domain-confirmed (AC-38); members are seeded with that standing.
 	confirmAddress(t, e.db, u.ID)
-	if err := storage.AssociateUserWithOrg(e.db, u.ID, email); err != nil {
+	if err := storage.ReconcileUserOrg(e.db, u.ID); err != nil {
 		t.Fatal(err)
 	}
 	u, err = storage.GetUserByID(e.db, u.ID)

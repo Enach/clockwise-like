@@ -14,6 +14,17 @@ var genericDomains = map[string]bool{
 	"aol.com": true, "mail.com": true, "gmx.com": true,
 	"yandex.com": true, "yandex.ru": true,
 	"zoho.com": true, "fastmail.com": true,
+	// PAC-148 (contract md §4): Microsoft's personal-account domains for the
+	// markets Paceday serves, each admitted because its MX resolves only to
+	// the Outlook.com consumer host (*.olc.protection.outlook.com; the record
+	// is in docs/plans/PAC-148.md). Migration 043's consumer-list literal is
+	// this list, enumerated (AC-16): change both together.
+	"hotmail.fr": true, "hotmail.co.uk": true, "hotmail.de": true,
+	"hotmail.it": true, "hotmail.es": true, "hotmail.be": true,
+	"live.fr": true, "live.co.uk": true, "live.de": true,
+	"live.it": true, "live.nl": true, "live.be": true,
+	"outlook.fr": true, "outlook.de": true, "outlook.it": true, "outlook.es": true,
+	"windowslive.com": true,
 }
 
 func ExtractDomain(email string) string {

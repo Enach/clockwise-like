@@ -168,18 +168,22 @@ func (s *orgAIScan) config(orgID uuid.UUID) OrgAIConfig {
 }
 
 // ReadOrgAIState reads the user's organisation, its AI configuration and the
-// user's confirmation in ONE statement. A user with no row reads as being in
-// no organisation, as UserInOrganization does.
+// user's confirmation in ONE statement. The organisation is the one the user
+// belongs to under the PAC-148 membership rule (effectiveOrgSQL): a stored
+// association that fails it is no organisation, so its configuration, key
+// and policy never apply (C-3b). A user with no row reads as being in no
+// organisation, as UserInOrganization does.
 func ReadOrgAIState(ctx context.Context, db *sql.DB, userID uuid.UUID) (OrgAIState, error) {
 	var st OrgAIState
 	var org uuid.NullUUID
 	var sc orgAIScan
 	var confirmed sql.NullInt64
 	err := db.QueryRowContext(ctx, `
-		SELECT u.org_id, `+orgAIColumns+`, f.consent_since_version
+		SELECT e.org_id, `+orgAIColumns+`, f.consent_since_version
 		FROM users u
-		LEFT JOIN org_ai_configurations c ON c.org_id = u.org_id
-		LEFT JOIN org_ai_confirmations f ON f.user_id = u.id AND f.org_id = u.org_id
+		CROSS JOIN LATERAL (SELECT `+effectiveOrgSQL("u")+` AS org_id) e
+		LEFT JOIN org_ai_configurations c ON c.org_id = e.org_id
+		LEFT JOIN org_ai_confirmations f ON f.user_id = u.id AND f.org_id = e.org_id
 		WHERE u.id = $1`, userID).Scan(append(append([]any{&org}, sc.dest()...), &confirmed)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		st.Config = defaultOrgAIConfig()
@@ -562,9 +566,13 @@ const (
 // confirmation against the same user's settings write and organisation
 // change. FOR NO KEY UPDATE, not FOR UPDATE, so an administrator's
 // sso_events insert (FOR KEY SHARE on their own users row) never waits on it.
+//
+// The organisation returned is the effective one (PAC-148 contract md §2.3),
+// a scalar subquery in the target list; the lock is on the users row only
+// (FOR NO KEY UPDATE OF u), never on organizations.
 func lockUserRow(ctx context.Context, tx *sql.Tx, userID uuid.UUID) (uuid.NullUUID, error) {
 	var org uuid.NullUUID
-	err := tx.QueryRowContext(ctx, `SELECT org_id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID).Scan(&org)
+	err := tx.QueryRowContext(ctx, `SELECT `+effectiveOrgSQL("u")+` FROM users u WHERE u.id = $1 FOR NO KEY UPDATE OF u`, userID).Scan(&org)
 	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.NullUUID{}, nil
 	}

@@ -498,6 +498,27 @@ export const PAC130_VIEWER = {
   label: 'pac130-viewer-work',
 } as const;
 
+/**
+ * PAC-148 AC-13 (tests/pac148-org-oracle.spec.ts): a viewer at a mail
+ * provider on no consumer list (ISP, pac148-isp.e2e.test), bound on mailbox
+ * evidence, with two other ISP accounts; all three associated with ISP's
+ * organisation as the rule before PAC-148 left them. Outside the
+ * e2e.%@paceday.test pattern (seed.sql deletes them by id), so not in
+ * SEEDED_USER_IDS.
+ */
+export const PAC148_VIEWER = {
+  id: 'a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5',
+  email: 'e2e.pac148.viewer@pac148-isp.e2e.test',
+  name: 'E2E PAC-148 Viewer',
+  token: 'e2e-pac148-viewer-work',
+  label: 'pac148-viewer-work',
+} as const;
+
+export const PAC148_ISP_ACCOUNTS = {
+  mailbox: { id: 'a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6', email: 'e2e.pac148.isp1@pac148-isp.e2e.test' },
+  confirmed: { id: 'a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7', email: 'e2e.pac148.isp3@pac148-isp.e2e.test' },
+} as const;
+
 export const ACCEPTED_CREDENTIALS = [
   ...[
     CONNECTED.calendar,
@@ -512,6 +533,7 @@ export const ACCEPTED_CREDENTIALS = [
     ...Object.values(PAC88_HOSTS),
     ...Object.values(PAC112_HOSTS),
     PAC130_VIEWER,
+    PAC148_VIEWER,
   ].map((u) => ({
     token: u.token,
     label: u.label,

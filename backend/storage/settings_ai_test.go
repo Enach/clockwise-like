@@ -71,7 +71,11 @@ func TestRefreshKeyFlags_SelectedProviderOnly(t *testing.T) {
 
 func TestUserInOrganization(t *testing.T) {
 	db := openTestDB(t)
-	member := settingsTestUser(t, db, "settings-ai-member@example.com")
+	// PAC-148 (contract md §8): a member is domain-confirmed at the
+	// organisation's domain; an unconfirmed account planted in it is not.
+	member := settingsTestUser(t, db, "settings-ai-member@settings-ai.example")
+	pac148Confirm(t, db, member)
+	planted := settingsTestUser(t, db, "settings-ai-planted@settings-ai.example")
 	loner := settingsTestUser(t, db, "settings-ai-loner@example.com")
 	org, err := UpsertOrg(db, "settings-ai.example", "Settings AI")
 	if err != nil {
@@ -80,7 +84,10 @@ func TestUserInOrganization(t *testing.T) {
 	if err := SetUserOrg(db, member, org.ID); err != nil {
 		t.Fatal(err)
 	}
-	for user, want := range map[uuid.UUID]bool{member: true, loner: false, uuid.New(): false} {
+	if err := SetUserOrg(db, planted, org.ID); err != nil {
+		t.Fatal(err)
+	}
+	for user, want := range map[uuid.UUID]bool{member: true, planted: false, loner: false, uuid.New(): false} {
 		got, err := UserInOrganization(db, user)
 		if err != nil || got != want {
 			t.Errorf("UserInOrganization(%s) = %v, %v; want %v", user, got, err, want)

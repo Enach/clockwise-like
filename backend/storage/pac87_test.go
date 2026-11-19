@@ -59,6 +59,7 @@ func (o *pac87Org) member(label string) uuid.UUID {
 	if err != nil {
 		o.t.Fatal(err)
 	}
+	pac148Confirm(o.t, o.db, u.ID) // PAC-148 (contract md §8): a member is domain-confirmed
 	if err := SetUserOrg(o.db, u.ID, o.org); err != nil {
 		o.t.Fatal(err)
 	}
@@ -484,7 +485,9 @@ func seedPAC87(t *testing.T, db *sql.DB) pac87Seed {
 	}
 	user := func(email string) uuid.UUID {
 		var id uuid.UUID
-		if err := db.QueryRow(`INSERT INTO users (email, name, org_id) VALUES ($1, $1, $2) RETURNING id`, email, s.org).Scan(&id); err != nil {
+		// PAC-148 (contract md §8): members are domain-confirmed at the
+		// organisation's domain.
+		if err := db.QueryRow(`INSERT INTO users (email, name, org_id, address_standing) VALUES ($1, $1, $2, 'domain_confirmed') RETURNING id`, email, s.org).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		return id
@@ -584,7 +587,7 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 		t.Fatal("Z confirming (row 9)")
 	}
 	var n uuid.UUID
-	if err := db.QueryRow(`INSERT INTO users (email, name, org_id) VALUES ('n@a87.example', 'N', $1) RETURNING id`, s.org).Scan(&n); err != nil {
+	if err := db.QueryRow(`INSERT INTO users (email, name, org_id, address_standing) VALUES ('n@a87.example', 'N', $1, 'domain_confirmed') RETURNING id`, s.org).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if o.confirm(n, rotated.Version) != OrgAIConfirmed {

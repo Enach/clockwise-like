@@ -23,9 +23,7 @@ func pac142Org(t *testing.T, user uuid.UUID, tag string) uuid.UUID {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.SetUserOrg(db, user, org.ID); err != nil {
-		t.Fatal(err)
-	}
+	pac148Into(t, db, user, org.ID) // PAC-148 (contract md §8)
 	return org.ID
 }
 
@@ -76,7 +74,7 @@ func TestPAC142_OrgMembersUnaffectedByOrgReadError(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	(&orgHandlers{db: db}).members(w, withUser(httptest.NewRequest(http.MethodGet, "/api/org/members", nil), user))
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pac142-members@example.com") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), user.String()) {
 		t.Fatalf("members = %d %s, want the caller listed", w.Code, w.Body.String())
 	}
 }

@@ -86,6 +86,25 @@ var pac98ConsumerExpectations = map[string]string{
 	"yandex.ru":      DetectGeneric,
 	"zoho.com":       DetectGeneric,
 	"fastmail.com":   DetectGeneric,
+	// PAC-148 (contract md §4, AC-11): Microsoft's personal-account domains,
+	// generic until PAC-77 like outlook.com.
+	"hotmail.fr":      DetectGeneric,
+	"hotmail.co.uk":   DetectGeneric,
+	"hotmail.de":      DetectGeneric,
+	"hotmail.it":      DetectGeneric,
+	"hotmail.es":      DetectGeneric,
+	"hotmail.be":      DetectGeneric,
+	"live.fr":         DetectGeneric,
+	"live.co.uk":      DetectGeneric,
+	"live.de":         DetectGeneric,
+	"live.it":         DetectGeneric,
+	"live.nl":         DetectGeneric,
+	"live.be":         DetectGeneric,
+	"outlook.fr":      DetectGeneric,
+	"outlook.de":      DetectGeneric,
+	"outlook.it":      DetectGeneric,
+	"outlook.es":      DetectGeneric,
+	"windowslive.com": DetectGeneric,
 }
 
 // AC-3: every entry of the consumer list, enumerated from the domain package.

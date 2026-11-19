@@ -140,8 +140,8 @@ type AINotConfigured struct {
 // AIStatus is the read-only summary on the settings document (contract
 // AIStatus): exactly one of Provider and NotConfigured is set.
 type AIStatus struct {
-	Configured     bool             `json:"configured"`
-	Provider       string           `json:"provider,omitempty"`
+	Configured bool   `json:"configured"`
+	Provider   string `json:"provider,omitempty"`
 	// Configuration is "own" (row 2) or "organization" (row 4), present
 	// exactly when Configured (PAC-73 Part 2).
 	Configuration  string           `json:"configuration,omitempty"`
@@ -149,10 +149,12 @@ type AIStatus struct {
 	NotConfigured  *AINotConfigured `json:"notConfigured,omitempty"`
 }
 
-// UserInOrganization reports whether userID belongs to an organisation.
+// UserInOrganization reports whether userID belongs to an organisation under
+// the PAC-148 membership rule (effectiveOrgSQL), not whether a stored
+// association exists.
 func UserInOrganization(db DBTX, userID uuid.UUID) (bool, error) {
 	var in bool
-	err := db.QueryRow(`SELECT org_id IS NOT NULL FROM users WHERE id = $1`, userID).Scan(&in)
+	err := db.QueryRow(`SELECT `+effectiveOrgSQL("u")+` IS NOT NULL FROM users u WHERE u.id = $1`, userID).Scan(&in)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

@@ -16,12 +16,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# PAC-148 (contract md §2.2): the suite runs on the production PostgreSQL
+# image, read from docker-compose.prod.yml's postgres service, so the
+# organisation domain expression (storage.addrDomainSQL, whose lower() follows
+# the server's ctype) is tested where it runs.
+# TestPAC148_AddrDomainSQLEqualsExtractDomain compares server_version with the
+# same tag.
+PG_IMAGE="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[0-9][0-9.]*-alpine\)[[:space:]]*$/\1/p' "$ROOT_DIR/docker-compose.prod.yml")"
+case "$PG_IMAGE" in
+  postgres:*-alpine) ;;
+  *)
+    echo "docker-compose.prod.yml must name exactly one postgres:<tag>-alpine image (found: '$PG_IMAGE')" >&2
+    exit 1
+    ;;
+esac
+case "$PG_IMAGE" in
+  *"
+"*)
+    echo "docker-compose.prod.yml names more than one postgres:<tag>-alpine image" >&2
+    exit 1
+    ;;
+esac
+
 docker run -d --name "$DB_CONTAINER" \
   -e POSTGRES_DB=testdb \
   -e POSTGRES_USER=test \
   -e POSTGRES_PASSWORD=test \
   -p "127.0.0.1:${DB_PORT}:5432" \
-  postgres:16-alpine >/dev/null
+  "$PG_IMAGE" >/dev/null
 
 ready=0
 for _ in $(seq 1 30); do
