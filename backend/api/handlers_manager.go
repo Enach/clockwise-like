@@ -433,17 +433,8 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	m, err := h.getOrCreateScopedMember(r.Context(), userID, teamID, email)
-	if errors.Is(err, errAddedWithoutRoster) {
-		writeError(w, msgAddedWithoutRoster, http.StatusUnprocessableEntity)
-		return
-	}
-	if err == sql.ErrNoRows {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	} else if err != nil {
-		logServerError(r, "db error", err, http.StatusInternalServerError)
-		writeError(w, "db error", http.StatusInternalServerError)
+	m, ok := h.scopedMemberOrAnswer(w, r, userID, teamID, email)
+	if !ok {
 		return
 	}
 	displayName := m.DisplayName
@@ -469,6 +460,7 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 	if displayName == "" {
 		displayName = strings.Split(m.MemberEmail, "@")[0]
 	}
+	var err error
 	if teamID == nil {
 		err = storage.PatchManagerTeamMemberCtx(r.Context(), h.db, userID, email, displayName, cadence, customDays)
 	} else {
@@ -540,17 +532,8 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	m, err := h.getOrCreateScopedMember(r.Context(), userID, teamID, email)
-	if errors.Is(err, errAddedWithoutRoster) {
-		writeError(w, msgAddedWithoutRoster, http.StatusUnprocessableEntity)
-		return
-	}
-	if err == sql.ErrNoRows {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	} else if err != nil {
-		logServerError(r, "db error", err, http.StatusInternalServerError)
-		writeError(w, "db error", http.StatusInternalServerError)
+	m, ok := h.scopedMemberOrAnswer(w, r, userID, teamID, email)
+	if !ok {
 		return
 	}
 
@@ -778,6 +761,26 @@ func (h *managerHandlers) listManagerMembers(userID uuid.UUID, teamID *uuid.UUID
 	return result, nil
 }
 
+// scopedMemberOrAnswer resolves {email} for patch and schedule, or answers:
+// the 422 for a person added without a roster entry, the text/plain 404 only
+// for a genuine no-match (sql.ErrNoRows), and every other error, a failed read
+// in the match included, the documented 500 through writeServerError, whose
+// body and op carry no address (PAC-150, SF-114).
+func (h *managerHandlers) scopedMemberOrAnswer(w http.ResponseWriter, r *http.Request, userID uuid.UUID, teamID *uuid.UUID, email string) (*storage.ManagerTeamMember, bool) {
+	m, err := h.getOrCreateScopedMember(r.Context(), userID, teamID, email)
+	switch {
+	case err == nil:
+		return m, true
+	case errors.Is(err, errAddedWithoutRoster):
+		writeError(w, msgAddedWithoutRoster, http.StatusUnprocessableEntity)
+	case errors.Is(err, sql.ErrNoRows):
+		http.Error(w, "not found", http.StatusNotFound)
+	default:
+		writeServerError(w, r, "manager member match", err, http.StatusInternalServerError)
+	}
+	return nil, false
+}
+
 func (h *managerHandlers) getOrCreateScopedMember(ctx context.Context, userID uuid.UUID, teamID *uuid.UUID, email string) (*storage.ManagerTeamMember, error) {
 	if teamID == nil {
 		return storage.GetManagerTeamMemberByEmail(h.db, userID, email)
@@ -796,7 +799,13 @@ func (h *managerHandlers) getOrCreateScopedMember(ctx context.Context, userID uu
 		}
 		// PAC-71 granting site: a roster entry points only at a formal member
 		// who holds the address domain-confirmed.
-		if ok, herr := storage.HoldsConfirmed(h.db, formal.UserID, email); herr != nil || !ok {
+		// PAC-150 (SF-114): a failed lookup is the caller's error, never
+		// "not matched" (which answered the 404 during a database fault).
+		ok, err := storage.HoldsConfirmed(h.db, formal.UserID, email)
+		if err != nil {
+			return nil, fmt.Errorf("manager member match: holder lookup: %w", err)
+		}
+		if !ok {
 			continue
 		}
 		// PAC-130 (spec D-6, contract md §3.2): the row and assignment are
