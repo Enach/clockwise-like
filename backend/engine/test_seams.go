@@ -95,3 +95,25 @@ func InstallHabitGateLeaving(tb TB, fn func(userID uuid.UUID)) (uninstall func()
 	tb.Helper()
 	return habitGateLeaving.install(tb, fn)
 }
+
+// slackAPIOverride replaces slackAPIBase for every Slack Web API call when a
+// test installs it (PAC-141 review): packages outside engine, such as the
+// api handlers' recap test send, can then point Slack at a stub and never
+// reach slack.com. Engine tests may still assign slackAPIBase directly.
+var slackAPIOverride seam[string]
+
+// InstallSlackAPIBase points every Slack Web API call at url until the test
+// ends.
+func InstallSlackAPIBase(tb TB, url string) (uninstall func()) {
+	tb.Helper()
+	return slackAPIOverride.install(tb, url)
+}
+
+// slackAPI is the Slack Web API base: the installed override, else
+// slackAPIBase.
+func slackAPI() string {
+	if u, ok := slackAPIOverride.get(); ok {
+		return u
+	}
+	return slackAPIBase
+}

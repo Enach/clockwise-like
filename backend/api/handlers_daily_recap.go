@@ -5,12 +5,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/google/uuid"
 )
 
 type dailyRecapHandlers struct {
@@ -136,8 +139,12 @@ func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userName string
-	_ = h.db.QueryRow(`SELECT name FROM users WHERE id = $1`, userID).Scan(&userName)
+	userName, err := recapUserName(r.Context(), h.db, userID)
+	if err != nil { // PAC-141 SF-109: a failed read of the caller's name is the documented 500
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
 
 	svc := &engine.DailyRecapService{DB: h.db}
 	now := time.Now().In(recapLocation(s))
@@ -174,8 +181,12 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userName string
-	_ = h.db.QueryRow(`SELECT name FROM users WHERE id = $1`, userID).Scan(&userName)
+	userName, err := recapUserName(r.Context(), h.db, userID)
+	if err != nil { // PAC-141 SF-109: a failed read of the caller's name is the documented 500
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
 
 	svc := &engine.DailyRecapService{DB: h.db}
 	now := time.Now().In(recapLocation(s))
@@ -196,6 +207,20 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "slack_message_ts": ts})
+}
+
+// recapUserName is the caller's display name for the recap greeting. A user
+// row that does not exist is no name (the greeting has none, as before); any
+// other failed read is the error (PAC-141 SF-109), never an empty name.
+func recapUserName(ctx context.Context, db *sql.DB, userID uuid.UUID) (string, error) {
+	u, err := storage.GetUserByID(storage.Bind(ctx, db), userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read user name: %w", err)
+	}
+	return u.Name, nil
 }
 
 // recapLocation is the caller's zone, as the scheduled recap uses

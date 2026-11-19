@@ -186,7 +186,7 @@ func fetchSlackMessages(ctx context.Context, botToken string, terms []string) ([
 		q.Set("query", term)
 		q.Set("count", "5")
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-			slackAPIBase+"/search.messages?"+q.Encode(), nil)
+			slackAPI()+"/search.messages?"+q.Encode(), nil)
 		if err != nil {
 			continue
 		}

@@ -147,6 +147,7 @@ func TestPAC84_RecapTestSendUndecryptable(t *testing.T) {
 	if _, err := db.Exec(`UPDATE workspace_connections SET bot_token = $2 WHERE user_id = $1`, u, undecryptable); err != nil {
 		t.Fatal(err)
 	}
+	noSlack(t) // a regression must fail here, not call slack.com (PAC-141 review)
 	h := &dailyRecapHandlers{db: db}
 	rec := httptest.NewRecorder()
 	h.test(rec, withUser(httptest.NewRequest(http.MethodPost, "/api/settings/daily-recap/test", nil), u))

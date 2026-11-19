@@ -406,7 +406,9 @@ paths:
             Engine error for a user who HAS a stored Google credential (a user with none
             gets the 401 `calendar not connected`): the free/busy call failed as a whole,
             the caller's own calendar is unknown (PAC-133 §3.5 item 3, OQ-4), settings
-            could not be loaded, or the out-of-hours count failed. Body:
+            could not be loaded, the caller's focus blocks could not be read (PAC-141
+            SF-111: before PAC-141 a failed read counted as no focus blocks, so slots
+            could land on focus time), or the out-of-hours count failed. Body:
             `{"error":"internal error"}`. The detail is written to the server log and
             Sentry only (PAC-21). This operation never answers `out-of-hours meeting
             allowance reached`: a spent allowance only drops out-of-hours candidates
@@ -2011,7 +2013,8 @@ paths:
         day's content (meeting briefs, focus blocks, habits) is the 500,
         never a recap that reads as "a clear calendar today" (PAC-122
         SF-046); the scheduled recap is then not sent, and the failure is
-        reported (SF-082).
+        reported (SF-082). A failed read of the caller's name for the greeting
+        is the 500 too, never a recap greeting nobody (PAC-141 SF-109).
 
         Before PAC-24 the day's content was the caller's but the recap
         configuration driving it (which sections to include) came from
@@ -2047,8 +2050,9 @@ paths:
         (`recapSendTo`, `recapChannelId`), not from the request - no request
         body is read. The message is built at the current time in the caller's
         timezone, as for the preview. The Slack call is bounded by a 10s context timeout.
-        A failed read of the day's content is the 500 and nothing is sent
-        (PAC-122 SF-046).
+        A failed read of the day's content, or of the caller's name for the
+        greeting, is the 500 and nothing is sent (PAC-122 SF-046, PAC-141
+        SF-109).
 
         Before PAC-24 the destination came from the singleton row, so a test
         send could be addressed to a channel another user had configured
