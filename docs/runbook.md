@@ -1354,14 +1354,18 @@ Duration: the whole run is bounded (`-max-duration`, 5 s by default, 1 s to
 past it the run is cancelled and rolled back. Every statement that takes a
 lock gets only the time left until that deadline, so a lock is held at most
 until the run's start plus the bound, plus 1 s if the command froze between
-two statements (9 s at most). Ctrl-C cancels the run the same way.
+two statements (9 s at most). Ctrl-C (or SIGTERM) cancels the run the same
+way: the server is told to stop the running statement at once, and the run's
+locks are released.
 
 If the person was active during the run (booked, was invited), rerun once:
 copies written during the run are new and are not erased by it. If the run
 stops at the duration bound, rerun off-peak, then with `-max-duration 8s` at
 most. If statement logging is on, turn `log_parameter_max_length` (and
 `log_parameter_max_length_on_error`) to 0 first; a loaded `auto_explain` must
-have `auto_explain.log_min_duration = -1`.
+have `auto_explain.log_min_duration = -1`, and `debug_print_parse`,
+`debug_print_rewritten` and `debug_print_plan` must be off (the command
+refuses otherwise).
 
 Rollback: reverting the release removes the command; erasures stay done.
 Restoring a backup brings erased copies back: rerun every erasure recorded

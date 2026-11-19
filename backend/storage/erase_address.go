@@ -24,6 +24,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -120,6 +122,14 @@ func OpenNoMigrateDescribeExec(dsn, appName string) (*sql.DB, error) {
 	}
 	cfg.RuntimeParams["application_name"] = appName
 	cfg.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+	// Review of #326, item 1: when the run's context ends (the deadline, or
+	// Ctrl-C/SIGTERM), send PostgreSQL a cancel request at once, so the
+	// server ends the in-flight statement (a backend waiting on a lock does
+	// not notice a closed socket) and the run's locks go with it. pgx's
+	// default handler only closes the socket.
+	cfg.BuildContextWatcherHandler = func(c *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: c, DeadlineDelay: time.Second}
+	}
 	db := stdlib.OpenDB(*cfg)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
@@ -170,7 +180,10 @@ func eraseJSONMatch(k string) string {
 // durations), never by parsing current_setting's "2s" in Go; a custom
 // auto_explain.log_min_duration that is absent (module not loaded) is NULL and
 // does not refuse, a numeric one refuses when >= 0, and any other text (a
-// placeholder that cannot be read as a number) refuses.
+// placeholder that cannot be read as a number) refuses. Review of #326,
+// item 2: debug_print_parse, debug_print_rewritten and debug_print_plan
+// log query trees whose constants hold the bound address, so any of them on
+// refuses too.
 const eraseSettingsSQL = `
 SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $1, true),
        set_config('idle_in_transaction_session_timeout', $2, true),
@@ -181,7 +194,9 @@ SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $1,
           OR COALESCE((SELECT s.setting::bigint >= 0 FROM pg_settings s WHERE s.name = 'log_min_duration_sample'), true)
           OR COALESCE((SELECT s.setting::float8 > 0 FROM pg_settings s WHERE s.name = 'log_transaction_sample_rate'), true)))
     OR COALESCE((SELECT CASE WHEN s.setting ~ '^-?[0-9]+$' THEN s.setting::bigint >= 0 ELSE true END
-                 FROM pg_settings s WHERE s.name = 'auto_explain.log_min_duration'), false)`
+                 FROM pg_settings s WHERE s.name = 'auto_explain.log_min_duration'), false)
+    OR COALESCE((SELECT bool_or(s.setting <> 'off') FROM pg_settings s
+                 WHERE s.name IN ('debug_print_parse', 'debug_print_rewritten', 'debug_print_plan')), false)`
 
 // eraseBudgetSQL re-arms the server-side bounds before every statement of
 // the lock phase (stage-4 amendment N-1): statement_timeout and lock_timeout
@@ -418,6 +433,10 @@ func (e *eraser) fail(name string, err error) error {
 	switch {
 	case errors.Is(e.ctx.Err(), context.DeadlineExceeded), errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("%s: %w: %w", name, ErrEraseBoundExceeded, err)
+	case errors.Is(e.ctx.Err(), context.Canceled):
+		// Interrupted (Ctrl-C/SIGTERM): the server answers the cancel
+		// request with 57014; the cause is the cancellation.
+		return fmt.Errorf("%s: %w: %w", name, context.Canceled, err)
 	case e.ctx.Err() == nil && pgCode(err) == "57014":
 		// statement_timeout fired server-side: it is only ever the bound or
 		// the budget left until the deadline, so this is the bound too.

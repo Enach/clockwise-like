@@ -357,6 +357,11 @@ func TestPAC134_StatementLoggingPreflight(t *testing.T) {
 		{"auto_explain placeholder with a unit", []string{`"auto_explain.log_min_duration" = '2s'`}, false},
 		{"auto_explain loaded", []string{"session_preload_libraries = 'auto_explain'", `"auto_explain.log_min_duration" = '2s'`}, true},
 		{"auto_explain loaded, off", []string{"session_preload_libraries = 'auto_explain'", `"auto_explain.log_min_duration" = -1`}, false},
+		// Review of #326, item 2: the debug_print_* trees hold the bound
+		// address as a constant.
+		{"debug_print_plan", []string{"debug_print_plan = on"}, true},
+		{"debug_print_parse", []string{"debug_print_parse = on"}, true},
+		{"debug_print_rewritten", []string{"debug_print_rewritten = on"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -667,7 +672,14 @@ func TestPAC134_BothLoweringsDecide(t *testing.T) {
 	for _, e := range []string{"ıvan@ext.example", "ivan@ext.example", "ivan2@ext.example"} {
 		p134Exec(t, db, `INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time) VALUES ($1, 'B', $2, now(), now())`, link, e)
 	}
-	res, err := p134Run(db, "IVAN@ext.example", nil)
+	// The account check uses both halves too (review of #326, MX6): an
+	// account whose address only the database half equates is named.
+	acct := p134ID(t, db, `INSERT INTO users (email, name) VALUES ('ıvan@ext.example', 'A') RETURNING id`)
+	held, err := p134Run(db, "IVAN@ext.example", nil)
+	if !errors.Is(err, ErrEraseAccountHeld) || held == nil || len(held.Accounts) != 1 || held.Accounts[0] != acct {
+		t.Fatalf("the account matched by the database half only was not named: %v %+v", err, held)
+	}
+	res, err := p134Run(db, "IVAN@ext.example", func(o *EraseAddressOptions) { o.AccountHeldAcknowledged = true })
 	if err != nil {
 		t.Fatal(err)
 	}

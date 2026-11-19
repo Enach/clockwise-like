@@ -328,6 +328,9 @@ func TestPAC134_AC10_UsageRefusals(t *testing.T) {
 		{"reason holds the address", pac134X + "\n", []string{"-operator", "o", "-reason", "req for PAT@EXT.EXAMPLE"}, closed, "must not contain the address"},
 		{"operator holds the address", "PAT@EXT.EXAMPLE\n", []string{"-operator", "pat@ext.example", "-reason", "r"}, closed, "must not contain the address"},
 		{"reason holds the address, folded", "pat@ext.example\n", []string{"-operator", "o", "-reason", "\u212aIM pat@ext.example"}, closed, "must not contain the address"},
+		// Review of #326, MX19: only Unicode simple folding equates the long
+		// s (U+017F) with s; Go's lowercasing leaves it alone.
+		{"reason holds the address, long s", "sam@ext.example\n", []string{"-operator", "o", "-reason", "req \u017fam@ext.example"}, closed, "must not contain the address"},
 		{"two lines", pac134X + "\nother@x.example\n", pac134Args, closed, "more than one line"},
 		{"too long", long + "\n", pac134Args, closed, "longer than 4096 bytes"},
 		{"not UTF-8", "pat@ext.example\xff\n", pac134Args, closed, "not valid UTF-8"},
