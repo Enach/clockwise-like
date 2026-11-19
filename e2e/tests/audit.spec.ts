@@ -1,7 +1,9 @@
 /**
  * PAC-23: the activity log belongs to the person it is about.
  *
- * Covers AC-1, AC-3, AC-8 and AC-13 end to end, and AC-10's server half. Entries
+ * Covers AC-1, AC-3, AC-8 and AC-13 end to end, and AC-10's server half. PAC-53
+ * replaced PAC-23 AC-11 (above the maximum -> 500) with a refusal (PAC-53
+ * AC-10) and adds the shipped client's two requests (PAC-53 AC-9). Entries
  * are written straight into audit_log for fresh users: driving the six
  * recordable actions through the product (AC-5) needs a calendar and an LLM for
  * most of them, so AC-5 is proven by the backend's writer tests instead
@@ -54,8 +56,9 @@ test.describe('PAC-23 — the activity log is the reader\'s own', () => {
       END $$;`);
 
     try {
-      // The HTTP boundary, with the parameters a caller might try.
-      for (const limit of [undefined, 1, 500, 10000]) {
+      // The HTTP boundary, with the accepted parameters a caller might try
+      // (10000 is refused since PAC-53; see the AC-10 test below).
+      for (const limit of [undefined, 1, 500]) {
         const res = await apiAs(me).get('/api/audit', limit === undefined ? undefined : { limit });
         expect(res.status()).toBe(200);
         const text = await res.text();
@@ -76,6 +79,7 @@ test.describe('PAC-23 — the activity log is the reader\'s own', () => {
         await page.goto('/settings/audit');
         const res = await audit;
         expect(new URL(res.url()).searchParams.get('limit')).toBe('50');
+        expect(res.status()).toBe(200); // PAC-53 AC-9
         const items = page.locator('main ul > li');
         await expect(items).toHaveCount(2);
         await expect(items.nth(0)).toContainText('meeting_scheduled');
@@ -113,7 +117,7 @@ test.describe('PAC-23 — the activity log is the reader\'s own', () => {
     }
   });
 
-  test('AC-10/AC-11: no limit means 50; above the maximum means 500', async ({ apiAs }) => {
+  test('AC-10: no limit means 50; PAC-53 AC-10: an unreadable limit is a JSON 400', async ({ apiAs }) => {
     const user = await freshUser('limits');
     await query(
       `INSERT INTO audit_log (user_id, action, details, created_at)
@@ -121,7 +125,35 @@ test.describe('PAC-23 — the activity log is the reader\'s own', () => {
       [user.id],
     );
     expect(await (await apiAs(user).get('/api/audit')).json()).toHaveLength(50);
-    expect(await (await apiAs(user).get('/api/audit', { limit: 10000 })).json()).toHaveLength(500);
+    expect(await (await apiAs(user).get('/api/audit', { limit: 500 })).json()).toHaveLength(500);
+    // PAC-53 D-5 supersedes PAC-23 AC-11: above the maximum is refused, not
+    // capped; the body is the one fixed message and never echoes the input.
+    for (const limit of ['10000', 'abc']) {
+      const res = await apiAs(user).get('/api/audit', { limit });
+      expect(res.status(), limit).toBe(400);
+      expect(res.headers()['content-type']).toBe('application/json');
+      expect(await res.text()).toBe('{"error":"limit must be an integer from 1 to 500"}\n');
+    }
+  });
+
+  test('PAC-53 AC-9: the quick-actions preview asks for 10 and renders them', async ({ browser }) => {
+    const tag = randomUUID().slice(0, 8);
+    const user = await freshUser('preview');
+    await record(user, 'focus_created', `{"marker":"E2E preview ${tag}"}`, 1);
+
+    const context = await browser.newContext({ storageState: storageStateFor(user) });
+    const page = await context.newPage();
+    try {
+      await page.goto('/app');
+      const audit = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/audit');
+      await page.getByRole('button', { name: 'Audit Log' }).click();
+      const res = await audit;
+      expect(new URL(res.url()).searchParams.get('limit')).toBe('10');
+      expect(res.status()).toBe(200);
+      await expect(page.getByText(`E2E preview ${tag}`)).toBeVisible();
+    } finally {
+      await context.close();
+    }
   });
 
   test('AC-12: an unauthenticated caller is refused', async ({ api }) => {

@@ -103,11 +103,17 @@ func TestListAuditEntries_ForeignTitlesAndPromptsNeverAppear(t *testing.T) {
 	storage.WriteAuditLog(db, victim, "nlp_parsed", `{"text":"`+prompt+`","intent":"schedule_meeting"}`)
 	storage.WriteAuditLog(db, reader, "focus_created", `{}`)
 
-	for _, q := range []string{"", "?limit=1", "?limit=500", "?limit=10000", "?limit=-1", "?limit=abc", "?limit=10&limit=500"} {
+	// PAC-53: the invalid queries are refused with 400 now (they were 200
+	// with a substituted limit); they still carry no foreign text.
+	for q, want := range map[string]int{
+		"": http.StatusOK, "?limit=1": http.StatusOK, "?limit=500": http.StatusOK,
+		"?limit=10000": http.StatusBadRequest, "?limit=-1": http.StatusBadRequest,
+		"?limit=abc": http.StatusBadRequest, "?limit=10&limit=500": http.StatusBadRequest,
+	} {
 		w := getAudit(t, reader, q)
 		body := w.Body.String()
-		if w.Code != http.StatusOK {
-			t.Errorf("%q: status %d", q, w.Code)
+		if w.Code != want {
+			t.Errorf("%q: status %d, want %d", q, w.Code, want)
 		}
 		if strings.Contains(body, title) || strings.Contains(body, prompt) || strings.Contains(body, "audit-http)") {
 			t.Errorf("%q: response carries another user's text: %s", q, body)
@@ -172,29 +178,34 @@ func TestListAuditEntries_PreMigrationRowsReturnedToNobody(t *testing.T) {
 	}
 }
 
-// AC-10: no limit -> the contract's default, 50 (it was 100).
+// AC-10: no limit -> the contract's default, 50 (it was 100). PAC-53 AC-1:
+// with 120 entries, exactly 50. The other inputs this test used to resolve to
+// 50 (empty, abc, 0, -5, +50) are refused since PAC-53.
 func TestListAuditEntries_DefaultLimitMatchesContract(t *testing.T) {
 	u := createTestUser(t, "audit-http-default@example.com")
 	seedAuditRows(t, u, 120)
-	for _, q := range []string{"", "?limit=", "?limit=abc", "?limit=0", "?limit=-5", "?limit=+50"} {
-		if got := len(decodeAudit(t, getAudit(t, u, q))); got != 50 {
-			t.Errorf("%q: got %d entries, want 50", q, got)
-		}
+	if got := len(decodeAudit(t, getAudit(t, u, ""))); got != 50 {
+		t.Errorf("no limit: got %d entries, want 50", got)
 	}
 	if got := len(decodeAudit(t, getAudit(t, u, "?limit=10"))); got != 10 {
 		t.Errorf("?limit=10: got %d entries, want 10", got)
 	}
+	for _, q := range []string{"?limit=", "?limit=abc", "?limit=0", "?limit=-5", "?limit=+50"} {
+		pac53AssertRefused(t, q, getAudit(t, u, q))
+	}
 }
 
-// AC-11: above the maximum -> the maximum, 500, never a smaller number;
-// including a value that overflows int64.
-func TestListAuditEntries_OverMaximumLimitCaps(t *testing.T) {
+// PAC-23 AC-11 (above the maximum -> 500) is superseded by PAC-53 D-5: above
+// the maximum is refused, never capped, including a value that overflows
+// int64 — and with more than 500 entries stored, so a cap would show.
+func TestListAuditEntries_OverMaximumLimitRefused(t *testing.T) {
 	u := createTestUser(t, "audit-http-cap@example.com")
 	seedAuditRows(t, u, 520)
 	for _, q := range []string{"?limit=501", "?limit=10000", "?limit=99999999999999999999"} {
-		if got := len(decodeAudit(t, getAudit(t, u, q))); got != 500 {
-			t.Errorf("%q: got %d entries, want 500", q, got)
-		}
+		pac53AssertRefused(t, q, getAudit(t, u, q))
+	}
+	if got := len(decodeAudit(t, getAudit(t, u, "?limit=500"))); got != 500 {
+		t.Errorf("?limit=500: got %d entries, want 500", got)
 	}
 }
 
@@ -218,11 +229,15 @@ func TestListAuditEntries_UnauthenticatedIsRefused(t *testing.T) {
 // The handler's own guard, for a context with no user (unreachable behind
 // requireAuth today; kept so a routing change cannot turn it into a read of
 // nobody's — or everybody's — log).
+// PAC-53 AC-7: the guard also comes before the limit rule, so a malformed
+// query cannot turn it into a 400.
 func TestListAuditEntries_NoUserInContextIsRefused(t *testing.T) {
-	w := httptest.NewRecorder()
-	auditHandler(openTestDB(t)).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/audit", nil))
-	if w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
-		t.Errorf("status %d body %q, want the middleware's 401", w.Code, w.Body.String())
+	for _, q := range []string{"", "?limit=abc", "?limit=%zz"} {
+		w := httptest.NewRecorder()
+		auditHandler(openTestDB(t)).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/audit"+q, nil))
+		if w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+			t.Errorf("%q: status %d body %q, want the middleware's 401", q, w.Code, w.Body.String())
+		}
 	}
 }
 

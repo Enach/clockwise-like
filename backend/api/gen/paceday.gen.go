@@ -5235,32 +5235,24 @@ type SuggestAttendeesParams struct {
 
 // ListAuditEntriesParams defines parameters for ListAuditEntries.
 type ListAuditEntriesParams struct {
-	// Limit Maximum number of entries to return. Against the server that answers this operation — the hand-written `auditHandler`, see the operation description — every input resolves and none is rejected with a 4xx. Revisions 1, 2 and 3 of this description each enumerated "cases" and each claimed a completeness it did not have, so it is written here as a two-step RESOLUTION PROCEDURE instead: step 1 picks one piece of text, step 2 maps any piece of text to one number. Together they resolve every request that can be sent, including the ordinary one.
+	// Limit Maximum number of entries to return. PAC-53 replaced PAC-23's five-case resolution table, under which every input resolved to some number and none was refused, with ONE RULE: the request either says nothing about `limit`, or says it exactly once as a whole number from `minimum` to `maximum`; every other request is refused with the `400` declared on this operation, and the server never substitutes a number the caller did not ask for. The rule is examined only after authentication: an unauthenticated request gets the `401` whatever its query.
 	//
-	// STEP 1 — WHICH TEXT IS READ. The handler reads `r.URL.Query().Get("limit")` (backend/api/handlers_audit.go:23). `URL.Query()` is `url.ParseQuery` with its error discarded, and `ParseQuery` DROPS any `key=value` pair it cannot URL-unescape and carries on; `Get` then returns the first of the surviving values, or `""` if none survive. So the text read is **the first `limit` value that URL-decodes**, not the first one supplied, and multiplicity is settled here rather than being a case of its own. `?limit=10&limit=500` reads `10`. `?limit=500&limit=10` reads `500`. `?limit=%zz&limit=10` reads **`10`**, because the `%zz` pair is dropped — NOT `%zz`, and so not the default. `?limit=%zz` on its own leaves no surviving value and is therefore read as absent. Only a request with two or more DECODABLE values is "supplied more than once", and for it the later ones are ignored.
+	// FIRST, THE QUERY AS A WHOLE. C-9: if the raw query string contains an unencoded `;` anywhere (as a separator or inside a value), or any `%` sequence that does not URL-decode, under ANY parameter name, the request is refused; equivalently, `url.ParseQuery` on the raw query returns an error. Examples: `?limit=%zz`, `?limit=%zz&limit=10`, `?x=%zz&limit=10`, `?limit=10;x=1`, `?x=a;b&limit=10`. This is checked before anything else, so `?limit=%zz` is refused, not treated as absent; and it refuses the whole request rather than ignoring the bad pair because the server cannot tell whether that pair was `limit` (`%6Cimit` is `limit`). It applies to this operation only.
 	//
-	// STEP 2 — WHAT THAT TEXT RESOLVES TO. Five outcomes, and they partition every possible string, so there is no sixth:
+	// THEN `limit` ITSELF, matched by its exact, case-sensitive name after URL-decoding (`?%6Cimit=5` is `?limit=5`):
+	// C-1 absent: `default`, 50 entries at most.
+	// C-2 present with an empty value (`?limit=`) or bare (`?limit`): refused.
+	// C-3 not a base-10 integer: letters, decimals, exponents, `0x…`, underscores, any internal or surrounding whitespace, including a raw `+`, which URL-decodes to a space (`?limit=abc`, `?limit=50.5`, `?limit=1e2`, `?limit=0x10`, `?limit=1_0`, `?limit=+50`, `?limit=%2050`, `?limit=50%20`): refused.
+	// C-4 an optional single leading `+` or `-` followed by one or more ASCII digits, leading zeros allowed (`?limit=%2B50`, `?limit=050`): read as that integer, then C-5 to C-7.
+	// C-5 an integer below 1 (`0`, `-0`, `-5`, and any negative value however large, `-9223372036854775809` included): refused.
+	// C-6 an integer from 1 to 500 inclusive: at most that many entries. This is the conforming request and the only one the shipped web client sends (50 from the activity page, 10 from the quick-actions preview).
+	// C-7 an integer above 500, whether or not it fits in 64 bits (`501`, `10000`, `9223372036854775807`, `99999999999999999999`): refused, not capped (PAC-53 decision D-5, superseding PAC-23 AC-11).
+	// C-8 `limit` supplied more than once, even with identical values (`?limit=10&limit=500`, `?limit=10&limit=10`): refused.
+	// C-10 every other parameter, including a differently-cased `LIMIT`, is ignored (subject to C-9).
 	//
-	// (a) nothing was read — the parameter is absent, or empty (`?limit=`), or bare (`?limit`), or every pair was undecodable — **50**.
-	// (b) text was read and is not a base-10 integer (`?limit=abc`, `?limit=50.5`, `?limit=1e2`, `?limit=+50`, which URL-decodes to `" 50"`) — **50**.
-	// (c) a base-10 integer below `minimum`, i.e. `0` or any negative value (`?limit=0`, `?limit=-5`) — **50**.
-	// (d) a base-10 integer from `minimum` to `maximum` inclusive — **that value**. This is the conforming request and the ONLY case the shipped client exercises (`?limit=50`); `?limit=10` returns at most 10 entries and `?limit=500` at most 500. Revisions 1-3 omitted it, which is why (e) had nothing to compose over.
-	// (e) a base-10 integer above `maximum` (`?limit=501`, `?limit=10000`) — **500**, the maximum itself, never a smaller number chosen silently. This includes a value too large for `int64` (`?limit=99999999999999999999`): `strconv.Atoi` saturates to `MaxInt64` and returns `ErrRange`, and the clamp then caps it, so the outcome is 500. An implementation that checks `Atoi`'s error must still resolve an overflowing value here and not into (b) — `ErrRange` means "above `maximum`", not "unparseable".
+	// Every refusal is the same response: status 400, `Content-Type: application/json`, body exactly `{"error":"limit must be an integer from 1 to 500"}`, which never contains the submitted text, and no entries. `minimum`, `maximum` and `default` below are therefore the whole of what is accepted (C-1 and C-6), not a hint about it.
 	//
-	// `minimum`/`maximum` therefore constrain what a conforming client may send — (d) is the whole of what they permit — and (a), (b), (c) and (e) define what the server does with the non-conforming request that the wire still allows.
-	//
-	// ON MIGRATION TO THE GENERATED SERVER — which has not happened, which PAC-23 does not do, and which changes three of the five outcomes above. The generated `ServerInterfaceWrapper.ListAuditEntries` binds this parameter with `runtime.BindQueryParameter` into a `*int`, and on any bind error hands an `InvalidParamFormatError` to the default `ErrorHandlerFunc` set up in `HandlerWithOptions`, which is `http.Error(w, err.Error(), http.StatusBadRequest)` — plain text with `charset=utf-8`, `X-Content-Type-Options: nosniff` and a trailing newline (all symbols in backend/api/gen/paceday.gen.go; cited by name because this paragraph is emitted into that file). What changes:
-	//
-	//
-	// — (a) splits. Absent stays absent and still resolves. But EMPTY and BARE (`?limit=`, `?limit`) become `400`, because `BindStringToObject` runs `strconv.ParseInt("", 10, 64)`. `?limit=%zz` keeps resolving, because the binder sees no value at all.
-	// — (b) becomes `400` in full: `strconv.ParseInt: … invalid syntax`.
-	// — (e) becomes `400` **only for a value that overflows `int64`**: `strconv.ParseInt: … value out of range`, through the same `InvalidParamFormatError`. `?limit=10000` is unaffected and still resolves to 500. So the `400` is NOT "a parse failure, not a range one" — a range failure produces it too, and `maximum: 500` is not what guards the upper end.
-	// — step 1 changes. Two or more decodable values become `400` (`multiple values for single value parameter 'limit'`) instead of the first being used. `?limit=%zz&limit=10` still resolves to 10, because `ParseQuery` drops the undecodable pair before the binder sees it — the one input class on which both servers agree and revision 3 did not.
-	// — (c) and (d) are unaffected. The binder parses but does not enforce `minimum`/`maximum`, so `?limit=0`, `?limit=-5` and `?limit=10000` all reach the handler and remain the handler's business.
-	//
-	// This operation declares no `400`, and must not while nothing emits one: factory §7 rule 2 means the contract describes what IS, so a declared-but- unreachable `400` would be a promise about a server that does not exist, would appear in any generated client as a branch no response can take, and would generate a `ListAuditEntries400TextResponse` inviting a handler to return it. The consequence is recorded instead, as a precondition: adopting the generated wrapper for `listAuditEntries` is a CONTRACT change, not just a handler change, and the `400` (with `PlainTextError`, the convention this fragment already uses for `listCalendarEvents`) must be added in the same change, never after it. That precondition is also in the `notes` cell of this operation's row in `contracts/openapi/MIGRATION.md`, which is the file whose "Moving a row" procedure the migrating author follows — this description is where an author wiring `ListAuditEntriesParams` will read it, and that register is where an author deciding to wire it at all will.
-	//
-	// SERVER BEHAVIOUR SINCE PAC-23 (finding API-074, fixed): steps 1 and 2 are both the current code. `backend/api/handlers_audit.go:23` discards `strconv.Atoi`'s error, which is exactly right here: an unreadable or non-integer value arrives as `0` and resolves to the default, and an overflowing one arrives saturated at `MaxInt64` and resolves to the maximum. `storage.ListAuditLog` (backend/storage/audit_log.go:28-33) maps `<= 0` to 50 and `> 500` to 500. Before PAC-23 that clamp was `if limit <= 0 || limit > 500 { limit = 100 }`, so (a), (b), (c) and (e) all returned 100 — including `?limit=10000`, below the declared `maximum`. No third number is in play: the 50 comes from that client (`smart-calendar-flow/src/api/client.ts:419-420`, which also renders it into the page subtitle at `src/pages/Audit.tsx:39`). After PAC-23 that client still declares the number by hand, because neither pinned frontend generator hands it over as a value — in the committed `src/api/generated/types.ts` (openapi-typescript 7.4.4) the `listAuditEntries` query type is `limit?: number` with this `default` surviving only as prose in the JSDoc above it, and the committed `src/api/generated/schemas.ts` (typed-openapi 4.1.0, `--schemas-only`) emits component schemas only, so the parameter does not appear in it at all. The client's literal is pinned against this `default` by test rather than imported from it; see contracts/features/PAC-23.yaml `consumersAffected`.
+	// THE DEFAULT AND THE WEB CLIENT (from PAC-23, finding API-074, fixed). The web client states the same 50 by hand (`DEFAULT_AUDIT_LIMIT` in `smart-calendar-flow/src/api/client.ts`) because neither pinned frontend generator hands `default` over as a value: in the committed `src/api/generated/types.ts` the `listAuditEntries` query type is `limit?: number` with the default surviving only as prose, and `src/api/generated/schemas.ts` (`--schemas-only`) emits component schemas only. Its literal is pinned against this `default` by test; see contracts/features/PAC-23.yaml `consumersAffected`.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
@@ -14433,6 +14425,15 @@ type ListAuditEntries200JSONResponse []AuditEntry
 func (response ListAuditEntries200JSONResponse) VisitListAuditEntriesResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListAuditEntries400JSONResponse ErrorResponse
+
+func (response ListAuditEntries400JSONResponse) VisitListAuditEntriesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
 
 	return json.NewEncoder(w).Encode(response)
 }
