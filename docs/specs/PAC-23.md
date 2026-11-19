@@ -420,6 +420,8 @@ AC-11. Given a caller who asks for more entries than the published maximum, when
 retrieve their activity log, then they receive at most the published maximum — not a
 smaller number chosen silently.  `[contract]`
 
+> **Superseded by PAC-53** (`docs/specs/PAC-53.md`, decision D-5; contract `contracts/features/PAC-53.md`): a request for more than the published maximum is now refused with a JSON 400, not capped.
+
 **Preserved behaviour**
 
 AC-12. Given an unauthenticated caller, when they attempt to retrieve an activity log,

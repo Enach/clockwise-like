@@ -1,0 +1,135 @@
+{
+  "featureId": "PAC-53",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-53/audithandler-discards-strconvatois-error-so-two-servers-in-this-repo",
+  "status": "draft, 2026-11-19: contract revision 1 written on factory/pac-53; next: contract-challenger",
+  "contractRevision": "1",
+  "contractHash": "45d87ca302897e7ee9ed1a8a64e00b1018e28b020cdec33a38e550d277286b87",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF, as written by python scripts/openapi_assemble.py) on factory/pac-53 at contract revision 1, base origin/main f074b4d (main bundle d4e2763a8b778389208d48f6fd31519e8eaeac0b6e246147f57375f019574966). backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by python scripts/openapi_migration_report.py. Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and python scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
+  "baseCommit": "f074b4d (clockwise-like origin/main, PAC-134 #326) = merge base of factory/pac-53; spec approved at 1f88dfc (revision 1), status marked at a0eb854. Web origin/main 36bdb0e (as read by the spec).",
+  "contractDoc": "contracts/features/PAC-53.md",
+  "specDoc": "docs/specs/PAC-53.md (revision 1, approved after 2 challenge rounds; OQ-1 to OQ-4 on their defaults)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "GET /api/audit (listAuditEntries): `limit` is absent (50) or present exactly once as a base-10 integer 1-500 (optional sign, leading zeros allowed); anything else - empty or bare, non-integer, below 1, above 500 (int64 overflow included), repeated (even identical), or a raw query with an unencoded ';' or an undecodable '%' sequence anywhere under any name - is a 400 JSON ErrorResponse with the one fixed message 'limit must be an integer from 1 to 500', never echoing input, no entries. 401 precedes. Other parameters (LIMIT included) ignored. The operation description's WHICH SERVER ANSWERS THIS paragraph is corrected (grep scoped to the operation, routes.go:216, the real hand-parse-then-strict-handler pattern, the wrapper's three residual differences).",
+  "interfaceKind": "HTTP: listAuditEntries gains a 400 (application/json, ErrorResponse); the `limit` parameter description and the operation description are rewritten; minimum 1, maximum 500, default 50 unchanged. Generated Go: ListAuditEntries400JSONResponse added, doc comments changed. Generated TS (web): one 400 response variant and prose.",
+  "mergeAfter": "origin/main f074b4d or later. No migration. api PR first, then the paired web PR within PAIR_MISMATCH_GRACE_MINUTES (60) (README section 1 and 3; spec section 7).",
+  "fixedErrorMessage": "limit must be an integer from 1 to 500",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "branch": "factory/pac-53",
+      "allowedPaths": [
+        "backend/api/handlers_audit.go (validate the raw query and `limit` per C-1..C-10, refuse with writeError and the fixed message; auth check stays first)",
+        "backend/api/handlers_audit_test.go (rewrite the PAC-23 tests named in spec section 6: the invalid-query cross-user loop, _DefaultLimitMatchesContract, _OverMaximumLimitCaps; add AC-1..AC-8, AC-11)",
+        "backend/api/pac53_*_test.go (new; contract and generated-wrapper tests, AC-8, AC-11, AC-12)",
+        "backend/storage/audit_log.go (only if the plan changes the defensive clamp; it must not become reachable with a value the handler refuses, spec section 5)",
+        "e2e/tests/audit.spec.ts (drop 10000 from the 200 loop; replace the PAC-23 AC-11 expectation with AC-10)",
+        "docs/plans/PAC-53.md",
+        "contracts/features/PAC-53.{md,yaml} (contractHash and stage-4 notes only)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; openapi.yaml and backend/api/gen by hand",
+        "backend/api/routes.go (the operation is not moved to the generated server, spec section 5)",
+        "backend/api/handlers_analytics.go, handlers_teams.go, handlers_booking.go (follow-ups F-1, F-2)",
+        "any global query-string middleware (C-9 is this operation only, spec section 5)",
+        "mcp/** (no caller)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "branch": "factory/pac-53",
+      "allowedPaths": [
+        "src/api/generated/** (regeneration only, against the merged bundle; no hand-written change)"
+      ],
+      "forbiddenPaths": [
+        "src/api/generated/** by hand",
+        "src/api/client.ts getAudit, src/hooks/useAudit.ts, src/pages/Audit.tsx, src/components/QuickActions.tsx (no behaviour change required; optional hardening is a separate ticket)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {
+      "operationId": "listAuditEntries",
+      "method": "GET",
+      "path": "/api/audit",
+      "change": "400 added: application/json ErrorResponse, body exactly {\"error\":\"limit must be an integer from 1 to 500\"} for every refusal (C-2, C-3, C-5, C-7, C-8, C-9). The `limit` description replaces PAC-23's two-step resolution procedure and five-case table with the C-1..C-10 rule. The operation description's WHICH SERVER ANSWERS THIS paragraph is rewritten (spec section 3.4, AC-12): scoped falsifying grep `grep -rn \"ListAuditEntries\" --include=*.go backend/ | grep -v \"^backend/api/gen/\" | grep -v \"_test\\.go:\"` (returns nothing at f074b4d and on this branch), registration at backend/api/routes.go:216 (with `grep -n '\"/api/audit\"' backend/api/routes.go`), the repo's migration pattern (getStepupOptions), and the three ServerInterfaceWrapper residual differences of spec section 3.3. The PAC-23 'ON MIGRATION' and 'SERVER BEHAVIOUR SINCE PAC-23' paragraphs of the `limit` description are replaced; the default/web-client part survives, cited by symbol.",
+      "declaredResponses": "200, 400, 401, 500 (was 200, 401, 500)",
+      "breaking": "Behaviourally yes for a caller sending a non-conforming `limit` or a malformed query: 200 becomes 400. No shipped caller does (spec 2.4, 2.5: web sends 50 or 10 via URLSearchParams.set; MCP does not call it). PAC-23 AC-11 (cap above the maximum) is superseded by decision D-5. No schema field changes.",
+      "migrationStatus": "handwritten (unchanged). The MIGRATION.md notes cell is rewritten: moving the row is no longer a contract change for this reason."
+    }
+  ],
+  "componentsChanged": [],
+  "refusals": [
+    {"case": "C-9", "input": "raw query with an unencoded ';' anywhere, or an undecodable '%' sequence under any name (?limit=%zz, ?limit=%zz&limit=10, ?x=%zz&limit=10, ?limit=10;x=1, ?x=a;b&limit=10)", "status": 400, "checkedFirst": true},
+    {"case": "C-2", "input": "?limit=, ?limit", "status": 400},
+    {"case": "C-3", "input": "abc, 50.5, 1e2, 0x10, 1_0, raw +50, %2050, 50%20", "status": 400},
+    {"case": "C-5", "input": "0, -0, -5, -9223372036854775809", "status": 400},
+    {"case": "C-7", "input": "501, 10000, 9223372036854775807, 99999999999999999999", "status": 400},
+    {"case": "C-8", "input": "?limit=10&limit=500, ?limit=10&limit=10", "status": 400}
+  ],
+  "accepted": [
+    {"case": "C-1", "input": "absent", "result": "200, at most 50"},
+    {"case": "C-4/C-6", "input": "1..500, also %2B10, 010", "result": "200, at most that many"},
+    {"case": "C-10", "input": "other parameters incl. LIMIT", "result": "ignored (subject to C-9)"}
+  ],
+  "precedence": "401 (requireAuth, text/plain MiddlewareUnauthorized) before any 400; C-9 before C-1..C-8.",
+  "gates": {
+    "contractApproval": "pending: contract-challenger has not reviewed revision 1.",
+    "assembler": "Revision 1 (base f074b4d): python scripts/openapi_assemble.py (112 paths, 134 operations, 217 schemas, 16 responses, 13 parameters, x-uncertain 3) and --check ('OK: bundle is in sync (112 paths)'); bash scripts/openapi_gen_go.sh and --check ('OK: backend/api/gen matches the contract'); python scripts/openapi_migration_report.py and --check ('OK: MIGRATION.md covers all 134 operations (14 generated)'); cd backend && go build ./... && go vet ./... ok; golangci-lint v1.64.8 (built with go1.26.0) run ./... exit 0. make is not installed on the authoring host; the targets' underlying scripts were run directly.",
+    "crossRepo": "NOT RUN: the web half of openapi-check (openapi-check-web) was not run; the web regeneration is the paired PR's job and will show drift against smart-calendar-flow main until it lands.",
+    "tests": "NOT RUN at stage 2: no handler change yet. Existing tests that pin the superseded behaviour (handlers_audit_test.go invalid-limit cases and _OverMaximumLimitCaps; e2e audit.spec.ts 10000) still pass against the unchanged handler and are rewritten in stage 4."
+  },
+  "acceptanceTests": [
+    "AC-1  [unit] 120 entries, no count -> 200, exactly 50.",
+    "AC-2  [unit] count 1, 10, 500 -> 200 and at most 1, 10, 120; %2B10 and 010 -> 10 entries.",
+    "AC-3  [unit] empty, bare, abc, 50.5, 1e2, 0x10, 1_0, raw +50, %2050, 50%20 -> 400 JSON ErrorResponse naming the parameter, no entries; every refusal in AC-3..AC-6 carries the same fixed message 'limit must be an integer from 1 to 500'; bodies for abc and 99999999999999999999 do not contain those strings.",
+    "AC-4  [unit] 0, -0, -5, 501, 10000, 9223372036854775807, 99999999999999999999, -9223372036854775809 -> 400 JSON.",
+    "AC-5  [unit] 10&limit=500 and 10&limit=10 -> 400 JSON.",
+    "AC-6  [unit] limit=%zz, limit=%zz&limit=10, x=%zz&limit=10, limit=10;x=1, x=a;b&limit=10 -> 400 JSON; limit=%zz&limit=10 no longer returns 10 entries.",
+    "AC-7  [unit] unauthenticated ?limit=abc through the real router -> the existing 401, not 400.",
+    "AC-8  [contract] a 400 validates (status, content type, body) against the declared 400; every request in AC-1..AC-6 gets a declared status.",
+    "AC-9  [e2e] shipped web client: activity page and quick-actions preview send limit=50 and limit=10, both 200 with entries rendered.",
+    "AC-10 [e2e] authenticated ?limit=10000 and ?limit=abc -> 400 JSON (replaces PAC-23's 10000 -> 500 entries).",
+    "AC-11 [unit] the generated ServerInterfaceWrapper.ListAuditEntries (from the new bundle, not mounted) returns 400 for one request each of C-2, C-3, C-7-overflow, C-8.",
+    "AC-12 [contract] the falsifying command in the WHICH SERVER ANSWERS THIS paragraph returns what the paragraph says (nothing), and /api/audit is registered once, to auditHandler."
+  ],
+  "resolvesFindings": [],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": {
+    "OQ-1": "Owner veto on D-5 not exercised; contract refuses above 500. If reversed, C-7 becomes cap-to-500 for 501..MaxInt64 and the PAC-23 pointers shrink (spec section 8).",
+    "OQ-2": "Refuse the whole request (C-9), as recommended; md section 3.",
+    "OQ-3": "Refuse an empty count (C-2), as recommended.",
+    "OQ-4": "Fixed message 'limit must be an integer from 1 to 500', no input echoed; md section 3."
+  },
+  "doesNotResolve": [
+    "F-1 GET /api/analytics/trends?weeks silent default (spec section 5).",
+    "F-2 ?duration= empty treated as absent in teams availability and booking slots (spec section 5).",
+    "Migration of listAuditEntries to the generated server (spec section 5)."
+  ],
+  "documentsAmended": [
+    "docs/specs/PAC-53.md: status approved (a0eb854).",
+    "docs/specs/PAC-23.md AC-11: supersession pointer to PAC-53 D-5.",
+    "contracts/features/PAC-23.yaml operationsChanged[listAuditEntries].declaredResponses: SUPERSEDED BY PAC-53 prefix.",
+    "contracts/openapi/MIGRATION.md listAuditEntries notes cell rewritten.",
+    "docs/factory/api-audit.md: not amended; API-005 and API-074 are Fixed (PAC-23) and describe scoping and the default, not invalid-limit handling."
+  ],
+  "consumersAffected": [
+    {"consumer": "smart-calendar-flow src/api/generated (types.ts, schemas.types.d.ts)", "breaks": "drift only", "detail": "a 400 response variant and prose; regenerated in the paired web PR"},
+    {"consumer": "smart-calendar-flow getAudit/useAudit (Audit.tsx 50, QuickActions.tsx 10)", "breaks": "no", "detail": "only C-6 requests; non-2xx path already reads the JSON error (audit.test.ts covers 401/403/500)"},
+    {"consumer": "backend/api/handlers_audit_test.go", "breaks": "rewritten in stage 4", "detail": "invalid-query cross-user loop, _DefaultLimitMatchesContract non-empty cases, _OverMaximumLimitCaps (spec section 6)"},
+    {"consumer": "e2e/tests/audit.spec.ts", "breaks": "rewritten in stage 4", "detail": "10000 dropped from the 200 loop; PAC-23 AC-11 test replaced by AC-10"},
+    {"consumer": "mcp/", "breaks": "no", "detail": "no tool calls /api/audit"}
+  ],
+  "deviationsFromSpec": [],
+  "mergeConditions": [
+    "contract-challenger approves revision 1.",
+    "Stage 4 (handler + tests) lands in the same api PR as this contract: the contract describes the post-change server, and must not merge ahead of it (factory section 7 rule 2).",
+    "The paired smart-calendar-flow factory/pac-53 PR (regeneration only) merges after the api PR, within 60 minutes."
+  ],
+  "rollback": "No migration, no data. Revert both PRs, api first, then web within the grace period. Reverting restores PAC-23's silent resolution and contract text.",
+  "notVerified": [
+    "openapi-check-web (cross-repo) not run.",
+    "No handler, unit, contract or e2e test run at this stage; the handler is unchanged.",
+    "Spec section 3.3 binder claims (C-2, C-3, C-7-overflow, C-8 -> 400 via ServerInterfaceWrapper) taken from the spec challenge's execution, not re-run; AC-11 pins them in stage 4. net/url.ParseQuery and strconv.ParseInt behaviour for the C-3..C-9 examples was re-run with a scratch Go program (go1.26.0)."
+  ]
+}
