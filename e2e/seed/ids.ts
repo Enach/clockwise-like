@@ -483,6 +483,21 @@ export const PAC112_HOSTS = {
  * Every credential the stand-in accepts, installed by global setup. The
  * rejected user's token is deliberately absent.
  */
+/**
+ * PAC-130 (tests/pac130-manager-oracle.spec.ts, spec AC-6): a manager in
+ * Manager mode, connected through the stand-in, in no organisation and on no
+ * seeded team. The journey creates its own run-unique teams (and deletes
+ * them), so no other journey's Team page is affected; its stand-in requests
+ * carry a label of their own.
+ */
+export const PAC130_VIEWER = {
+  id: 'a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4',
+  email: 'e2e.pac130.viewer@paceday.test',
+  name: 'E2E PAC-130 Manager',
+  token: 'e2e-pac130-viewer-work',
+  label: 'pac130-viewer-work',
+} as const;
+
 export const ACCEPTED_CREDENTIALS = [
   ...[
     CONNECTED.calendar,
@@ -496,6 +511,7 @@ export const ACCEPTED_CREDENTIALS = [
     ...Object.values(AVATAR_HOSTS),
     ...Object.values(PAC88_HOSTS),
     ...Object.values(PAC112_HOSTS),
+    PAC130_VIEWER,
   ].map((u) => ({
     token: u.token,
     label: u.label,
@@ -523,6 +539,7 @@ export const SEEDED_USER_IDS: readonly string[] = [
   ...Object.values(BOOKING_HOSTS).map((u) => u.id),
   ...Object.values(PAC88_HOSTS).map((u) => u.id),
   ...Object.values(PAC112_HOSTS).map((u) => u.id),
+  PAC130_VIEWER.id,
 ];
 
 export const SEEDED_LINK_IDS: readonly string[] = [

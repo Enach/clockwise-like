@@ -15,9 +15,10 @@
  * run an estimate, so only the real server can make this fail: it is e2e
  * (spec challenge B-5).
  *
- * Viewer: CONNECTED.calendar, whose free/busy credential the stand-in accepts.
- * Each run creates its own team, named to sort first so the Team page opens on
- * it, and deletes it afterwards. H and N are run-unique and the same length,
+ * Viewer: PAC130_VIEWER (seed/ids.ts), in Manager mode, on no seeded team and
+ * in no organisation, whose free/busy credential the stand-in accepts. Each
+ * run creates its own team (the viewer's only one, so the Team page opens on
+ * it) and deletes it afterwards. H and N are run-unique and the same length,
  * so the participant cache, the analytics cache and other journeys cannot
  * answer for them. The account holding H is seeded through the database
  * (db.ts: seeding only; every assertion is on what the browser shows).
@@ -29,10 +30,10 @@
 import { test, expect } from '../fixtures';
 import { fake } from '../fake';
 import { query } from '../db';
-import { CONNECTED } from '../seed/ids';
+import { PAC130_VIEWER } from '../seed/ids';
 import { atUtc, DAY_MS, isoDate, mondayOf } from '../lib/dates';
 
-const VIEWER = CONNECTED.calendar;
+const VIEWER = PAC130_VIEWER;
 const NAME = 'E2E Same Person';
 
 interface RunResult {
@@ -78,7 +79,7 @@ test.describe('PAC-130 — Manager mode reveals no account existence', () => {
 
     const api = apiAs(VIEWER);
     const once = async (addr: string, tag: string): Promise<RunResult> => {
-      const created = await api.post('/api/teams', { name: `0000 PAC-130 ${tag} ${run}` });
+      const created = await api.post('/api/teams', { name: `E2E PAC-130 ${tag} ${run}` });
       expect(created.status(), await created.text()).toBe(201);
       const team = (await created.json()) as { id: string };
       try {

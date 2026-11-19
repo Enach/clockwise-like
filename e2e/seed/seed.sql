@@ -499,4 +499,22 @@ ON CONFLICT (user_id) DO UPDATE SET
   focus_daily_target_minutes = EXCLUDED.focus_daily_target_minutes,
   calendar_provider = EXCLUDED.calendar_provider;
 
+-- ── PAC-130: Manager mode reveals no account existence (AC-6) ───────────────
+-- The manager of tests/pac130-manager-oracle.spec.ts (seed/ids.ts
+-- PAC130_VIEWER, in ACCEPTED_CREDENTIALS): connected through the stand-in, in
+-- Manager mode, in no organisation and on no seeded team. The journey creates
+-- its own teams and the account holding H.
+INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
+  ('a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4', 'e2e.pac130.viewer@paceday.test', 'E2E PAC-130 Manager', '', 'google', 'e2e-pac130-viewer');
+UPDATE users SET address_standing = 'domain_confirmed' WHERE id = 'a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4';
+INSERT INTO user_identities (user_id, provider, tenant, subject, evidence, bound_by) VALUES
+  ('a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4', 'google', '', '71300001', 'authoritative', 'created');
+INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
+  ('a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4', 'e2e-pac130-viewer-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+INSERT INTO settings (user_id, timezone, work_start, work_end, focus_daily_target_minutes, calendar_provider)
+VALUES ('a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4', 'UTC', '09:00', '18:00', 240, 'google')
+ON CONFLICT (user_id) DO NOTHING;
+INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_with_manager) VALUES
+  ('a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4', true, '2024-01-01T00:00:00Z', true);
+
 COMMIT;
