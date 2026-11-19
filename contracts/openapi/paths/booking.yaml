@@ -1726,7 +1726,8 @@ paths:
         are null (never the empty strings the database keeps), and `notes` is the
         empty string. Every other field is unchanged by the erasure, so the
         booking still occupies its time and still counts in `uses_count`. A
-        booking that was not erased is exactly what it was before PAC-134: both
+        booking that was not erased has the same keys and values as before
+        PAC-134 (JSON-equal; key order is not part of the contract): both
         strings are the values the booker typed and `booker_erased_at` is absent
         (not null), so a client that predates PAC-134 parses every answer that
         holds no erased booking. Such a client fails to parse an answer that holds
@@ -3983,7 +3984,7 @@ components:
             Present only on an erased booking (PAC-134): when the operator's
             erasure removed this booker's name, email and notes, UTC. Absent,
             never null, on every other booking, so an answer with no erased
-            booking is byte-for-byte what it was before PAC-134.
+            booking is JSON-equal to what it was before PAC-134.
         start_time:
           type: string
           format: date-time

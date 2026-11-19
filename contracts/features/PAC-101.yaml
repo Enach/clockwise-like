@@ -133,6 +133,6 @@
     "RemoveLinkHostsExceptCtx (no longer called by a handler) also runs through withLinkWriteTx with the lock step, so every exported scheduling-link writer is locked."
   ],
   "amendments": [
-    "2026-11-19, PAC-134 (spec docs/specs/PAC-134.md revision 3, contract contracts/features/PAC-134.md revision 1), no revision bump (PAC-14 convention): dated 'Amended by PAC-134' note in md section 4.1: a new transaction, the operator erasure (paceday-operator erase-address): teams FOR NO KEY UPDATE, then team rows, then scheduling_links FOR SHARE by id, then host rows, booking rows (NO KEY UPDATE), keyed-create rows; never a users row; transaction bounded at 5 s (1-9 s), below the 10 s cap."
+    "2026-11-19, PAC-134 (spec docs/specs/PAC-134.md revision 3, contract contracts/features/PAC-134.md revision 2), no revision bump (PAC-14 convention): dated 'Amended by PAC-134' note in md section 4.1: a new transaction, the operator erasure (paceday-operator erase-address): after an unlocked discovery phase, teams rows FOR NO KEY UPDATE and their team-data rows, then scheduling_links rows FOR SHARE by id, then pending-invitation host rows, booking rows (FOR NO KEY UPDATE) and keyed-create rows; never a users row; transaction bounded at 5 s (1-8 s; a stalled client at most 9 s), below the 10 s cap."
   ]
 }

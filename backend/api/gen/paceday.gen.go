@@ -3547,7 +3547,7 @@ type SchedulingLinkBookingRecord struct {
 	// BookerEmail As stored at booking time (trimmed, letter case kept; SF-005: not validated); null if and only if `booker_erased_at` is present.
 	BookerEmail *string `json:"booker_email"`
 
-	// BookerErasedAt Present only on an erased booking (PAC-134): when the operator's erasure removed this booker's name, email and notes, UTC. Absent, never null, on every other booking, so an answer with no erased booking is byte-for-byte what it was before PAC-134.
+	// BookerErasedAt Present only on an erased booking (PAC-134): when the operator's erasure removed this booker's name, email and notes, UTC. Absent, never null, on every other booking, so an answer with no erased booking is JSON-equal to what it was before PAC-134.
 	BookerErasedAt *time.Time `json:"booker_erased_at,omitempty"`
 
 	// BookerName As typed by the booker; null if and only if `booker_erased_at` is present.
