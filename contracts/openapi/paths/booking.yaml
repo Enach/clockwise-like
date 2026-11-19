@@ -3237,8 +3237,9 @@ components:
           description: >-
             No `format: email` (PAC-149 contract revision 2): an address that
             passed the well-formedness rule (`net/mail`, the team invitation's
-            rule, e.g. `user@localhost`) or an account's stored address can be
-            narrower than JSON Schema's email format, and a read must never fail
+            rule, e.g. `user@localhost`) or an account's stored address can fall
+            outside JSON Schema's email format (the rule is wider than the
+            format), and a read must never fail
             on one. An entry of an account an operator freed shows the
             placeholder `freed+<account id>@paceday.invalid` (an operator act,
             PAC-71; accepted). The entry's address: for a pending invitation the recorded address
