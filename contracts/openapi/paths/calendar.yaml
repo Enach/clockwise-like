@@ -864,6 +864,12 @@ paths:
         Returns all `users` rows sharing the caller's `org_id`, ordered by
         `created_at` ascending. If the caller cannot be loaded, or has no `org_id`,
         the handler returns 200 with `[]` rather than an error.
+        PAC-130 (spec §3.1, D-1, AC-17): the set of accounts this list returns to a caller
+        IS rule (b) of the Manager visibility rule (ManagerRosterMember.is_paceday_user):
+        both use one definition, so narrowing this list (follow-up PAC-148, which owns
+        this endpoint's own exposure for consumer domains) narrows Manager visibility with
+        it. The Manager read does not inherit this handler's fallback: a failure to load
+        the caller there is the 500, never "no organisation".
       responses:
         "200":
           description: >-
