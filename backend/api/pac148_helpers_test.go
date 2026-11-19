@@ -2,9 +2,13 @@ package api
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 )
@@ -97,8 +101,8 @@ func pac148Into(t testing.TB, db *sql.DB, userID, orgID uuid.UUID) {
 		t.Fatalf("organisation %s: %v", orgID, err)
 	}
 	if _, err := db.Exec(`UPDATE users SET
-			email = split_part(email, '@', 1) || '@' || $2,
-			email_key = CASE WHEN email_key IS NULL THEN NULL ELSE lower(split_part(email, '@', 1) || '@' || $2) END,
+			email = split_part(email, '@', 1) || '.' || left(id::text, 8) || '@' || $2,
+			email_key = CASE WHEN email_key IS NULL THEN NULL ELSE lower(split_part(email, '@', 1) || '.' || left(id::text, 8) || '@' || $2) END,
 			address_standing = 'domain_confirmed'
 		WHERE id = $1`, userID, d); err != nil {
 		t.Fatalf("move %s to %s: %v", userID, d, err)
@@ -108,5 +112,17 @@ func pac148Into(t testing.TB, db *sql.DB, userID, orgID uuid.UUID) {
 	}
 	if got := pac148OrgOf(t, db, userID); got != orgID {
 		t.Fatalf("%s joined %s, want %s", userID, got, orgID)
+	}
+}
+
+// pac148AssertBreakGlassRefused is the membership 403 of a break-glass write
+// by an account that belongs to no organisation, with nothing written.
+func pac148AssertBreakGlassRefused(t *testing.T, e *ssoEnv, rec *httptest.ResponseRecorder, d string) {
+	t.Helper()
+	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != `{"error":"`+string(gen.OrgMembershipRequired)+`"}` {
+		t.Fatalf("= %d %s, want the membership 403", rec.Code, rec.Body.String())
+	}
+	if n, _ := e.providerRow(t, d); n != 0 {
+		t.Fatalf("%d SSO provider rows for %s, want 0", n, d)
 	}
 }

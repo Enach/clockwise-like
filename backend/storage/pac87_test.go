@@ -477,6 +477,17 @@ type pac87Seed struct {
 	org, admin, x, y, z uuid.UUID
 }
 
+// pac87ConfirmMembers gives every account of org a domain-confirmed standing
+// (PAC-148, contract md §8: a member is domain-confirmed at the
+// organisation's domain). The seed runs at 034, before 035 adds the column,
+// and 035's down step drops it, so this runs after each migration to 036.
+func pac87ConfirmMembers(t *testing.T, db *sql.DB, org uuid.UUID) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE users SET address_standing = 'domain_confirmed' WHERE org_id = $1`, org); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedPAC87(t *testing.T, db *sql.DB) pac87Seed {
 	t.Helper()
 	var s pac87Seed
@@ -485,9 +496,7 @@ func seedPAC87(t *testing.T, db *sql.DB) pac87Seed {
 	}
 	user := func(email string) uuid.UUID {
 		var id uuid.UUID
-		// PAC-148 (contract md §8): members are domain-confirmed at the
-		// organisation's domain.
-		if err := db.QueryRow(`INSERT INTO users (email, name, org_id, address_standing) VALUES ($1, $1, $2, 'domain_confirmed') RETURNING id`, email, s.org).Scan(&id); err != nil {
+		if err := db.QueryRow(`INSERT INTO users (email, name, org_id) VALUES ($1, $1, $2) RETURNING id`, email, s.org).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		return id
@@ -548,6 +557,7 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 	s := seedPAC87(t, db)
 	before := settingsFacts(t, db)
 	to(36)
+	pac87ConfirmMembers(t, db, s.org)
 	if !constraintExists(t, db, "org_ai_confirmations_consent_since_version_check") || constraintExists(t, db, "org_ai_confirmations_configuration_version_check") ||
 		!constraintExists(t, db, "org_ai_configurations_consent_since_check") {
 		t.Fatal("constraint names after up")
@@ -624,6 +634,7 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 	}
 	rows.Close()
 	to(36)
+	pac87ConfirmMembers(t, db, s.org)
 	if state(s.x).Confirmed() || state(s.z).Confirmed() {
 		t.Fatal("a confirmation ended by down came back with up")
 	}

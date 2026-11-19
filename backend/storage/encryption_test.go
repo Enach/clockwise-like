@@ -90,9 +90,10 @@ func seedLegacy(t *testing.T, db *sql.DB) *legacy {
 	if err := db.QueryRow(`INSERT INTO organizations (name, domain) VALUES ('Enc', $1) RETURNING id`, encDomain).Scan(&l.org); err != nil {
 		t.Fatal(err)
 	}
-	// PAC-148 (contract md §8): the member is domain-confirmed at the
-	// organisation's domain.
-	if err := db.QueryRow(`INSERT INTO users (email, name, org_id, address_standing) VALUES ($1, 'U', $2, 'domain_confirmed') RETURNING id`, uuid.NewString()+"@"+encDomain, l.org).Scan(&l.user); err != nil {
+	// PAC-148 (contract md §8): the member's address is at the
+	// organisation's domain. The seed runs at the encryption migration,
+	// before 035 adds address_standing, so its standing is not set here.
+	if err := db.QueryRow(`INSERT INTO users (email, name, org_id) VALUES ($1, 'U', $2) RETURNING id`, uuid.NewString()+"@"+encDomain, l.org).Scan(&l.user); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`INSERT INTO users (email, name) VALUES ($1, 'U2') RETURNING id`, uuid.NewString()+"@enc.example").Scan(&l.user2); err != nil {
