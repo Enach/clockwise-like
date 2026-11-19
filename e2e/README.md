@@ -271,6 +271,16 @@ currently fixme'd is blocked on it.
    error instead; a test that asserts only an absence would otherwise pass
    against a dead backend. Call it in every UI test. Its own test is
    `tests/guard-self-test.spec.ts` (AC-28).
+8. **The browser never reaches a real external service.** `fixtures.ts`
+   (auto fixture `offStackRequests`) fails any test whose browser requests an
+   origin off the stack (`lib/offstack.ts`: loopback, `*.localhost` and the
+   configured `E2E_*_URL` hosts), and Chromium resolves only those hosts
+   (`--host-resolver-rules` in `playwright.config.ts`), which also stops the
+   hops of an HTTP redirect that no route can intercept. The allowlist,
+   `OFF_STACK_ALLOWLIST`, is empty. The app's own Google Fonts link is answered
+   in the browser by a stand-in. A journey that ends at a provider stops at
+   the API's start and asserts its real 302 without following it
+   (`lib/provider-start.ts`). Its own test is `tests/offstack-guard.spec.ts`.
 
 ---
 

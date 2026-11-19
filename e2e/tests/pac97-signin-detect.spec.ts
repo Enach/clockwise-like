@@ -11,9 +11,10 @@
  *
  * Nothing here is mocked on Paceday's side: the dialog posts to the real
  * /api/auth/detect, and the provider starts are the real backend routes. The
- * journey stops at the provider: the browser's navigation to Google or
- * Microsoft (which the backend's start redirects to) is answered by a
- * Playwright route on those hosts, so the test host never reaches them. The
+ * journey stops at the provider start: lib/provider-start.ts reads the
+ * backend's real 302 to Google or Microsoft and keeps the browser from
+ * following it, so the test host never reaches them (a route on the provider
+ * host cannot do this: Playwright does not route a redirect's hops). The
  * backend itself connects to nothing (tests/hermeticity.spec.ts still reads
  * an empty sink at the end of the run).
  *
@@ -25,20 +26,10 @@ import { randomUUID } from 'node:crypto';
 import type { Page, Request, Route } from '@playwright/test';
 
 import { test, expect } from '../fixtures';
-
-const PROVIDER_HOSTS = ['accounts.google.com', 'login.microsoftonline.com'];
+import { stopAtProviderStarts } from '../lib/provider-start';
 
 function freshDomain(zone: 'google-mx' | 'gateway-mx' | 'microsoft-mx'): string {
   return `p${randomUUID().slice(0, 8)}.${zone}.pac97.test`;
-}
-
-/** Answers the browser's navigation to a real provider, so it never leaves the test host. */
-async function stopAtProviders(page: Page): Promise<void> {
-  for (const host of PROVIDER_HOSTS) {
-    await page.route(`https://${host}/**`, (route) =>
-      route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>provider stand-in</title>' }),
-    );
-  }
 }
 
 /** Every request to a provider start (/api/auth/google or /api/auth/microsoft) this page makes. */
@@ -89,29 +80,29 @@ test.describe('PAC-97 — sign-in detection by MX', () => {
   test('AC-27: a Google Workspace domain goes straight to the Google start with the typed address as hint', async ({
     page,
   }) => {
-    await stopAtProviders(page);
+    const providerStarts = await stopAtProviderStarts(page);
     const email = `alice@${freshDomain('google-mx')}`;
     await page.goto('/signin');
 
-    const start = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/auth/google');
-    const startResponse = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/auth/google');
     expect(await continueWithEmail(page, email)).toBe('google');
 
     // The browser's next Paceday request is the API's Google start, with the hint.
-    const req = await start;
-    expect(new URL(req.url()).searchParams.get('login_hint')).toBe(email);
-    // The real start forwards it to the provider.
-    const res = await startResponse;
-    expect(res.status()).toBe(302);
-    const toGoogle = new URL(res.headers()['location'] ?? '');
-    expect(toGoogle.host).toBe('accounts.google.com');
-    expect(toGoogle.searchParams.get('login_hint')).toBe(email);
+    const start = await providerStarts.first;
+    expect(start.url.pathname).toBe('/api/auth/google');
+    // The page itself navigated to the start, at the top level.
+    expect(start.isNavigation).toBe(true);
+    expect(start.isMainFrame).toBe(true);
+    expect(start.url.searchParams.get('login_hint')).toBe(email);
+    // The real start forwards it to the provider; the journey stops before it loads.
+    expect(start.status).toBe(302);
+    expect(start.location?.host).toBe('accounts.google.com');
+    expect(start.location?.searchParams.get('login_hint')).toBe(email);
   });
 
   test('AC-27: a gateway domain gets the choose step, nothing navigates until a provider is clicked', async ({
     page,
   }) => {
-    await stopAtProviders(page);
+    const providerStarts = await stopAtProviderStarts(page);
     const starts = recordProviderStarts(page);
     const email = `bob@${freshDomain('gateway-mx')}`;
     await page.goto('/signin');
@@ -138,9 +129,15 @@ test.describe('PAC-97 — sign-in detection by MX', () => {
     expect(starts).toHaveLength(0);
 
     // A click starts the provider with the hint.
-    const start = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/auth/google');
     await page.getByTestId('auth-choose-google').click();
-    expect(new URL((await start).url()).searchParams.get('login_hint')).toBe(email);
+    const start = await providerStarts.first;
+    expect(start.url.pathname).toBe('/api/auth/google');
+    // The page itself navigated to the start, at the top level.
+    expect(start.isNavigation).toBe(true);
+    expect(start.isMainFrame).toBe(true);
+    expect(start.url.searchParams.get('login_hint')).toBe(email);
+    expect(start.status).toBe(302);
+    expect(start.location?.host).toBe('accounts.google.com');
   });
 
   test.fixme('AC-27: on the choose step, clicking Microsoft requests /api/auth/microsoft with the hint', async () => {
@@ -165,7 +162,7 @@ test.describe('PAC-97 — sign-in detection by MX', () => {
   test('PAC-98 AC-20: an Exchange Online domain on the Google-only stack gets the choose step, no Microsoft start', async ({
     page,
   }) => {
-    await stopAtProviders(page);
+    await stopAtProviderStarts(page);
     const starts = recordProviderStarts(page);
     const email = `carol@${freshDomain('microsoft-mx')}`;
     const availability = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/integrations/availability');

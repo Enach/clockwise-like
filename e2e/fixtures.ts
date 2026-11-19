@@ -18,6 +18,7 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
+  type Request,
 } from '@playwright/test';
 
 import {
@@ -30,6 +31,7 @@ import {
 } from './auth';
 import { query, queryOne } from './db';
 import { USERS } from './seed/ids';
+import { OFF_STACK_ALLOWLIST, isOnStack, offStackStandIn } from './lib/offstack';
 
 /**
  * PAC-81 Part B, AC-B3: "the browser reports zero CSP violations on every
@@ -56,29 +58,135 @@ export const CSP_VIOLATIONS_EXPECTED = 'csp-violations-expected';
 
 const watchedContexts = new WeakSet<BrowserContext>();
 
+/**
+ * Only violations reported by a document on the e2e stack count
+ * (lib/offstack.ts isOnStack): the app's own pages through nginx, the
+ * injected variant, and pages a test serves on 127.0.0.1 (framing.spec.ts).
+ * A document on any other origin is a test's own stand-in (route.fulfill) or
+ * a page the off-stack guard below already fails the test for; its policy is
+ * not the app's. A report whose document cannot be told is counted, so this
+ * scoping never drops one of the app's.
+ */
+function countsForApp(documentUrl: string | undefined): boolean {
+  return !documentUrl || isOnStack(documentUrl);
+}
+
 async function watchCsp(context: BrowserContext, sink: CspViolation[]): Promise<void> {
-  if (watchedContexts.has(context)) return;
-  watchedContexts.add(context);
   await context.exposeBinding(
     '__pacedayCspViolation',
-    (_source, v: { directive: string; blocked: string }) => {
+    (_source, v: { directive: string; blocked: string; document: string }) => {
+      if (!countsForApp(v.document)) return;
       sink.push({ source: 'event', directive: v.directive, blocked: v.blocked, text: '' });
     },
   );
   await context.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (e) => {
       const report = (window as unknown as {
-        __pacedayCspViolation?: (v: { directive: string; blocked: string }) => void;
+        __pacedayCspViolation?: (v: { directive: string; blocked: string; document: string }) => void;
       }).__pacedayCspViolation;
-      report?.({ directive: e.effectiveDirective || e.violatedDirective, blocked: e.blockedURI });
+      report?.({
+        directive: e.effectiveDirective || e.violatedDirective,
+        blocked: e.blockedURI,
+        document: e.documentURI || document.location.href,
+      });
     });
   });
   context.on('console', (msg) => {
     const text = msg.text();
     if (!/Content Security Policy/i.test(text) || !/Refused|violat/i.test(text)) return;
+    if (!countsForApp(msg.page()?.url())) return;
     const m = text.match(/directive:?\s*"([a-z-]+)/i);
     sink.push({ source: 'console', directive: m?.[1] ?? 'unknown', blocked: '', text });
   });
+}
+
+/**
+ * No test may reach a real external service. Every browser request to an
+ * origin off the e2e stack (lib/offstack.ts) is recorded here, aborted where
+ * it can be, and the auto fixture `offStackRequests` fails the test if there
+ * is any, naming each URL. Allowlist: OFF_STACK_ALLOWLIST, empty.
+ *
+ * How a request is caught:
+ *  - a context WebSocket route, for every WebSocket to an origin off the
+ *    stack (WebSockets never reach context.route): recorded and closed
+ *    before it connects;
+ *  - the context route below, for every request no page.route answered. A
+ *    test that fulfils a host with page.route (page routes run first) keeps
+ *    that request in the browser, and it is not recorded. The app's own
+ *    Google Fonts link is answered by OFF_STACK_STAND_INS, also in-browser;
+ *  - the hops of an HTTP redirect, which Playwright never hands to a route
+ *    handler (it calls one "for the first url" only), cannot be aborted
+ *    here. They are recorded from the request event (`redirect`), and
+ *    Chromium's resolver (playwright.config.ts, --host-resolver-rules)
+ *    refuses every host off the stack, so the hop never connects;
+ *  - any other request whose host the resolver refused (`unresolved`; say a
+ *    page.route handler that called route.continue() on an off-stack URL,
+ *    which skips the context route), from the requestfailed event.
+ *
+ * A test that provokes an off-stack request on purpose (the guard's
+ * self-test) annotates itself with OFF_STACK_REQUESTS_EXPECTED.
+ */
+export interface OffStackRequest {
+  url: string;
+  /**
+   * routed: aborted by the context route, or a WebSocket closed by the
+   * context's WebSocket route. redirect: a redirect's hop off the
+   * stack (routes never see one; the resolver refuses it). unresolved: any
+   * other request whose host the resolver refused.
+   */
+  how: 'routed' | 'redirect' | 'unresolved';
+}
+
+export const OFF_STACK_REQUESTS_EXPECTED = 'off-stack-requests-expected';
+
+async function watchOffStack(context: BrowserContext, sink: OffStackRequest[]): Promise<void> {
+  const seen = new WeakSet<object>();
+  const record = (request: Request, how: OffStackRequest['how']) => {
+    if (seen.has(request)) return;
+    seen.add(request);
+    sink.push({ url: request.url(), how });
+  };
+  await context.route(
+    (url) => !isOnStack(url.href),
+    (route) => {
+      const standIn = offStackStandIn(route.request().url());
+      if (standIn) return route.fulfill(standIn);
+      record(route.request(), 'routed');
+      return route.abort('blockedbyclient');
+    },
+  );
+  // WebSockets do not go through context.route. A routed WebSocket that is
+  // never connectToServer()'d never reaches the server; it is recorded and
+  // closed.
+  await context.routeWebSocket(
+    (url) => !isOnStack(url.href),
+    async (ws) => {
+      sink.push({ url: ws.url(), how: 'routed' });
+      await ws.close();
+    },
+  );
+  context.on('request', (r) => {
+    if (r.redirectedFrom() && !isOnStack(r.url())) record(r, 'redirect');
+  });
+  context.on('requestfailed', (r) => {
+    // The resolver resolves only the stack's hosts, so a host that did not
+    // resolve was off the stack. Other failures (a request cancelled, or one
+    // the app's CSP refused, which the cspViolations fixture judges) never
+    // left the browser and are not recorded.
+    if (/ERR_NAME_NOT_RESOLVED/.test(r.failure()?.errorText ?? '')) record(r, 'unresolved');
+  });
+}
+
+interface BrowserGuards {
+  csp: CspViolation[];
+  offStack: OffStackRequest[];
+}
+
+async function guardContext(context: BrowserContext, guards: BrowserGuards): Promise<void> {
+  if (watchedContexts.has(context)) return;
+  watchedContexts.add(context);
+  await watchCsp(context, guards.csp);
+  await watchOffStack(context, guards.offStack);
 }
 
 /** A thin, typed client for the HTTP boundary, going through nginx. */
@@ -127,6 +235,13 @@ export interface Db {
 }
 
 type Fixtures = {
+  /** The sinks every browser context of this test reports to (see guardContext). */
+  browserGuards: BrowserGuards;
+  /**
+   * Every browser request to an origin off the e2e stack in this test.
+   * Automatic: a test with any fails unless annotated OFF_STACK_REQUESTS_EXPECTED.
+   */
+  offStackRequests: OffStackRequest[];
   /**
    * Every CSP violation reported in this test (AC-B3). Automatic: a test with
    * any violation fails unless it is annotated CSP_VIOLATIONS_EXPECTED.
@@ -155,32 +270,54 @@ type Fixtures = {
 };
 
 export const test = base.extend<Fixtures>({
-  cspViolations: [
-    async ({ browser }, use, testInfo) => {
-      const sink: CspViolation[] = [];
+  browserGuards: [
+    async ({ browser }, use) => {
+      const guards: BrowserGuards = { csp: [], offStack: [] };
       // Wrap browser.newContext for the duration of this test, so contexts the
       // spec (or Playwright's own `context` fixture) creates are watched too.
       const original = browser.newContext.bind(browser) as Browser['newContext'];
       browser.newContext = (async (options?: Parameters<Browser['newContext']>[0]) => {
         const context = await original(options);
-        await watchCsp(context, sink);
+        await guardContext(context, guards);
         return context;
       }) as Browser['newContext'];
       try {
-        await use(sink);
+        await use(guards);
       } finally {
         browser.newContext = original;
       }
+    },
+    { auto: true },
+  ],
+
+  cspViolations: [
+    async ({ browserGuards }, use, testInfo) => {
+      await use(browserGuards.csp);
       if (!testInfo.annotations.some((a) => a.type === CSP_VIOLATIONS_EXPECTED)) {
-        expect(sink, 'CSP violations reported by the browser (PAC-81 AC-B3)').toEqual([]);
+        expect(browserGuards.csp, 'CSP violations reported by the browser (PAC-81 AC-B3)').toEqual([]);
+      }
+    },
+    { auto: true },
+  ],
+
+  offStackRequests: [
+    async ({ browserGuards }, use, testInfo) => {
+      await use(browserGuards.offStack);
+      if (!testInfo.annotations.some((a) => a.type === OFF_STACK_REQUESTS_EXPECTED)) {
+        expect(
+          browserGuards.offStack,
+          'the browser requested an origin off the e2e stack. Tests must never reach a real external ' +
+            'service: answer that host with page.route (route.fulfill) or stop before the redirect. ' +
+            `See e2e/lib/offstack.ts (allowlist: ${JSON.stringify(OFF_STACK_ALLOWLIST)}).`,
+        ).toEqual([]);
       }
     },
     { auto: true },
   ],
 
   // The built-in context, in case it was created before the wrapper above.
-  context: async ({ context, cspViolations }, use) => {
-    await watchCsp(context, cspViolations);
+  context: async ({ context, browserGuards }, use) => {
+    await guardContext(context, browserGuards);
     await use(context);
   },
 

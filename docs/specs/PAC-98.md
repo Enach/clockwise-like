@@ -440,7 +440,8 @@ compose stack.
 - **AC-18** [e2e] Given the e2e stack, when a user types
   `<random>@gmail.com` on `/signin` and continues, then detection answers
   google. The browser's next request is `/api/auth/google`, with `login_hint`
-  equal to the typed address. The journey stops at the Google stand-in as in
+  equal to the typed address. The journey stops at the provider start; the
+  backend's 302 to accounts.google.com is asserted, not followed, as in
   `pac97-signin-detect.spec.ts`. The run's hermeticity check still passes.
   (That gmail.com is never sent to the resolver is proven by AC-1 with the
   fake resolver: the e2e DNS stand-in keeps no query log, §2.6.)

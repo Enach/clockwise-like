@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 import { BASE_URL } from './auth';
+import { hostResolverRules } from './lib/offstack';
 
 /**
  * Retries are 0 everywhere, including CI.
@@ -54,6 +55,15 @@ export default defineConfig({
 
     // The app is same-origin behind nginx; nothing here needs a real cert.
     ignoreHTTPSErrors: false,
+
+    // No test may reach a real external service (lib/offstack.ts). The
+    // browser resolves only the stack's host names; every other name fails
+    // to resolve. This is the hard stop behind the off-stack guard in
+    // fixtures.ts, for what a route cannot intercept: the hops of an HTTP
+    // redirect (a provider start's 302 to accounts.google.com, say).
+    launchOptions: {
+      args: [`--host-resolver-rules=${hostResolverRules()}`],
+    },
   },
 
   // PAC-43. `stand-in` checks the calendar stand-in before anything uses it;
