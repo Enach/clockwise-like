@@ -173,8 +173,8 @@ func TestCSPDirectives(t *testing.T) {
 	want := map[string][]string{
 		"default-src":     {"'self'"},
 		"script-src":      {"'self'"}, // no 'unsafe-inline', no 'unsafe-eval'
-		"style-src":       {"'self'", "'unsafe-inline'", "https://fonts.googleapis.com"},
-		"font-src":        {"'self'", "data:", "https://fonts.gstatic.com"}, // FullCalendar embeds its icon font (fcicons) as data:
+		"style-src":       {"'self'", "'unsafe-inline'"},
+		"font-src":        {"'self'", "data:"}, // PAC-143: fonts are self-hosted; FullCalendar embeds its icon font (fcicons) as data:
 		"img-src":         {"'self'", "data:", "https://*.googleusercontent.com"},
 		"connect-src":     {"'self'"}, // PAC-86: no Sentry origin unless configured
 		"object-src":      {"'none'"},

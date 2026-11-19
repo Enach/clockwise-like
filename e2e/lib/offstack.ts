@@ -24,29 +24,6 @@
  */
 export const OFF_STACK_ALLOWLIST: readonly string[] = [];
 
-/**
- * Off-stack resources the app itself loads on every page, answered by a
- * stand-in in the browser instead of the real service. The SPA's index.html
- * links Google Fonts (smart-calendar-flow index.html; nginx's CSP allows
- * fonts.googleapis.com and fonts.gstatic.com for it). The stylesheet is
- * answered with an empty one, so no font file is ever requested and the
- * page renders in its fallback fonts. Nothing a journey asserts depends on
- * the typeface.
- */
-export const OFF_STACK_STAND_INS: Readonly<Record<string, { status: number; contentType: string; body: string }>> = {
-  'fonts.googleapis.com': { status: 200, contentType: 'text/css', body: '/* e2e stand-in: no web fonts */' },
-  'fonts.gstatic.com': { status: 404, contentType: 'text/plain', body: 'e2e stand-in: no web fonts' },
-};
-
-/** The stand-in answer for `url`, when its host has one. */
-export function offStackStandIn(url: string): (typeof OFF_STACK_STAND_INS)[string] | undefined {
-  try {
-    return OFF_STACK_STAND_INS[new URL(url).hostname.toLowerCase()];
-  } catch {
-    return undefined;
-  }
-}
-
 /** The stack's browser-visible origins, as configured (auth.ts, csp.spec.ts, fake.ts defaults). */
 const STACK_URLS = [
   process.env.E2E_BASE_URL ?? 'http://localhost:8088',

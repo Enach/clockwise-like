@@ -277,8 +277,10 @@ currently fixme'd is blocked on it.
    configured `E2E_*_URL` hosts), and Chromium resolves only those hosts
    (`--host-resolver-rules` in `playwright.config.ts`), which also stops the
    hops of an HTTP redirect that no route can intercept. The allowlist,
-   `OFF_STACK_ALLOWLIST`, is empty. The app's own Google Fonts link is answered
-   in the browser by a stand-in. A journey that ends at a provider stops at
+   `OFF_STACK_ALLOWLIST`, is empty, and nothing off the stack is answered by
+   a stand-in: the web self-hosts its fonts (PAC-143), so a page that links an
+   external font or stylesheet again fails every UI test here and breaks the
+   CSP. A journey that ends at a provider stops at
    the API's start and asserts its real 302 without following it
    (`lib/provider-start.ts`). Its own test is `tests/offstack-guard.spec.ts`.
 
