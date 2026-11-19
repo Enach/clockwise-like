@@ -103,15 +103,20 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 	freeBlocks := subtractIntervals(interval{req.RangeStart, req.RangeEnd}, allBusy)
 
 	dur := time.Duration(req.DurationMinutes) * time.Minute
+	// The caller's timezone: settings.timezone (UTC by default; the settings
+	// write rejects an unknown name), UTC if it still does not load. Slots are
+	// filtered and scored in it, whatever offset the request carried (PAC-147).
 	loc, err := time.LoadLocation(s.Timezone)
 	if err != nil {
 		loc = time.UTC
 	}
 
-	// The requester's own focus blocks; calClient uses the same user.
-	// PAC-141 SF-111: a failed read is the error (the operation's 500), never
-	// "no focus blocks", which would offer slots over the caller's focus time.
-	focusBlocks, err := storage.ListFocusBlocksForUserWeek(storage.Bind(ctx, e.DB), auth.UserIDFromContext(ctx), req.RangeStart)
+	// The requester's own focus blocks over the whole requested range
+	// (PAC-147: not only the 7 days from range_start); calClient uses the
+	// same user. PAC-141 SF-111: a failed read is the error (the operation's
+	// 500), never "no focus blocks", which would offer slots over the
+	// caller's focus time.
+	focusBlocks, err := storage.ListFocusBlocksForUserRangeCtx(ctx, e.DB, auth.UserIDFromContext(ctx), req.RangeStart, req.RangeEnd)
 	if err != nil {
 		return nil, fmt.Errorf("focus blocks: %w", err)
 	}
@@ -147,7 +152,7 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 				}
 			}
 
-			score, reasons := scoreCandidate(t, end, focusBlocks, s)
+			score, reasons := scoreCandidate(t.In(loc), end, focusBlocks, s)
 			score, reasons = adjustScoreForPreferences(score, reasons, t, loc, req.PreferredTimes, req.AvoidTimes)
 			candidates = append(candidates, SuggestedSlot{
 				Start:   t,
@@ -221,6 +226,8 @@ func eventIsOutsideWork(_ *googlecalendar.Event, start, end time.Time, settings 
 	return start.Before(workStart) || end.After(workEnd)
 }
 
+// scoreCandidate reads the hour and weekday from start as given: Suggest passes
+// it already in the caller's timezone (PAC-147).
 func scoreCandidate(start, end time.Time, focusBlocks []storage.FocusBlock, s *storage.Settings) (int, []string) {
 	score := 0
 	var reasons []string

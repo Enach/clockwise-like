@@ -470,8 +470,8 @@ func InstallCallerRoleRead(tb TB, fn func(teamID, userID uuid.UUID) error) (unin
 	return callerRoleRead.install(tb, fn)
 }
 
-// focusBlocksRead fires at the start of ListFocusBlocksForUserWeek(Ctx) for every
-// caller; a non-nil error is that read's error, without querying (PAC-141:
+// focusBlocksRead fires at the start of ListFocusBlocksForUserWeek(Ctx) and
+// ListFocusBlocksForUserRangeCtx for every caller; a non-nil error is that read's error, without querying (PAC-141:
 // the smart scheduler's and team availability's focus-block reads). A test
 // filters on the user ids it owns.
 var focusBlocksRead seam[func(userID uuid.UUID) error]
