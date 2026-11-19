@@ -60,14 +60,14 @@ func (e *pac120Env) link(owner uuid.UUID, ownerStatus string, statuses ...string
 	if ownerStatus == "" {
 		// A link created before PAC-112 has no owner row (spec §2.5).
 		execT(e.t, `DELETE FROM scheduling_link_hosts WHERE link_id = $1`, l.ID)
-	} else if _, err := storage.AddLinkHost(e.db, l.ID, owner, ownerStatus); err != nil {
+	} else if _, err := pac149AddHost(e.db, l.ID, owner, ownerStatus); err != nil {
 		e.t.Fatal(err)
 	}
 	ids := make([]uuid.UUID, 0, len(statuses))
 	emails := make([]string, 0, len(statuses))
 	for i, s := range statuses {
 		id, email := e.person(fmt.Sprintf("co%d", i))
-		if _, err := storage.AddLinkHost(e.db, l.ID, id, s); err != nil {
+		if _, err := pac149AddHost(e.db, l.ID, id, s); err != nil {
 			e.t.Fatal(err)
 		}
 		if s != "pending" {
@@ -97,8 +97,11 @@ func (e *pac120Env) invite(owner, link uuid.UUID, email string) *httptest.Respon
 // column an invitation could change.
 func (e *pac120Env) snapshot(link uuid.UUID) string {
 	e.t.Helper()
-	rows, err := e.db.Query(`SELECT user_id::text, status, invited_at, responded_at FROM scheduling_link_hosts
-		WHERE link_id = $1 ORDER BY user_id::text`, link)
+	// PAC-149: a pending invitation is keyed by the account carrying its
+	// address (pac149FixtureUserSQL), or by its address when none does.
+	rows, err := e.db.Query(`SELECT COALESCE((`+pac149FixtureUserSQL+`)::text, 'invitation:' || lower(invitee_email)) AS k,
+		status, invited_at, responded_at FROM scheduling_link_hosts
+		WHERE link_id = $1 ORDER BY k`, link)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -123,7 +126,7 @@ func (e *pac120Env) snapshot(link uuid.UUID) string {
 func (e *pac120Env) coHosts(link *storage.SchedulingLink) int {
 	e.t.Helper()
 	var n int
-	if err := e.db.QueryRow(`SELECT count(*) FROM scheduling_link_hosts WHERE link_id = $1 AND user_id <> $2`,
+	if err := e.db.QueryRow(`SELECT count(*) FROM scheduling_link_hosts WHERE link_id = $1 AND user_id IS DISTINCT FROM $2`,
 		link.ID, link.OwnerUserID).Scan(&n); err != nil {
 		e.t.Fatal(err)
 	}
@@ -136,7 +139,7 @@ func (e *pac120Env) hostRow(link, userID uuid.UUID) string {
 	e.t.Helper()
 	var s string
 	var resp sql.NullTime
-	err := e.db.QueryRow(`SELECT status, responded_at FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`,
+	err := e.db.QueryRow(`SELECT status, responded_at FROM scheduling_link_hosts WHERE link_id = $1 AND `+pac149FixtureUserSQL+` = $2`,
 		link, userID).Scan(&s, &resp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "absent"
@@ -387,8 +390,12 @@ func TestPAC120_AC5_ReinviteAtOrAboveTheLimitIs200(t *testing.T) {
 			before := e.snapshot(l.ID)
 			w := e.invite(owner, l.ID, emails[i])
 			e.mustStatus(w, http.StatusOK, fmt.Sprintf("re-invite at %d of a %s co-host", n, pac120Statuses(n)[i]))
-			if !strings.Contains(w.Body.String(), ids[i].String()) {
-				t.Errorf("the 200 is not the existing row: %s", w.Body.String())
+			// PAC-149: the entry as the link reads show it (an id only for
+			// an accepted entry).
+			body := w.Body.String()
+			if !strings.Contains(body, `"email":"`+emails[i]+`"`) || !strings.Contains(body, `"status":"`+pac120Statuses(n)[i]+`"`) ||
+				strings.Contains(body, ids[i].String()) != (pac120Statuses(n)[i] == "accepted") {
+				t.Errorf("the 200 is not the existing entry: %s", body)
 			}
 			if after := e.snapshot(l.ID); after != before {
 				t.Errorf("at %d, re-invite of %s changed rows:\n %s\n %s", n, pac120Statuses(n)[i], before, after)
@@ -465,8 +472,9 @@ func (e *pac120Env) coHostSnapshot(l *storage.SchedulingLink) string {
 	return strings.Join(keep, ";")
 }
 
-// AC-7: at 5 co-hosts an address nobody holds domain-confirmed is still
-// "user not found", never the 422.
+// AC-7, rewritten by PAC-149 (spec §2.4, AC-4): at 5 co-hosts an address
+// nobody holds domain-confirmed gets the same 422 as any new address (before
+// PAC-149: "user not found"), and nothing is written.
 func TestPAC120_AC7_UserNotFoundBeforeTheLimit(t *testing.T) {
 	e := newPAC120Env(t)
 	owner, _ := e.person("ac7-owner")
@@ -481,9 +489,10 @@ func TestPAC120_AC7_UserNotFoundBeforeTheLimit(t *testing.T) {
 		"unconfirmed only": unconfirmed,
 		"two accounts":     collision,
 	} {
-		w := e.invite(owner, l.ID, addr)
-		if w.Code != http.StatusNotFound || strings.TrimSpace(w.Body.String()) != `{"error":"user not found"}` {
-			t.Errorf("%s: %d %s; want 404 user not found", what, w.Code, w.Body.String())
+		before := e.coHostSnapshot(l)
+		pac120Is422(t, e.invite(owner, l.ID, addr), what)
+		if after := e.coHostSnapshot(l); after != before {
+			t.Errorf("%s: the refusal wrote", what)
 		}
 	}
 }
@@ -804,6 +813,11 @@ func TestPAC120_AC11_MixedLoadAtTheLimit(t *testing.T) {
 		if want == "absent" && listPatch == http.StatusOK {
 			want = "pending responded_at=null"
 		}
+		if strings.HasPrefix(want, "pending") {
+			// PAC-149 (contract md §2.7): the final delete erased every pending
+			// invitation of the link in its own write.
+			want = "absent"
+		}
 		if got := e.hostRow(link.ID, ids[r.who]); got != want {
 			t.Errorf("last round: %s answered 404 but its host row is %q; want unchanged %q (list patch %d)", r.what, got, want, listPatch)
 		}
@@ -920,30 +934,26 @@ func pac120AssertStep(t *testing.T, w *httptest.ResponseRecorder, reported *[]er
 	}
 }
 
-// AC-14: only the lookup fails: 500 under "invite lookup", never 404.
+// AC-14, retired with the lookup by PAC-149 (contract md §7, D-2; SF-068's
+// rule moved to the invitee side, TestPAC149_AC14_InviteeMatchFailureIs500):
+// the single invite reads no account by address, so a failing holder lookup
+// is never consulted and the invitation is the 201.
 func TestPAC120_AC14_FailedLookupIs500(t *testing.T) {
 	e := newPAC120Env(t)
 	owner, _ := e.person("ac14-owner")
 	l, _, _ := e.link(owner, "accepted", pac120Statuses(2)...)
-	invitee, email := e.person("ac14-x")
+	_, email := e.person("ac14-x")
+	consulted := false
 	storage.InstallConfirmedHolderLookup(t, func(addr string) error {
 		if addr == email {
+			consulted = true
 			return errors.New("pac120: lookup failed")
 		}
 		return nil
 	})
-	reported, logs := captureServerErrors(t)
-	before := e.snapshot(l.ID)
-	w := e.invite(owner, l.ID, email)
-	pac120AssertStep(t, w, reported, logs, "invite lookup")
-	if strings.Contains(logs.String(), "invite link read") {
-		t.Error("the link read failed instead of the lookup")
-	}
-	if after := e.snapshot(l.ID); after != before {
-		t.Error("host rows changed")
-	}
-	if _, found := e.hostRows(l.ID)[invitee]; found {
-		t.Error("the invitee has a row")
+	e.mustStatus(e.invite(owner, l.ID, email), http.StatusCreated, "invite with a failing lookup")
+	if consulted {
+		t.Error("the single invite read the address's holder")
 	}
 }
 

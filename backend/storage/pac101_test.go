@@ -352,7 +352,7 @@ func TestPAC101_EveryLinkWriteGivesUpAtTheBound(t *testing.T) {
 	owner := mustUser(t, db, "pac101-bound-owner@example.com")
 	cohost := mustUser(t, db, "pac101-bound-cohost@example.com")
 	link := pac40Link(t, db, owner, "pac101-bound")
-	if _, err := AddLinkHost(db, link.ID, cohost, "pending"); err != nil {
+	if _, err := pac149AddPending(db, link.ID, cohost); err != nil {
 		t.Fatal(err)
 	}
 	invitee := mustUser(t, db, "pac101-bound-invitee@example.com")
@@ -367,9 +367,12 @@ func TestPAC101_EveryLinkWriteGivesUpAtTheBound(t *testing.T) {
 	ctx := context.Background()
 	writes := map[string]func() error{
 		"booking": func() error { _, err := pac101Save(db, link.ID, pac101Start(), nil); return err },
-		"invite":  func() error { _, _, err := InviteLinkHostCtx(ctx, db, link.ID, invitee); return err },
-		"accept":  func() error { _, err := RespondToHostInviteCtx(ctx, db, link.ID, cohost, "accepted"); return err },
-		"leave":   func() error { _, err := RemoveLinkHostCtx(ctx, db, link.ID, cohost); return err },
+		"invite": func() error {
+			_, _, err := InviteLinkAddressCtx(ctx, db, link.ID, mustUserEmail(t, db, invitee))
+			return err
+		},
+		"accept": func() error { _, err := RespondToHostInviteCtx(ctx, db, link.ID, cohost, "accepted"); return err },
+		"leave":  func() error { _, err := RemoveLinkHostCtx(ctx, db, link.ID, cohost); return err },
 		"patch": func() error {
 			_, err := UpdateSchedulingLinkAndCoHostsCtx(ctx, db, link.ID, &SchedulingLink{Slug: link.Slug, Title: "x",
 				DurationOptions: []int{30}, DaysOfWeek: []int{1}, WindowStart: "09:00", WindowEnd: "17:00", UsageType: "reusable", Active: true}, owner, nil)
@@ -406,7 +409,7 @@ func TestPAC101_HostWritesWaitForAHeldDeleteThenWriteNothing(t *testing.T) {
 	ctx := context.Background()
 	cases := map[string]func(id uuid.UUID) (wrote bool, err error){
 		"invite": func(id uuid.UUID) (bool, error) {
-			h, _, err := InviteLinkHostCtx(ctx, db, id, invitee)
+			h, _, err := InviteLinkAddressCtx(ctx, db, id, mustUserEmail(t, db, invitee))
 			if errors.Is(err, ErrLinkGone) {
 				return false, nil
 			}
@@ -425,7 +428,7 @@ func TestPAC101_HostWritesWaitForAHeldDeleteThenWriteNothing(t *testing.T) {
 	}
 	for name, write := range cases {
 		link := pac40Link(t, db, owner, "pac101-host-"+uuid.NewString()[:8])
-		if _, err := AddLinkHost(db, link.ID, cohost, "pending"); err != nil {
+		if _, err := pac149AddPending(db, link.ID, cohost); err != nil {
 			t.Fatal(err)
 		}
 		tx := pac101HoldDelete(t, db, link.ID)
@@ -443,9 +446,12 @@ func TestPAC101_HostWritesWaitForAHeldDeleteThenWriteNothing(t *testing.T) {
 		if r.err != nil || r.wrote {
 			t.Errorf("%s after the delete committed: wrote %v, %v", name, r.wrote, r.err)
 		}
+		// PAC-149 (contract md §2.7): the delete itself erased the pending
+		// invitation; the write that waited wrote nothing, so only the
+		// owner's entry is left.
 		hosts, _ := GetLinkHosts(db, link.ID)
-		if len(hosts) != 2 || hosts[1].UserID != cohost || hosts[1].Status != "pending" {
-			t.Errorf("%s: host rows changed on a deleted link", name)
+		if len(hosts) != 1 || hosts[0].UserID != owner {
+			t.Errorf("%s: host rows of the deleted link = %+v, want the owner's entry alone", name, hosts)
 		}
 	}
 }
@@ -507,7 +513,7 @@ func TestPAC101_BoundDoesNotLeakThroughThePool(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("a booking save")
-	if _, _, err := InviteLinkHostCtx(ctx, db, link.ID, invitee); err != nil {
+	if _, _, err := InviteLinkAddressCtx(ctx, db, link.ID, mustUserEmail(t, db, invitee)); err != nil {
 		t.Fatal(err)
 	}
 	check("an invite")

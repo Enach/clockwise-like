@@ -133,6 +133,7 @@ func CarriersOf(q Querier, email string) ([]Carrier, error) {
 // §3.4) trims with the ECMA-262 \s set, not strings.TrimSpace, and must look
 // up exactly that string.
 func carriersOfTrimmed(q Querier, email string) ([]Carrier, error) {
+	fireCarriersRead(email)
 	rows, err := q.Query(`
 		SELECT u.id, u.email, u.address_standing, u.provider_id, (i.user_id IS NOT NULL)
 		FROM users u LEFT JOIN user_identities i ON i.user_id = u.id

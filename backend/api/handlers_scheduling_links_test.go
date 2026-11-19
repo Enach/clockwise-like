@@ -315,7 +315,11 @@ func hostStatuses(t *testing.T, linkID uuid.UUID) map[uuid.UUID]string {
 	}
 	out := make(map[uuid.UUID]string, len(hosts))
 	for _, h := range hosts {
-		out[h.UserID] = h.Status
+		id := h.UserID
+		if h.IsInvitation() {
+			id = pac149Key(t, openTestDB(t), h.InviteeEmail) // PAC-149: fixture view
+		}
+		out[id] = h.Status
 	}
 	return out
 }
@@ -328,7 +332,7 @@ func TestSchedulingLinksReinviteKeepsExistingHostStatus(t *testing.T) {
 	link := createSchedulingLinkRecord(t, ownerID, "pac61-reinvite", "Reinvite")
 	db := openTestDB(t)
 	for id, status := range map[uuid.UUID]string{acceptedID: "accepted", declinedID: "declined"} {
-		if _, err := storage.AddLinkHost(db, link.ID, id, "pending"); err != nil {
+		if _, err := pac149AddPending(db, link.ID, id); err != nil {
 			t.Fatalf("add host: %v", err)
 		}
 		if _, err := storage.RespondToHostInvite(db, link.ID, id, status); err != nil {
@@ -363,7 +367,7 @@ func TestSchedulingLinksPatchCoHostsSetsListByDifference(t *testing.T) {
 	link := createSchedulingLinkRecord(t, ownerID, "pac61-patch", "Patch")
 	db := openTestDB(t)
 	for _, id := range []uuid.UUID{keptID, droppedID} {
-		if _, err := storage.AddLinkHost(db, link.ID, id, "pending"); err != nil {
+		if _, err := pac149AddPending(db, link.ID, id); err != nil {
 			t.Fatalf("add host: %v", err)
 		}
 		if _, err := storage.RespondToHostInvite(db, link.ID, id, "accepted"); err != nil {
@@ -434,7 +438,7 @@ func TestSchedulingLinksRespondAndLeaveWithoutHostRowIs404(t *testing.T) {
 	inviteeID := createConfirmedUser(t, "pac30-invitee@example.com")
 	strangerID := createConfirmedUser(t, "pac30-stranger@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "pac30-no-row", "No Row")
-	if _, err := storage.AddLinkHost(openTestDB(t), link.ID, inviteeID, "pending"); err != nil {
+	if _, err := pac149AddPending(openTestDB(t), link.ID, inviteeID); err != nil {
 		t.Fatalf("add invitee host: %v", err)
 	}
 	before := hostRowsSnapshot(t, link.ID)
@@ -462,7 +466,7 @@ func TestSchedulingLinksAcceptWithHostRowIdIs404(t *testing.T) {
 	ownerID := createConfirmedUser(t, "pac30-rowid-owner@example.com")
 	inviteeID := createConfirmedUser(t, "pac30-rowid-invitee@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "pac30-rowid", "Row Id")
-	row, err := storage.AddLinkHost(openTestDB(t), link.ID, inviteeID, "pending")
+	row, err := pac149AddPending(openTestDB(t), link.ID, inviteeID)
 	if err != nil {
 		t.Fatalf("add invitee host: %v", err)
 	}
@@ -609,7 +613,7 @@ func newPAC25LinkFixture(t *testing.T, prefix string) pac25LinkFixture {
 	}
 	f.link = createSchedulingLinkRecord(t, f.owner, prefix+"-link", "PAC-25 "+prefix)
 	for u, status := range map[uuid.UUID]string{f.accepted: "accepted", f.pending: "pending", f.declined: "declined"} {
-		if _, err := storage.AddLinkHost(db, f.link.ID, u, status); err != nil {
+		if _, err := pac149AddHost(db, f.link.ID, u, status); err != nil {
 			t.Fatalf("add %s host: %v", status, err)
 		}
 	}
@@ -728,12 +732,24 @@ func TestPAC25GetLinkAcceptedCoHostReadsFullRoster(t *testing.T) {
 	}
 	want := map[string]string{
 		f.owner.String(): "accepted", f.accepted.String(): "accepted",
-		f.pending.String(): "pending", f.declined.String(): "declined",
 	}
-	if len(got.Hosts) != len(want) {
-		t.Fatalf("hosts = %+v, want %d rows", got.Hosts, len(want))
+	// PAC-149 (contract md §2.5): the pending and declined entries are shown
+	// by address and status only.
+	byAddr := map[string]string{"-pending@example.com": "pending", "-declined@example.com": "declined"}
+	if len(got.Hosts) != len(want)+len(byAddr) {
+		t.Fatalf("hosts = %+v, want %d rows", got.Hosts, len(want)+len(byAddr))
 	}
 	for _, h := range got.Hosts {
+		if h.UserID == "" {
+			ok := false
+			for suffix, st := range byAddr {
+				ok = ok || (strings.HasSuffix(h.Email, suffix) && h.Status == st)
+			}
+			if !ok || h.Name != "" || h.AvatarURL != "" {
+				t.Fatalf("entry without an account id %+v is not a pending or declined entry by address", h)
+			}
+			continue
+		}
 		if want[h.UserID] != h.Status {
 			t.Fatalf("host %s status %q, want %q", h.UserID, h.Status, want[h.UserID])
 		}

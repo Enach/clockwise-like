@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -211,25 +212,15 @@ func fireMigrateHook(s *seam[func(caller string)], caller string) {
 // and PATCH. Each fires inside the write's transaction; a non-nil error fails
 // that step, and the caller rolls the whole create or PATCH back.
 var (
-	coHostLookup    seam[func(email string) error]
-	coHostWrite     seam[func(linkID, userID uuid.UUID) error]
+	coHostWrite     seam[func(linkID uuid.UUID, email string) error]
 	createOwnerHost seam[func(linkID uuid.UUID) error]
 )
 
-// InstallCoHostLookup installs the lookup seam: fn runs once per lookup of
-// the co-host list (one read of an address's carriers, contract md §3.3),
-// before the read, with the address being looked up (trimmed of ECMA-262
-// \s). Recording the addresses shows which were read and in which order; a
-// non-nil error fails that lookup (AC-10, AC-21).
-func InstallCoHostLookup(tb TB, fn func(email string) error) (uninstall func()) {
-	tb.Helper()
-	return coHostLookup.install(tb, fn)
-}
-
-// InstallCoHostWrite installs the seam that runs before each co-host
-// invitation insert of the co-host list, with the link and the invitee; a
-// non-nil error fails that write (AC-20).
-func InstallCoHostWrite(tb TB, fn func(linkID, userID uuid.UUID) error) (uninstall func()) {
+// InstallCoHostWrite installs the seam that runs before each pending
+// invitation insert of the single invite and the co-host list, with the link
+// and the address being recorded; a non-nil error fails that write (PAC-112
+// AC-20; PAC-149 changed the invitee from an account to an address).
+func InstallCoHostWrite(tb TB, fn func(linkID uuid.UUID, email string) error) (uninstall func()) {
 	tb.Helper()
 	return coHostWrite.install(tb, fn)
 }
@@ -517,4 +508,150 @@ func fireOrgMembershipStatement(name string) {
 	if fn, ok := orgMembershipStatement.get(); ok {
 		fn(name)
 	}
+}
+
+// PAC-149 seams (contract md §6): the co-host invitation paths.
+//
+// carriersRead fires at the start of every read of an address's carriers
+// (carriersOfTrimmed: CarriersOf, ConfirmedHolder, CarrierIDs, HoldsConfirmed)
+// with the address read; it observes only. AC-6 asserts that no inviter-side
+// path fires it. Not every read of accounts by address passes there
+// (GetUserByEmail does not): the statement recorder is the complete check.
+//
+// inviteeMatch fires before the invitee-side match's read of the caller
+// (the invitation list, accept, decline and leave); a non-nil error is that
+// read's error, without querying (spec D-10, AC-14).
+//
+// coHostStatement observes every statement of a request whose handler ran it
+// through RecordCoHostStatements: on the pool, and inside every transaction
+// the storage's link writes (withLinkWriteTx, WithSessionGeneration) and the
+// keyed create's key resolution open from that database. It receives the SQL
+// text with its white space collapsed and the arguments as passed. It
+// observes only.
+var (
+	carriersRead    seam[func(email string)]
+	inviteeMatch    seam[func(userID uuid.UUID) error]
+	coHostStatement seam[func(sql string, args []any)]
+)
+
+// InstallCarriersRead installs the carriers-read seam.
+func InstallCarriersRead(tb TB, fn func(email string)) (uninstall func()) {
+	tb.Helper()
+	return carriersRead.install(tb, fn)
+}
+
+// fireCarriersRead runs the carriers-read seam, if installed.
+func fireCarriersRead(email string) {
+	if fn, ok := carriersRead.get(); ok {
+		fn(email)
+	}
+}
+
+// InstallInviteeMatch installs the invitee-match seam.
+func InstallInviteeMatch(tb TB, fn func(userID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return inviteeMatch.install(tb, fn)
+}
+
+// InstallCoHostStatement installs the statement recorder.
+func InstallCoHostStatement(tb TB, fn func(sql string, args []any)) (uninstall func()) {
+	tb.Helper()
+	return coHostStatement.install(tb, fn)
+}
+
+// RecordCoHostStatements returns db wrapped so that every statement run on
+// it, and on every transaction the storage opens from it (recordingTx), is
+// passed to the installed coHostStatement seam. Without an installed seam it
+// is db itself: production never records.
+func RecordCoHostStatements(db DBTX) DBTX {
+	if _, ok := coHostStatement.get(); !ok {
+		return db
+	}
+	if r, ok := db.(*statementRecorder); ok {
+		return r
+	}
+	return &statementRecorder{db: db}
+}
+
+// recordingTx is q (a transaction the storage opened from db) wrapped to
+// record its statements when db is a RecordCoHostStatements wrapper, and q
+// itself otherwise.
+func recordingTx(db DBTX, q Querier) Querier {
+	if _, ok := db.(*statementRecorder); ok {
+		return &recordingQuerier{q: q}
+	}
+	return q
+}
+
+// recordStatement passes one statement to the seam, if installed.
+func recordStatement(query string, args []any) {
+	if fn, ok := coHostStatement.get(); ok {
+		fn(strings.Join(strings.Fields(query), " "), append([]any(nil), args...))
+	}
+}
+
+// statementRecorder is a DBTX that records each statement before running it
+// on db. Opening a transaction is recorded as "BEGIN".
+type statementRecorder struct{ db DBTX }
+
+func (r *statementRecorder) Exec(q string, args ...any) (sql.Result, error) {
+	recordStatement(q, args)
+	return r.db.Exec(q, args...)
+}
+func (r *statementRecorder) Query(q string, args ...any) (*sql.Rows, error) {
+	recordStatement(q, args)
+	return r.db.Query(q, args...)
+}
+func (r *statementRecorder) QueryRow(q string, args ...any) *sql.Row {
+	recordStatement(q, args)
+	return r.db.QueryRow(q, args...)
+}
+func (r *statementRecorder) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	recordStatement(q, args)
+	return r.db.ExecContext(ctx, q, args...)
+}
+func (r *statementRecorder) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	recordStatement(q, args)
+	return r.db.QueryContext(ctx, q, args...)
+}
+func (r *statementRecorder) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+	recordStatement(q, args)
+	return r.db.QueryRowContext(ctx, q, args...)
+}
+func (r *statementRecorder) Begin() (*sql.Tx, error) {
+	recordStatement("BEGIN", nil)
+	return r.db.Begin()
+}
+func (r *statementRecorder) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	recordStatement("BEGIN", nil)
+	return r.db.BeginTx(ctx, opts)
+}
+
+// recordingQuerier is a Querier (a transaction) that records each statement
+// before running it.
+type recordingQuerier struct{ q Querier }
+
+func (r *recordingQuerier) Exec(q string, args ...any) (sql.Result, error) {
+	recordStatement(q, args)
+	return r.q.Exec(q, args...)
+}
+func (r *recordingQuerier) Query(q string, args ...any) (*sql.Rows, error) {
+	recordStatement(q, args)
+	return r.q.Query(q, args...)
+}
+func (r *recordingQuerier) QueryRow(q string, args ...any) *sql.Row {
+	recordStatement(q, args)
+	return r.q.QueryRow(q, args...)
+}
+func (r *recordingQuerier) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	recordStatement(q, args)
+	return r.q.ExecContext(ctx, q, args...)
+}
+func (r *recordingQuerier) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	recordStatement(q, args)
+	return r.q.QueryContext(ctx, q, args...)
+}
+func (r *recordingQuerier) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+	recordStatement(q, args)
+	return r.q.QueryRowContext(ctx, q, args...)
 }

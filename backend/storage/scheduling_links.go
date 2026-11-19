@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
 	"sort"
 	"strings"
 	"time"
@@ -57,15 +58,23 @@ const (
 	RefusalSpecific = "specific"
 )
 
-// LinkHost is one accepted or pending co-host on a scheduling link.
+// LinkHost is one row of a link's host table: an entry bound to an account
+// (the owner, an accepted or a declined co-host) or a pending invitation to
+// an address (PAC-149 contract md §4.0). A pending invitation never points at
+// an account: its UserID is uuid.Nil and InviteeEmail holds the address the
+// owner typed (trimmed, letter case kept); an entry's InviteeEmail is "".
 type LinkHost struct {
-	ID          uuid.UUID  `json:"id"`
-	LinkID      uuid.UUID  `json:"link_id"`
-	UserID      uuid.UUID  `json:"user_id"`
-	Status      string     `json:"status"`
-	InvitedAt   time.Time  `json:"invited_at"`
-	RespondedAt *time.Time `json:"responded_at,omitempty"`
+	ID           uuid.UUID  `json:"id"`
+	LinkID       uuid.UUID  `json:"link_id"`
+	UserID       uuid.UUID  `json:"user_id"`
+	InviteeEmail string     `json:"invitee_email,omitempty"`
+	Status       string     `json:"status"`
+	InvitedAt    time.Time  `json:"invited_at"`
+	RespondedAt  *time.Time `json:"responded_at,omitempty"`
 }
+
+// IsInvitation reports whether h is a pending invitation to an address.
+func (h *LinkHost) IsInvitation() bool { return h.UserID == uuid.Nil }
 
 // Booking represents a confirmed meeting booked via a scheduling link.
 type Booking struct {
@@ -221,6 +230,12 @@ func UpdateSchedulingLink(db Querier, id uuid.UUID, l *SchedulingLink) (*Schedul
 // (PAC-40 D-2). deleted is false, with nothing written, when the link does
 // not exist or is already deleted: a repeated or concurrent delete never
 // moves deleted_at, the instant the archive shows (K4-2).
+//
+// PAC-149 (contract md §2.7, spec D-14): the delete erases the link's pending
+// invitations in the same write, after the UPDATE that locks the link, so
+// nothing can show, answer or restore them afterwards; accepted and declined
+// entries are kept (PAC-40 D-2). Callers run it in one transaction
+// (DeleteSchedulingLinkCtx).
 func DeleteSchedulingLink(db Querier, id uuid.UUID) (deleted bool, err error) {
 	res, err := db.ExecContext(context.Background(),
 		`UPDATE scheduling_links SET deleted_at = NOW(), active = false
@@ -232,7 +247,14 @@ func DeleteSchedulingLink(db Querier, id uuid.UUID) (deleted bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	return n > 0, nil
+	if n == 0 {
+		return false, nil
+	}
+	if _, err := db.ExecContext(context.Background(),
+		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id IS NULL`, id); err != nil {
+		return false, fmt.Errorf("erase pending invitations: %w", err)
+	}
+	return true, nil
 }
 
 func scanSchedulingLink(row *sql.Row) (*SchedulingLink, error) {
@@ -279,51 +301,35 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 
 // --- LinkHost CRUD ---------------------------------------------------------
 
+// AddLinkHost writes userID's entry on linkID with status, or overwrites the
+// status of the entry it has. It takes no lock: fixtures only. The storage
+// refuses a pending row that points at an account (PAC-149 contract md §4.0);
+// a pending invitation is AddLinkInvitation.
 func AddLinkHost(db Querier, linkID, userID uuid.UUID, status string) (*LinkHost, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (link_id, user_id) DO UPDATE SET status = EXCLUDED.status
-		RETURNING id, link_id, user_id, status, invited_at, responded_at
-	`, linkID, userID, status)
+		RETURNING `+linkHostColumns, linkID, userID, status)
 	return scanLinkHost(row)
 }
 
-// InviteLinkHost adds userID to linkID as a pending co-host. If the user is
-// already a host of the link, their row is returned unchanged and created is
-// false: an invite never changes an existing host's status, so re-inviting an
-// accepted co-host cannot drop their calendar from the link's slots (PAC-61).
-//
-// It takes no lock itself. The PAC-120 co-host count (at most
-// CoHostListLimit, checked in inviteLinkHostLocked) is exact only while every
-// inserter into scheduling_link_hosts takes the link lock first; a caller
-// that inserts here, or anywhere else, without that lock can push a link past
-// the limit.
-func InviteLinkHost(db Querier, linkID, userID uuid.UUID) (host *LinkHost, created bool, err error) {
+// AddLinkInvitation records a pending invitation to email on linkID, stored
+// as given (PAC-149 contract md §4.0, §6), with no lock and no check: the
+// fixture helper that replaces AddLinkHost(..., "pending"). The product's
+// writes of an invitation are the single invite (InviteLinkAddressCtx) and the
+// co-host list, both under the link's lock.
+func AddLinkInvitation(db Querier, linkID uuid.UUID, email string) (*LinkHost, error) {
 	row := db.QueryRowContext(context.Background(), `
-		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
+		INSERT INTO scheduling_link_hosts (link_id, invitee_email, status)
 		VALUES ($1, $2, 'pending')
-		ON CONFLICT (link_id, user_id) DO NOTHING
-		RETURNING id, link_id, user_id, status, invited_at, responded_at
-	`, linkID, userID)
-	host, err = scanLinkHost(row)
-	if err != nil {
-		return nil, false, err
-	}
-	if host != nil {
-		return host, true, nil
-	}
-	// DO NOTHING returned no row: the user is already a host. Return them as is.
-	row = db.QueryRowContext(context.Background(), `
-		SELECT id, link_id, user_id, status, invited_at, responded_at
-		FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
-	`, linkID, userID)
-	host, err = scanLinkHost(row)
-	return host, false, err
+		RETURNING `+linkHostColumns, linkID, email)
+	return scanLinkHost(row)
 }
 
-// RemoveLinkHostsExcept deletes every non-owner host of linkID whose user is
-// not in keep. Hosts in keep are left exactly as they are.
+// RemoveLinkHostsExcept deletes every non-owner entry of linkID whose account
+// is not in keep. Entries in keep are left exactly as they are; a pending
+// invitation (no account) is not touched.
 func RemoveLinkHostsExcept(db Querier, linkID, ownerID uuid.UUID, keep []uuid.UUID) error {
 	ids := make([]string, len(keep))
 	for i, id := range keep {
@@ -336,11 +342,27 @@ func RemoveLinkHostsExcept(db Querier, linkID, ownerID uuid.UUID, keep []uuid.UU
 	return err
 }
 
+// linkHostColumns are the columns scanLinkHost and scanLinkHostRow read, in
+// their order.
+const linkHostColumns = `id, link_id, user_id, invitee_email, status, invited_at, responded_at`
+
+// linkHostOrderBy is the roster order (PAC-149 contract md §2.5, spec D-16):
+// invitation time, request position, the address under lower(), the address
+// bytewise, the row id. An entry's address is its account's stored address
+// and a pending invitation's the recorded one, so the statement joins users
+// as u by h.user_id only. Nothing in the order depends on whether an account
+// carries an invitation's address.
+const linkHostOrderBy = `ORDER BY h.invited_at, h.invite_position,
+		lower(COALESCE(u.email, h.invitee_email)), COALESCE(u.email, h.invitee_email) COLLATE "C", h.id`
+
+// GetLinkHosts returns every row of linkID's host table, entries and pending
+// invitations, in the roster order.
 func GetLinkHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
-		SELECT id, link_id, user_id, status, invited_at, responded_at
-		FROM scheduling_link_hosts WHERE link_id = $1 ORDER BY invited_at
-	`, linkID)
+		SELECT h.id, h.link_id, h.user_id, h.invitee_email, h.status, h.invited_at, h.responded_at
+		FROM scheduling_link_hosts h LEFT JOIN users u ON u.id = h.user_id
+		WHERE h.link_id = $1
+		`+linkHostOrderBy, linkID)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +396,7 @@ func GetLinkHostStatus(db DBTX, linkID, userID uuid.UUID) (status string, found 
 
 func GetAcceptedHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
-		SELECT id, link_id, user_id, status, invited_at, responded_at
+		SELECT `+linkHostColumns+`
 		FROM scheduling_link_hosts WHERE link_id = $1 AND status = 'accepted'
 	`, linkID)
 	if err != nil {
@@ -392,36 +414,90 @@ func GetAcceptedHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	return out, rows.Err()
 }
 
-// GetPendingInvitesForUser lists the user's pending co-host invites on live or
-// paused links; an invite to a deleted link is omitted (PAC-40 AC-5).
+// GetPendingInvitesForUser lists the pending invitations userID may see and
+// answer (PAC-149 contract md §2.4, spec D-5): those on live or paused links
+// whose address equals, under lower(), the address userID carries, when
+// userID is that address's single domain-confirmed holder; never one on a
+// link userID owns or already has an entry on. An invitation to a deleted
+// link is omitted (PAC-40 AC-5). A failed read of the caller's row or of the
+// invitations is an error, never an empty list (spec D-10).
 func GetPendingInvitesForUser(db DBTX, userID uuid.UUID) ([]*LinkHost, error) {
-	rows, err := db.QueryContext(context.Background(), `
-		SELECT h.id, h.link_id, h.user_id, h.status, h.invited_at, h.responded_at
-		FROM scheduling_link_hosts h
-		JOIN scheduling_links l ON l.id = h.link_id
-		WHERE h.user_id = $1 AND h.status = 'pending' AND l.deleted_at IS NULL
-	`, userID)
+	email, holds, err := inviteeHolder(db, userID)
 	if err != nil {
 		return nil, err
 	}
+	out := make([]*LinkHost, 0)
+	if !holds {
+		return out, nil
+	}
+	rows, err := db.QueryContext(context.Background(), `
+		SELECT h.id, h.link_id, h.user_id, h.invitee_email, h.status, h.invited_at, h.responded_at
+		FROM scheduling_link_hosts h
+		JOIN scheduling_links l ON l.id = h.link_id
+		WHERE h.user_id IS NULL AND lower(h.invitee_email) = lower($1)
+		  AND l.deleted_at IS NULL AND l.owner_user_id <> $2
+		  AND NOT EXISTS (SELECT 1 FROM scheduling_link_hosts e WHERE e.link_id = h.link_id AND e.user_id = $2)
+		ORDER BY h.invited_at, h.id`, email, userID)
+	if err != nil {
+		return nil, fmt.Errorf("invitee invitations: %w", err)
+	}
 	defer rows.Close()
-	var out []*LinkHost
 	for rows.Next() {
 		h, err := scanLinkHostRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invitee invitations: %w", err)
 		}
 		out = append(out, h)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("invitee invitations: %w", err)
+	}
+	return out, nil
 }
 
-// RemoveLinkHost deletes userID's host row on linkID. removed is false when
-// no row matched (the user was never a host, or already left): PAC-30. A
-// deleted link's host rows are kept (PAC-40 D-2, AC-5): the DELETE matches
-// only on a link that is not deleted.
+// inviteeHolder is the invitee-side match's read of the caller (PAC-149
+// contract md §2.4, spec D-5): the caller's stored address, and whether the
+// caller is its single domain-confirmed holder (standing domain_confirmed and
+// no other account carrying the address ignoring letter case: PAC-71's
+// ConfirmedHolder rule, keyed on the caller's own row and never computed for
+// any other address). The InstallInviteeMatch seam runs first. Its error, or
+// a failed read, is returned: the caller answers 500 (spec D-10). A caller
+// with no row holds nothing.
+func inviteeHolder(q RowQuerier, userID uuid.UUID) (email string, holds bool, err error) {
+	if fn, ok := inviteeMatch.get(); ok {
+		if err := fn(userID); err != nil {
+			return "", false, fmt.Errorf("invitee match: %w", err)
+		}
+	}
+	err = q.QueryRowContext(context.Background(), `
+		SELECT u.email,
+		       u.address_standing = 'domain_confirmed'
+		       AND NOT EXISTS (SELECT 1 FROM users v WHERE lower(v.email) = lower(u.email) AND v.id <> u.id)
+		FROM users u WHERE u.id = $1`, userID).Scan(&email, &holds)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("invitee match: %w", err)
+	}
+	return email, holds, nil
+}
+
+// RemoveLinkHost is leave (PAC-149 contract md §2.4): after the invitee-side
+// match of the caller (a failure is the error, spec D-10), the caller's own
+// entry on linkID is removed together with a pending invitation of the
+// caller's address on the link (a state no product path creates); else a
+// pending invitation the caller holds as its address's single
+// domain-confirmed holder is removed (never for the link's owner); else
+// removed is false (PAC-30). Nothing matches on a deleted link (PAC-40 D-2,
+// AC-5). It takes no lock: request paths use RemoveLinkHostCtx, and the
+// owner's 400 is the handler's.
 func RemoveLinkHost(db Querier, linkID, userID uuid.UUID) (removed bool, err error) {
-	res, err := db.ExecContext(context.Background(), `
+	email, holds, err := inviteeHolder(db, userID)
+	if err != nil {
+		return false, err
+	}
+	n, err := execRows(db, `
 		DELETE FROM scheduling_link_hosts
 		WHERE link_id = $1 AND user_id = $2
 		  AND EXISTS (SELECT 1 FROM scheduling_links l WHERE l.id = $1 AND l.deleted_at IS NULL)`,
@@ -429,19 +505,42 @@ func RemoveLinkHost(db Querier, linkID, userID uuid.UUID) (removed bool, err err
 	if err != nil {
 		return false, err
 	}
-	n, err := res.RowsAffected()
+	if n > 0 {
+		return true, deleteStrayInvitation(db, linkID, email)
+	}
+	if !holds {
+		return false, nil
+	}
+	n, err = execRows(db, `
+		DELETE FROM scheduling_link_hosts
+		WHERE link_id = $1 AND user_id IS NULL AND lower(invitee_email) = lower($3)
+		  AND EXISTS (SELECT 1 FROM scheduling_links l WHERE l.id = $1 AND l.deleted_at IS NULL AND l.owner_user_id <> $2)`,
+		linkID, userID, email)
+	return n > 0, err
+}
+
+// RespondToHostInvite answers an invitation on linkID with status
+// (PAC-149 contract md §2.4). After the invitee-side match of the caller (a
+// failure is the error, spec D-10):
+//   - the caller's own entry (the owner's row, an accepted or declined row) is
+//     updated exactly as before, and a pending invitation of the caller's
+//     address on the link is removed in the same write (cases 1 and 1');
+//   - else, when the caller is the single domain-confirmed holder of its
+//     address, does not own the link (an owner with no owner row is never
+//     matched to an invitation, case 1, challenge B-2) and the link has a
+//     pending invitation equal to it under lower(), that row becomes the
+//     caller's entry with the answer, keeping its id, invitation time and
+//     position (case 2);
+//   - else matched is false and nothing is written (case 3, PAC-30).
+//
+// Nothing matches on a deleted link (PAC-40 AC-5). It takes no lock: request
+// paths use RespondToHostInviteCtx.
+func RespondToHostInvite(db Querier, linkID, userID uuid.UUID, status string) (matched bool, err error) {
+	email, holds, err := inviteeHolder(db, userID)
 	if err != nil {
 		return false, err
 	}
-	return n > 0, nil
-}
-
-// RespondToHostInvite sets userID's host row on linkID to status. matched is
-// false when the user has no host row on that link (or no such link exists,
-// or the link is deleted, PAC-40 AC-5); nothing is written in that case:
-// PAC-30.
-func RespondToHostInvite(db Querier, linkID, userID uuid.UUID, status string) (matched bool, err error) {
-	res, err := db.Exec(`
+	n, err := execRows(db, `
 		UPDATE scheduling_link_hosts
 		SET status = $3, responded_at = NOW()
 		WHERE link_id = $1 AND user_id = $2
@@ -450,34 +549,54 @@ func RespondToHostInvite(db Querier, linkID, userID uuid.UUID, status string) (m
 	if err != nil {
 		return false, err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
+	if n > 0 {
+		return true, deleteStrayInvitation(db, linkID, email)
 	}
-	return n > 0, nil
+	if !holds {
+		return false, nil
+	}
+	n, err = execRows(db, `
+		UPDATE scheduling_link_hosts
+		SET user_id = $2, invitee_email = NULL, status = $3, responded_at = NOW()
+		WHERE link_id = $1 AND user_id IS NULL AND lower(invitee_email) = lower($4)
+		  AND EXISTS (SELECT 1 FROM scheduling_links l WHERE l.id = $1 AND l.deleted_at IS NULL AND l.owner_user_id <> $2)`,
+		linkID, userID, status, email)
+	return n > 0, err
 }
 
+// execRows runs one statement and returns the rows it affected.
+func execRows(db Querier, query string, args ...any) (int64, error) {
+	res, err := db.ExecContext(context.Background(), query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// scanLinkHost scans one linkHostColumns row; nil, nil for none.
 func scanLinkHost(row *sql.Row) (*LinkHost, error) {
-	var h LinkHost
-	var respondedAt sql.NullTime
-	err := row.Scan(&h.ID, &h.LinkID, &h.UserID, &h.Status, &h.InvitedAt, &respondedAt)
+	h, err := scanLinkHostFrom(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	if respondedAt.Valid {
-		h.RespondedAt = &respondedAt.Time
-	}
-	return &h, err
+	return h, err
 }
 
-func scanLinkHostRow(rows *sql.Rows) (*LinkHost, error) {
+func scanLinkHostRow(rows *sql.Rows) (*LinkHost, error) { return scanLinkHostFrom(rows) }
+
+func scanLinkHostFrom(row rowScanner) (*LinkHost, error) {
 	var h LinkHost
+	var userID uuid.NullUUID
+	var invitee sql.NullString
 	var respondedAt sql.NullTime
-	err := rows.Scan(&h.ID, &h.LinkID, &h.UserID, &h.Status, &h.InvitedAt, &respondedAt)
+	if err := row.Scan(&h.ID, &h.LinkID, &userID, &invitee, &h.Status, &h.InvitedAt, &respondedAt); err != nil {
+		return nil, err
+	}
+	h.UserID, h.InviteeEmail = userID.UUID, invitee.String
 	if respondedAt.Valid {
 		h.RespondedAt = &respondedAt.Time
 	}
-	return &h, err
+	return &h, nil
 }
 
 // --- Booking CRUD ----------------------------------------------------------
@@ -820,22 +939,154 @@ func isUniqueViolationOn(err error, constraint string) bool {
 }
 
 // ErrCoHostLimitReached is the single invitation refused because the link
-// already has CoHostListLimit or more co-hosts (non-owner host rows, any
-// status), decided under the link lock inside the write (PAC-120 contract md
-// §2, §3 step 5). Nothing was written; the caller answers 422.
+// already has CoHostListLimit or more co-hosts (non-owner entries and pending
+// invitations, any status), decided under the link lock inside the write
+// (PAC-120 contract md §2, §3 step 5; PAC-149 contract md §2.1 step 5.4).
+// Nothing was written; the caller answers 422, the same for every new address.
 var ErrCoHostLimitReached = errors.New("scheduling link has reached its co-host limit")
 
-// inviteLinkHostLocked is the single invitation behind the link lock (PAC-120
-// contract md §3). The link is locked FOR NO KEY UPDATE, the mode of the
-// PATCH and the delete, so invitations are ordered against each other and
-// against list saves (md §4.1), and the owner is read under that lock. Then:
-// an existing row is returned unchanged (PAC-61); the owner's own address is
-// today's InviteLinkHost, never counted; CoHostListLimit or more non-owner
-// rows is ErrCoHostLimitReached; otherwise the pending row is inserted. Link
-// gone is decided by the lock step only, never by the insert's zero rows.
-// Every writer that can add a host row to an existing link takes this lock
-// in a conflicting mode first, so the count is exact (md §3).
-func inviteLinkHostLocked(ctx context.Context, q Querier, linkID, userID uuid.UUID) (*LinkHost, bool, error) {
+// ErrCoHostAddressMalformed is the single invitation of an address that is
+// neither the owner's nor a current entry's and is not well-formed
+// (PAC-149 contract md §2.1 step 5.3). Nothing was written; the caller answers
+// 400.
+var ErrCoHostAddressMalformed = errors.New("co-host address is not a valid email address")
+
+// WellFormedCoHostAddress reports whether trimmed, an address already trimmed
+// of ECMA-262 \s, is well-formed (PAC-149 contract md §2.3, spec D-15): its
+// lowercase form is accepted by net/mail.ParseAddress and the parsed address
+// equals it. It is the predicate of the team invitation's normaliser
+// (api normalizeManagerEmail), applied to the co-host paths' trim.
+func WellFormedCoHostAddress(trimmed string) bool {
+	lowered := strings.ToLower(trimmed)
+	if lowered == "" {
+		return false
+	}
+	parsed, err := mail.ParseAddress(lowered)
+	return err == nil && parsed.Address == lowered
+}
+
+// linkEntry is one row of a link's host table as read under the link's lock
+// (PAC-149 contract md §2.1, §2.2): an entry bound to an account, or a
+// pending invitation (userID uuid.Nil). address is the account's stored
+// address for an entry and the recorded address for an invitation; key is
+// its lower() by the database.
+type linkEntry struct {
+	id        uuid.UUID
+	userID    uuid.UUID
+	status    string
+	address   string
+	key       string
+	name      string
+	avatarURL string
+}
+
+// readLinkEntries reads every row of linkID's host table in the roster order,
+// on the write's transaction: the link's rows joined to users by user_id only
+// (never by an address, PAC-149 contract md §2.6). An entry whose account row
+// is missing is ErrHostUserMissing.
+func readLinkEntries(q Querier, linkID uuid.UUID) ([]linkEntry, error) {
+	rows, err := q.QueryContext(context.Background(), `
+		SELECT h.id, h.user_id, h.status, COALESCE(u.email, h.invitee_email),
+		       lower(COALESCE(u.email, h.invitee_email)), COALESCE(u.name, ''), COALESCE(u.avatar_url, '')
+		FROM scheduling_link_hosts h LEFT JOIN users u ON u.id = h.user_id
+		WHERE h.link_id = $1
+		`+linkHostOrderBy, linkID)
+	if err != nil {
+		return nil, fmt.Errorf("co-host entries: %w", err)
+	}
+	defer rows.Close()
+	out := make([]linkEntry, 0)
+	for rows.Next() {
+		var e linkEntry
+		var userID uuid.NullUUID
+		var address, key sql.NullString
+		if err := rows.Scan(&e.id, &userID, &e.status, &address, &key, &e.name, &e.avatarURL); err != nil {
+			return nil, fmt.Errorf("co-host entries: %w", err)
+		}
+		if !address.Valid {
+			return nil, ErrHostUserMissing
+		}
+		e.userID, e.address, e.key = userID.UUID, address.String, key.String
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("co-host entries: %w", err)
+	}
+	return out, nil
+}
+
+// linkOwnerAddress is the owner's stored address, its lower() by the
+// database, name and picture.
+type linkOwnerAddress struct {
+	email, key, name, avatarURL string
+}
+
+// readLinkOwnerAddress reads the owner's address by the owner's account id
+// (PAC-149 contract md §2.1 step 5.1, §2.6), never by an address.
+func readLinkOwnerAddress(q Querier, ownerID uuid.UUID) (linkOwnerAddress, error) {
+	var o linkOwnerAddress
+	err := q.QueryRowContext(context.Background(),
+		`SELECT email, lower(email), name, avatar_url FROM users WHERE id = $1`, ownerID).
+		Scan(&o.email, &o.key, &o.name, &o.avatarURL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return o, ErrHostUserMissing
+	}
+	if err != nil {
+		return o, fmt.Errorf("co-host owner address: %w", err)
+	}
+	return o, nil
+}
+
+// rosterHost is e as the link reads show it (PAC-149 contract md §2.5).
+func (e linkEntry) rosterHost() *LinkRosterHost {
+	return &LinkRosterHost{UserID: e.userID, Status: e.status, Email: e.address, Name: e.name, AvatarURL: e.avatarURL}
+}
+
+// nonOwnerEntries counts the rows of entries that are not the owner's: the
+// co-hosts the PAC-120 limit counts, pending invitations included.
+func nonOwnerEntries(entries []linkEntry, ownerID uuid.UUID) int {
+	n := 0
+	for _, e := range entries {
+		if e.userID != ownerID {
+			n++
+		}
+	}
+	return n
+}
+
+// insertLinkInvitation records one pending invitation to address (trimmed,
+// letter case kept) at request position pos on the write's transaction. The
+// coHostWrite seam runs first. The address was compared with every entry read
+// under the link's lock, so a conflict on the (link, lower(address)) index
+// means that read was wrong, and fails the write rather than misreport it.
+func insertLinkInvitation(q Querier, linkID uuid.UUID, address string, pos int) error {
+	if fn, ok := coHostWrite.get(); ok {
+		if err := fn(linkID, address); err != nil {
+			return fmt.Errorf("co-host invite: %w", err)
+		}
+	}
+	if _, err := q.ExecContext(context.Background(), `
+		INSERT INTO scheduling_link_hosts (link_id, invitee_email, status, invite_position)
+		VALUES ($1, $2, 'pending', $3)`, linkID, address, pos); err != nil {
+		return fmt.Errorf("co-host invite: %w", err)
+	}
+	return nil
+}
+
+// inviteLinkAddressLocked is the single invitation behind the link lock
+// (PAC-149 contract md §2.1 step 5; PAC-120 contract md §3 for the lock). The
+// link is locked FOR NO KEY UPDATE, the mode of the PATCH and the delete, so
+// invitations are ordered against each other, against list saves and against
+// the delete. Then, against the entries read under that lock and with every
+// comparison under the database's lower(): the owner's stored address is the
+// owner's entry (synthesized when the link has no owner row), nothing
+// written; a current entry's address is that entry, status kept (PAC-61),
+// nothing written; a malformed address is ErrCoHostAddressMalformed; a link
+// with CoHostListLimit or more co-hosts is ErrCoHostLimitReached; otherwise a
+// pending invitation is recorded and created is true. No account is read by
+// the address: the work for two new addresses is the same statements
+// (contract md §2.6). Link gone is decided by the lock step only.
+func inviteLinkAddressLocked(ctx context.Context, q Querier, linkID uuid.UUID, address string) (*LinkRosterHost, bool, error) {
 	var owner uuid.UUID
 	err := q.QueryRowContext(context.Background(),
 		`SELECT owner_user_id FROM scheduling_links WHERE id = $1 AND deleted_at IS NULL FOR NO KEY UPDATE`,
@@ -851,33 +1102,66 @@ func inviteLinkHostLocked(ctx context.Context, q Querier, linkID, userID uuid.UU
 			return nil, false, err
 		}
 	}
-	existing, err := scanLinkHost(q.QueryRowContext(context.Background(), `
-		SELECT id, link_id, user_id, status, invited_at, responded_at
-		FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
-	`, linkID, userID))
+	entries, err := readLinkEntries(q, linkID)
 	if err != nil {
 		return nil, false, err
 	}
-	if existing != nil {
-		return existing, false, nil
-	}
-	if userID == owner {
-		return InviteLinkHost(q, linkID, userID)
-	}
-	var coHosts int
-	if err := q.QueryRowContext(context.Background(),
-		`SELECT count(*) FROM scheduling_link_hosts WHERE link_id = $1 AND user_id <> $2`,
-		linkID, owner).Scan(&coHosts); err != nil {
+	o, err := readLinkOwnerAddress(q, owner)
+	if err != nil {
 		return nil, false, err
 	}
-	if coHosts >= CoHostListLimit {
+	keys, err := lowerAll(q, []string{address})
+	if err != nil {
+		return nil, false, fmt.Errorf("co-host address: %w", err)
+	}
+	key := keys[0]
+	if key == o.key {
+		for _, e := range entries {
+			if e.userID == owner {
+				return e.rosterHost(), false, nil
+			}
+		}
+		// A link created before PAC-112 has no owner row: the owner's entry
+		// is synthesized from the account, and nothing is written (contract
+		// md §2.1 step 5.1, D-c).
+		return &LinkRosterHost{UserID: owner, Status: "accepted", Email: o.email, Name: o.name, AvatarURL: o.avatarURL}, false, nil
+	}
+	for _, e := range entries {
+		if e.key == key {
+			return e.rosterHost(), false, nil
+		}
+	}
+	if !WellFormedCoHostAddress(address) {
+		return nil, false, ErrCoHostAddressMalformed
+	}
+	if nonOwnerEntries(entries, owner) >= CoHostListLimit {
 		return nil, false, ErrCoHostLimitReached
 	}
-	return InviteLinkHost(q, linkID, userID)
+	if err := insertLinkInvitation(q, linkID, address, 0); err != nil {
+		return nil, false, err
+	}
+	return &LinkRosterHost{Status: "pending", Email: address}, true, nil
 }
 
-// respondToHostInviteLocked is RespondToHostInvite behind the link lock; a
-// gone link is matched = false, the PAC-30 404 by design.
+// deleteStrayInvitation removes a pending invitation on linkID equal, under
+// lower(), to email: the defensive half of the invitee-side writes for a
+// state no product path creates (PAC-149 contract md §2.4, spec AC-19). An
+// empty email (a caller with no row) removes nothing.
+func deleteStrayInvitation(q Querier, linkID uuid.UUID, email string) error {
+	if email == "" {
+		return nil
+	}
+	if _, err := q.ExecContext(context.Background(), `
+		DELETE FROM scheduling_link_hosts
+		WHERE link_id = $1 AND user_id IS NULL AND lower(invitee_email) = lower($2)`, linkID, email); err != nil {
+		return fmt.Errorf("stray invitation: %w", err)
+	}
+	return nil
+}
+
+// respondToHostInviteLocked is RespondToHostInvite behind the link's FOR
+// SHARE lock (PAC-101): a gone link is matched = false, the PAC-30 404 by
+// design.
 func respondToHostInviteLocked(q Querier, linkID, userID uuid.UUID, status string) (bool, error) {
 	if err := lockLiveLinkForShare(q, linkID); errors.Is(err, ErrLinkGone) {
 		return false, nil
@@ -1216,11 +1500,16 @@ type CoHostOutcome struct {
 	Outcome string `json:"outcome"`
 }
 
-// RemovedCoHost is a non-owner host a save removed, with the status it had.
+// RemovedCoHost is a non-owner entry or pending invitation a save removed,
+// with the status it had. UserID is set exactly for an accepted entry
+// (PAC-149 contract md §2.5): a pending invitation has no account, and a
+// declined entry is shown by address and status only. A keyed create stored
+// before PAC-149 may replay a UserID on any item; that is a replay of an
+// answer already given (spec §3.8).
 type RemovedCoHost struct {
-	UserID uuid.UUID `json:"user_id"`
-	Email  string    `json:"email"`
-	Status string    `json:"status"`
+	UserID *uuid.UUID `json:"user_id,omitempty"`
+	Email  string     `json:"email"`
+	Status string     `json:"status"`
 }
 
 // CoHostChanges is what one save did to a link's co-hosts (contract md §2.1).
@@ -1232,39 +1521,11 @@ type CoHostChanges struct {
 	NotAddedCount int             `json:"not_added_count"`
 }
 
-// linkHostEntry is one row of a link's host set as read inside a write.
-type linkHostEntry struct {
-	status string
-	email  string
-}
-
-// readLinkHostSet reads every host row of linkID with its account's stored
-// address, on the write's transaction (contract md §2.2's H).
-func readLinkHostSet(q Querier, linkID uuid.UUID) (map[uuid.UUID]linkHostEntry, error) {
-	rows, err := q.QueryContext(context.Background(), `
-		SELECT h.user_id, h.status, u.email
-		FROM scheduling_link_hosts h JOIN users u ON u.id = h.user_id
-		WHERE h.link_id = $1`, linkID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[uuid.UUID]linkHostEntry{}
-	for rows.Next() {
-		var id uuid.UUID
-		var e linkHostEntry
-		if err := rows.Scan(&id, &e.status, &e.email); err != nil {
-			return nil, err
-		}
-		out[id] = e
-	}
-	return out, rows.Err()
-}
-
-// lowerAll returns PostgreSQL's lower() of each value, in order: the same
-// lowercasing the carriers lookup applies, so two entries share one lookup
-// only when the database would resolve them identically (contract md §3.3
-// rule 1; a Go-side ToLower is not that comparison for non-ASCII text).
+// lowerAll returns PostgreSQL's lower() of each value, in order: the
+// lowercasing every co-host comparison uses (PAC-149 contract md §2.3), so two
+// addresses are equal only when the database would compare them equal (a
+// Go-side ToLower is not that comparison for non-ASCII text). It reads no
+// table.
 func lowerAll(q Querier, values []string) ([]string, error) {
 	if len(values) == 0 {
 		return []string{}, nil
@@ -1292,26 +1553,30 @@ func lowerAll(q Querier, values []string) ([]string, error) {
 	return out, nil
 }
 
-// coHostLookupResult is one distinct address's lookup and outcome.
-type coHostLookupResult struct {
-	carriers []Carrier
-	outcome  string
-	holder   uuid.UUID // the invitee when outcome is invited
-}
-
 // setCoHostList writes entries as linkID's complete co-host list on q (the
 // create's or the PATCH's transaction, after the link's lock) and reports
-// what it did (PAC-112 contract md §2, §3.2, §3.3). It reads the host set H
-// first; each distinct address (identical after the ECMA trim and lower())
-// is looked up once, in request order, and a list longer than
-// CoHostListLimit is refused with ErrCoHostListTooLong at the first address
-// that reaches no current host, before any further lookup and before any
-// write. Then every non-owner host not carried by an entry (the PAC-71 keep
-// rule) is removed and every new domain-confirmed holder is invited
-// (pending; an existing host keeps its status, PAC-61). The owner's row is
-// never written. Any error leaves the caller to roll back.
+// what it did (PAC-149 contract md §2.2; PAC-112 contract md §2, §3.2, §3.3
+// for the shape). It reads the link's entries (joined to users by account id
+// only) and the owner's address (by the owner's id), and has the database
+// lower() the trimmed entries; no account is read by an address. Each
+// distinct entry (identical after the ECMA trim and lower()), in request
+// order, is own_address (the owner's stored address), already_host (a
+// current non-owner entry's address; it keeps its status), invited (a
+// well-formed address: one pending invitation at request position 1 + the
+// index of its first entry) or not_added (not well-formed). A list longer
+// than CoHostListLimit is refused with ErrCoHostListTooLong at the first
+// entry that is neither the owner's address nor a current entry's, before
+// any write. Then every non-owner entry whose address equals no listed entry
+// is removed (the PAC-71 AC-43 keep rule: for an entry, "an account carrying
+// the address" is "the entry's address equals it ignoring case"), and the
+// invitations are recorded. The owner's row is never written. Any error leaves
+// the caller to roll back.
 func setCoHostList(q Querier, linkID, ownerID uuid.UUID, entries []string) (*CoHostChanges, error) {
-	hosts, err := readLinkHostSet(q, linkID)
+	current, err := readLinkEntries(q, linkID)
+	if err != nil {
+		return nil, fmt.Errorf("co-host host set: %w", err)
+	}
+	owner, err := readLinkOwnerAddress(q, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("co-host host set: %w", err)
 	}
@@ -1321,158 +1586,109 @@ func setCoHostList(q Querier, linkID, ownerID uuid.UUID, entries []string) (*CoH
 	}
 	keys, err := lowerAll(q, trimmed)
 	if err != nil {
-		return nil, fmt.Errorf("co-host lookup: %w", err)
+		return nil, fmt.Errorf("co-host addresses: %w", err)
+	}
+	hostKeys := make(map[string]bool, len(current))
+	for _, e := range current {
+		if e.userID != ownerID {
+			hostKeys[e.key] = true
+		}
 	}
 	limited := len(entries) > CoHostListLimit
-	results := make(map[string]*coHostLookupResult, len(keys))
-	order := make([]string, 0, len(keys))
+	outcomes := make(map[string]string, len(keys))
+	type invitation struct {
+		address string
+		pos     int
+	}
+	invitations := make([]invitation, 0, len(keys))
 	for i, key := range keys {
-		if _, seen := results[key]; seen {
+		if _, seen := outcomes[key]; seen {
 			continue
 		}
-		r, err := lookupCoHost(q, trimmed[i], ownerID, hosts)
-		if err != nil {
-			return nil, err
+		var outcome string
+		switch {
+		case key == owner.key:
+			outcome = CoHostOwnAddress
+		case hostKeys[key]:
+			outcome = CoHostAlreadyHost
+		case WellFormedCoHostAddress(trimmed[i]):
+			outcome = CoHostInvited
+		default:
+			outcome = CoHostNotAdded
 		}
-		if limited && !r.reaches {
+		if limited && outcome != CoHostOwnAddress && outcome != CoHostAlreadyHost {
 			return nil, ErrCoHostListTooLong
 		}
-		results[key] = &r.coHostLookupResult
-		order = append(order, key)
+		outcomes[key] = outcome
+		if outcome == CoHostInvited {
+			invitations = append(invitations, invitation{address: trimmed[i], pos: i + 1})
+		}
 	}
 
 	changes := &CoHostChanges{Addresses: make([]CoHostOutcome, 0, len(entries)), Removed: make([]RemovedCoHost, 0)}
-	// Keep set: every account carrying a listed address (PAC-71 AC-43).
-	keep := make([]string, 0, len(order))
-	for _, key := range order {
-		for _, c := range results[key].carriers {
-			keep = append(keep, c.ID.String())
-		}
-	}
-	if changes.Removed, err = removeCoHostsExcept(q, linkID, ownerID, keep, hosts); err != nil {
+	if changes.Removed, err = removeUnlistedCoHosts(q, linkID, ownerID, current, outcomes); err != nil {
 		return nil, err
 	}
-
-	invited := map[uuid.UUID]bool{}
-	for _, key := range order {
-		r := results[key]
-		if r.outcome != CoHostInvited || invited[r.holder] {
-			continue
-		}
-		if err := coHostInvite(q, linkID, r.holder); err != nil {
+	for _, inv := range invitations {
+		if err := insertLinkInvitation(q, linkID, inv.address, inv.pos); err != nil {
 			return nil, err
 		}
-		invited[r.holder] = true
 	}
-
 	notAdded := map[string]bool{}
 	for i, key := range keys {
-		r := results[key]
-		changes.Addresses = append(changes.Addresses, CoHostOutcome{Email: trimmed[i], Outcome: r.outcome})
-		if r.outcome == CoHostNotAdded {
+		changes.Addresses = append(changes.Addresses, CoHostOutcome{Email: trimmed[i], Outcome: outcomes[key]})
+		if outcomes[key] == CoHostNotAdded {
 			notAdded[key] = true
 		}
 	}
-	changes.InvitedCount = len(invited)
+	changes.InvitedCount = len(invitations)
 	changes.RemovedCount = len(changes.Removed)
 	changes.NotAddedCount = len(notAdded)
 	return changes, nil
 }
 
-// coHostLookupReach is a lookupCoHost result: the outcome, and whether some
-// carrier of the address is a current host (the owner included).
-type coHostLookupReach struct {
-	coHostLookupResult
-	reaches bool
-}
-
-// lookupCoHost is one lookup of the co-host list (one read of an address's
-// carriers, contract md §3.3) and the outcome it gives, in the binding order
-// of contract md §2.2. hosts is H, read under the link's lock.
-func lookupCoHost(q Querier, address string, ownerID uuid.UUID, hosts map[uuid.UUID]linkHostEntry) (coHostLookupReach, error) {
-	out := coHostLookupReach{coHostLookupResult: coHostLookupResult{outcome: CoHostNotAdded}}
-	if address == "" {
-		return out, nil
-	}
-	if err := fireSeamErr(&coHostLookup, address); err != nil {
-		return out, fmt.Errorf("co-host lookup: %w", err)
-	}
-	carriers, err := carriersOfTrimmed(q, address)
-	if err != nil {
-		return out, fmt.Errorf("co-host lookup: %w", err)
-	}
-	out.carriers = carriers
-	nonOwnerHost := false
-	for _, c := range carriers {
-		_, isHost := hosts[c.ID]
-		if isHost || c.ID == ownerID {
-			out.reaches = true
-			if c.ID != ownerID {
-				nonOwnerHost = true
-			}
-		}
-	}
-	confirmed := len(carriers) == 1 && carriers[0].Standing == AddressDomainConfirmed
-	switch {
-	case confirmed && carriers[0].ID == ownerID:
-		out.outcome = CoHostOwnAddress
-	case nonOwnerHost:
-		out.outcome = CoHostAlreadyHost
-	case confirmed:
-		out.outcome, out.holder = CoHostInvited, carriers[0].ID
-	}
-	return out, nil
-}
-
-// removeCoHostsExcept deletes every non-owner host of linkID whose account is
-// not in keep and returns them with the status they had and the address read
-// in H. A removed host without an address in H fails the save: the answer's
-// removed list is never degraded (contract md §2.1).
-func removeCoHostsExcept(q Querier, linkID, ownerID uuid.UUID, keep []string, hosts map[uuid.UUID]linkHostEntry) ([]RemovedCoHost, error) {
-	rows, err := q.QueryContext(context.Background(), `
-		DELETE FROM scheduling_link_hosts
-		WHERE link_id = $1 AND user_id <> $2 AND NOT (user_id::text = ANY($3::text[]))
-		RETURNING user_id, status`, linkID, ownerID, pq.Array(keep))
-	if err != nil {
-		return nil, fmt.Errorf("co-host removal: %w", err)
-	}
-	defer rows.Close()
+// removeUnlistedCoHosts deletes every non-owner row of linkID (entry or
+// pending invitation) whose address, under lower(), is no key of listed, and
+// returns them in the roster order with the address read under the lock and
+// the status they had; user_id only for an accepted entry (PAC-149 contract md
+// §2.5). The rows are deleted by id, in one statement that reads no account.
+// A row the read saw that the delete does not find fails the save: the
+// answer's removed list is never degraded.
+func removeUnlistedCoHosts(q Querier, linkID, ownerID uuid.UUID, current []linkEntry, listed map[string]string) ([]RemovedCoHost, error) {
 	removed := make([]RemovedCoHost, 0)
-	for rows.Next() {
-		var rh RemovedCoHost
-		if err := rows.Scan(&rh.UserID, &rh.Status); err != nil {
-			return nil, fmt.Errorf("co-host removal: %w", err)
+	ids := make([]string, 0)
+	for _, e := range current {
+		if e.userID == ownerID {
+			continue
 		}
-		h, ok := hosts[rh.UserID]
-		if !ok {
-			return nil, fmt.Errorf("co-host removal: no address read for %s", rh.UserID)
+		if _, keep := listed[e.key]; keep {
+			continue
 		}
-		rh.Email = h.email
+		rh := RemovedCoHost{Email: e.address, Status: e.status}
+		if e.status == "accepted" && e.userID != uuid.Nil {
+			id := e.userID
+			rh.UserID = &id
+		}
 		removed = append(removed, rh)
+		ids = append(ids, e.id.String())
 	}
-	if err := rows.Err(); err != nil {
+	if len(ids) == 0 {
+		return removed, nil
+	}
+	res, err := q.ExecContext(context.Background(), `
+		DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND id::text = ANY($2::text[])`,
+		linkID, pq.Array(ids))
+	if err != nil {
 		return nil, fmt.Errorf("co-host removal: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("co-host removal: %w", err)
+	}
+	if int(n) != len(ids) {
+		return nil, fmt.Errorf("co-host removal: %d rows read, %d deleted", len(ids), n)
 	}
 	return removed, nil
-}
-
-// coHostInvite writes one new pending co-host row. The invitee was not in the
-// host set read under the link's lock, so the row must be new; a conflict
-// means that read was wrong and fails the save rather than misreport it.
-func coHostInvite(q Querier, linkID, userID uuid.UUID) error {
-	if fn, ok := coHostWrite.get(); ok {
-		if err := fn(linkID, userID); err != nil {
-			return fmt.Errorf("co-host invite: %w", err)
-		}
-	}
-	_, created, err := InviteLinkHost(q, linkID, userID)
-	if err != nil {
-		return fmt.Errorf("co-host invite: %w", err)
-	}
-	if !created {
-		return fmt.Errorf("co-host invite: %s became a host during the save", userID)
-	}
-	return nil
 }
 
 // createSchedulingLinkWithCoHosts is a create as one unit (PAC-112 contract
@@ -1542,7 +1758,9 @@ func createSchedulingLinkWithCoHosts(q Querier, l *SchedulingLink, coHostEmails 
 // --- PAC-132: the saved link's roster, read inside the write ----------------
 
 // LinkRosterHost is one host of a link with its user record: what the create
-// (201) and PATCH (200) answers show in `hosts` (PAC-132, SF-029).
+// (201) and PATCH (200) answers show in `hosts` (PAC-132, SF-029). A pending
+// invitation has UserID uuid.Nil, its recorded address as Email and no name or
+// picture (PAC-149 contract md §2.5).
 type LinkRosterHost struct {
 	UserID    uuid.UUID
 	Status    string
@@ -1555,7 +1773,7 @@ type LinkRosterHost struct {
 var ErrHostUserMissing = errors.New("host user record missing")
 
 // readLinkRoster reads linkID's host rows, in GetLinkHosts' order, and each
-// host's user record on q, strictly: a failed read, or a host with no user
+// entry's user record on q (a pending invitation has none), strictly: a failed read, or a host with no user
 // record, is an error and never a shorter roster or a blank email. The create
 // and PATCH transactions call it after their last write, so its error rolls
 // the whole write back and the 500 leaves nothing behind (PAC-132, SF-029).
@@ -1564,17 +1782,23 @@ func readLinkRoster(ctx context.Context, q Querier, linkID uuid.UUID) ([]*LinkRo
 		return nil, fmt.Errorf("link roster hosts: %w", err)
 	}
 	rows, err := q.QueryContext(ctx, `
-		SELECT user_id, status FROM scheduling_link_hosts WHERE link_id = $1 ORDER BY invited_at`, linkID)
+		SELECT h.user_id, h.invitee_email, h.status
+		FROM scheduling_link_hosts h LEFT JOIN users u ON u.id = h.user_id
+		WHERE h.link_id = $1
+		`+linkHostOrderBy, linkID)
 	if err != nil {
 		return nil, fmt.Errorf("link roster hosts: %w", err)
 	}
 	var roster []*LinkRosterHost
 	for rows.Next() {
 		var h LinkRosterHost
-		if err := rows.Scan(&h.UserID, &h.Status); err != nil {
+		var userID uuid.NullUUID
+		var invitee sql.NullString
+		if err := rows.Scan(&userID, &invitee, &h.Status); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("link roster hosts: %w", err)
 		}
+		h.UserID, h.Email = userID.UUID, invitee.String
 		roster = append(roster, &h)
 	}
 	// Closed before the user reads: the transaction's connection serves one
@@ -1586,6 +1810,10 @@ func readLinkRoster(ctx context.Context, q Querier, linkID uuid.UUID) ([]*LinkRo
 		return nil, fmt.Errorf("link roster hosts: %w", err)
 	}
 	for _, h := range roster {
+		if h.UserID == uuid.Nil {
+			// A pending invitation: shown by its recorded address only.
+			continue
+		}
 		if err := fireSeamErr2(&linkRosterUser, linkID, h.UserID); err != nil {
 			return nil, fmt.Errorf("link roster user: %w", err)
 		}
@@ -1854,17 +2082,18 @@ func ResolveLinkCreateKeyCtx(ctx context.Context, db DBTX, ownerID uuid.UUID, a 
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	q := recordingTx(db, tx) // PAC-149: the AC-6 statement recorder, when a test installed it
 	if g != nil {
-		if err := recheck(ctx, tx, g.UserID, g.Gen, g); err != nil {
+		if err := recheck(ctx, q, g.UserID, g.Gen, g); err != nil {
 			return nil, err
 		}
 	}
 	if a.Digest == nil {
-		if a.Digest, err = linkCreateDigest(tx, a.Link, a.CoHostEmails); err != nil {
+		if a.Digest, err = linkCreateDigest(q, a.Link, a.CoHostEmails); err != nil {
 			return nil, err
 		}
 	}
-	stored, err := readLinkCreateKey(ctx, tx, ownerID, a.Key)
+	stored, err := readLinkCreateKey(ctx, q, ownerID, a.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -1872,7 +2101,7 @@ func ResolveLinkCreateKeyCtx(ctx context.Context, db DBTX, ownerID uuid.UUID, a 
 		fn(ctx, a.Key)
 	}
 	if g != nil {
-		if err := recheck(ctx, tx, g.UserID, g.Gen, g); err != nil {
+		if err := recheck(ctx, q, g.UserID, g.Gen, g); err != nil {
 			return nil, err
 		}
 	}

@@ -180,6 +180,9 @@ func pac148Rows(t *testing.T, dsn, query string) []string {
 
 func pac148Migrate(t *testing.T, dsn string) error {
 	t.Helper()
+	// PAC-149: 044 exists now; these tests are about 043.
+	restore := SetMigrationCeilingForTest(43)
+	defer restore()
 	_, err := MigrateWhenStopped(context.Background(), dsn, MigrateOptions{Caller: "pac148 test"})
 	return err
 }

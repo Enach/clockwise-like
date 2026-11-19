@@ -137,7 +137,7 @@ func TestAddAndGetLinkHosts(t *testing.T) {
 	if _, err = AddLinkHost(db, link.ID, ownerID, "accepted"); err != nil {
 		t.Fatalf("AddLinkHost owner: %v", err)
 	}
-	if _, err = AddLinkHost(db, link.ID, coHostID, "pending"); err != nil {
+	if _, err = pac149AddPending(db, link.ID, coHostID); err != nil {
 		t.Fatalf("AddLinkHost cohost: %v", err)
 	}
 
@@ -306,7 +306,7 @@ func TestRespondAndRemoveLinkHostReportMatch(t *testing.T) {
 	if err != nil || link == nil {
 		t.Fatalf("CreateSchedulingLink: %v", err)
 	}
-	if _, err = AddLinkHost(db, link.ID, hostID, "pending"); err != nil {
+	if _, err = pac149AddPending(db, link.ID, hostID); err != nil {
 		t.Fatalf("AddLinkHost: %v", err)
 	}
 

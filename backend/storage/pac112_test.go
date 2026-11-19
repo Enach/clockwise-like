@@ -88,12 +88,22 @@ func TestPAC112_LowerAllIsTheDatabaseLower(t *testing.T) {
 // cleared when the test ends.
 func TestPAC112_SeamsNeverOutliveTheirTest(t *testing.T) {
 	t.Run("installs and leaves them", func(t *testing.T) {
-		InstallCoHostLookup(t, func(string) error { return nil })
-		InstallCoHostWrite(t, func(uuid.UUID, uuid.UUID) error { return nil })
+		// PAC-149: the co-host lookup seam is gone with the lookup; the
+		// carriers-read, invitee-match and statement seams replace it.
+		InstallCarriersRead(t, func(string) {})
+		InstallInviteeMatch(t, func(uuid.UUID) error { return nil })
+		InstallCoHostStatement(t, func(string, []any) {})
+		InstallCoHostWrite(t, func(uuid.UUID, string) error { return nil })
 		InstallCreateOwnerHost(t, func(uuid.UUID) error { return nil })
 	})
-	if _, ok := coHostLookup.get(); ok {
-		t.Error("lookup seam outlived its test")
+	if _, ok := carriersRead.get(); ok {
+		t.Error("carriers-read seam outlived its test")
+	}
+	if _, ok := inviteeMatch.get(); ok {
+		t.Error("invitee-match seam outlived its test")
+	}
+	if _, ok := coHostStatement.get(); ok {
+		t.Error("statement seam outlived its test")
 	}
 	if _, ok := coHostWrite.get(); ok {
 		t.Error("co-host write seam outlived its test")
@@ -143,7 +153,8 @@ func TestPAC112_CreateTransactionReports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []CoHostOutcome{{bAddr, CoHostInvited}, {bAddr, CoHostInvited}, {"nobody-" + bAddr, CoHostNotAdded}}
+	// PAC-149: an address no account carries is invited like any other.
+	want := []CoHostOutcome{{bAddr, CoHostInvited}, {bAddr, CoHostInvited}, {"nobody-" + bAddr, CoHostInvited}}
 	if len(changes.Addresses) != len(want) {
 		t.Fatalf("addresses = %+v", changes.Addresses)
 	}
@@ -152,11 +163,15 @@ func TestPAC112_CreateTransactionReports(t *testing.T) {
 			t.Errorf("addresses[%d] = %+v, want %+v", i, changes.Addresses[i], want[i])
 		}
 	}
-	if changes.InvitedCount != 1 || changes.NotAddedCount != 1 || changes.RemovedCount != 0 {
+	if changes.InvitedCount != 2 || changes.NotAddedCount != 0 || changes.RemovedCount != 0 {
 		t.Errorf("counts = %+v", changes)
 	}
-	if s, ok, err := GetLinkHostStatus(db, l.ID, b); err != nil || !ok || s != "pending" {
-		t.Errorf("B row: %q %v %v", s, ok, err)
+	if _, ok, err := GetLinkHostStatus(db, l.ID, b); err != nil || ok {
+		t.Errorf("B has an account-keyed row: %v %v", ok, err)
+	}
+	var invited int
+	if err := db.QueryRow(`SELECT count(*) FROM scheduling_link_hosts WHERE link_id = $1 AND user_id IS NULL AND status = 'pending'`, l.ID).Scan(&invited); err != nil || invited != 2 {
+		t.Errorf("invitations = %d %v, want 2", invited, err)
 	}
 
 	// Over the limit on create: H is the owner alone, so six new entries are

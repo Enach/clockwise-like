@@ -388,6 +388,119 @@ Release note for PAC-148:
   on authoritative evidence at its next sign-in (PAC-71 rule (b)). Expected,
   not a support incident.
 
+### PAC-149 release: co-host invitations go to an address (before deploy)
+
+PAC-149's migration `044_cohost_address_invitations` turns every pending
+co-host row (`scheduling_link_hosts`, `status = 'pending'`) into an invitation
+to the address its account carries, and drops some pending rows. Accepted and
+declined co-hosts are not touched. Spec `docs/specs/PAC-149.md` §3.5, §7;
+contract `contracts/features/PAC-149.md` §4.3-§4.6.
+
+1. **Release precondition.** The production database must read exactly
+   `43 | f` (the release carrying PAC-148's `043_org_membership_rule` is
+   deployed and settled first):
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec postgres \
+     psql -U clockwise -d clockwise -c 'SELECT version, dirty FROM schema_migrations'
+   ```
+
+2. **Pre-deploy count** (read only; record the seven counts in the release
+   record and report them to the owner). The categories and their precedence
+   are exactly the migration's; `TestPAC149_AC10_Migration044` runs this text,
+   verbatim, against the spec's fixture.
+
+   ```sql
+   WITH p AS (
+     SELECT h.id, h.link_id, h.invited_at, u.id AS uid, u.email, u.address_standing,
+            l.deleted_at, o.id AS owner_id, o.email AS owner_email
+       FROM scheduling_link_hosts h
+       JOIN users u ON u.id = h.user_id
+       JOIN scheduling_links l ON l.id = h.link_id
+       JOIN users o ON o.id = l.owner_user_id
+      WHERE h.status = 'pending'
+   ), c1 AS (
+     SELECT p.*,
+            CASE
+              WHEN p.deleted_at IS NOT NULL THEN 'dropped: on a deleted link'
+              WHEN p.email = 'freed+' || p.uid::text || '@paceday.invalid' THEN 'dropped: placeholder'
+              WHEN p.uid = p.owner_id THEN 'dropped: the owner''s own pending row'
+              WHEN lower(p.email) = lower(p.owner_email)
+                OR EXISTS (SELECT 1 FROM scheduling_link_hosts e JOIN users eu ON eu.id = e.user_id
+                            WHERE e.link_id = p.link_id AND e.status <> 'pending'
+                              AND lower(eu.email) = lower(p.email))
+                THEN 'dropped: clash with an entry or the owner'
+            END AS cat
+       FROM p
+   ), c2 AS (
+     SELECT c1.*,
+            row_number() OVER (PARTITION BY c1.link_id, lower(c1.email)
+                               ORDER BY c1.invited_at, c1.email COLLATE "C", c1.id) AS rn
+       FROM c1 WHERE c1.cat IS NULL
+   )
+   SELECT cat AS category, count(*) AS n FROM (
+     SELECT cat FROM c1 WHERE cat IS NOT NULL
+     UNION ALL
+     SELECT CASE
+              WHEN rn > 1 THEN 'dropped: clash with another pending row'
+              WHEN address_standing = 'domain_confirmed'
+               AND NOT EXISTS (SELECT 1 FROM users v
+                                WHERE lower(v.email) = lower(c2.email) AND v.id <> c2.uid)
+                THEN 'converted: with a holder'
+              ELSE 'converted: without a holder'
+            END
+       FROM c2
+   ) x GROUP BY cat ORDER BY cat;
+   ```
+
+   - `converted: with a holder`: the invitee still sees and can answer it.
+   - `converted: without a holder`: no longer visible to its invitee until
+     that account becomes the address's verified holder (an unbound legacy
+     account binds on authoritative evidence; a letter-case pair never does).
+     The owner still sees it pending and can remove it.
+   - `dropped: …`: gone at deploy (on a deleted link, a freed placeholder
+     address, the owner's own pending row on a link created without an owner
+     row, a clash with an entry or the owner, a clash with another pending
+     row of the same link). No step brings them back.
+3. **Snapshot** for rollback fidelity: `pg_dump -t scheduling_link_hosts`.
+4. Deploy as in [Applying migrations](#applying-migrations-stop-migrate-start)
+   (no backend serving while 044 runs). PostgreSQL's log carries `PAC-149
+   migration 044: converted N with a holder, M without; dropped …` (`RAISE
+   LOG`), the same seven counts as step 2.
+5. **Web pairing.** The web half (`smart-calendar-flow`, branch
+   `factory/pac-149`) deploys after this server. In between (minutes) the old
+   web still works: it never calls the single invite, reads the roster
+   loosely, and for a save whose report removes a pending or declined co-host
+   (no `user_id`) shows its documented fallback sentence ("Paceday couldn't
+   confirm which co-hosts were added") while the save itself succeeded. A
+   keyed link create stored before the deploy replays the outcomes it
+   recorded then, for at most 24 h.
+
+Release note for PAC-149:
+
+1. Co-host invitations are to an email address. Inviting someone no longer
+   tells the inviter whether they have a Paceday account; the invitee sees the
+   invitation once their account is the address's verified holder. Paceday
+   still sends no email: owners are told to let the invitee know.
+2. Run step 2 before deploying and record the seven counts. Invitations
+   "converted without a holder" are no longer visible to their invitee until
+   that account becomes the verified holder (an unbound legacy account binds
+   on authoritative evidence; a letter-case pair never does; the owner still
+   sees the invitation pending and can remove it).
+3. Dropped at deploy: pending invitations on deleted links, to freed
+   placeholder addresses, and those that clashed with an entry, the owner or
+   another pending invitation of the same link; and an owner's own pending row
+   on a link created without an owner row (the owner self-invited): that link
+   keeps no owner row, and its owner's accept or decline on it becomes the 404.
+4. New data: invitations to addresses without an account are stored (an
+   address typed by an owner). They end with the owner's removal, the
+   invitee's answer, or the link's deletion (which now erases them at once).
+5. Some unbound legacy accounts become bindable under PAC-71 rule (b) (a
+   stranger's pending invitation no longer counts) — expected.
+6. Declined co-hosts are shown by address and status only.
+7. The down step is lossy (see [Rollback](#rollback)); snapshot
+   `scheduling_link_hosts` first.
+
 ## Rollback
 
 - **The backend is not ready after a migration** (it exited, or never
@@ -468,6 +581,19 @@ Release note for PAC-148:
   alone again at the next sign-in (the oracle returns, expected on a
   rollback); accounts that do not sign in stay detached. **If 043 aborted** on
   its gate, follow [PAC-148 migration gate](#pac-148-migration-gate).
+
+- **Going back past PAC-149** (co-host address invitations, migration
+  `044_cohost_address_invitations`): fix forward, or restore the pre-deploy
+  backup and start the previous image. An image-only rollback does not work:
+  the previous image cannot start on a database at 044. The down step is for
+  development, tests and staging (stop the backend, `migrate ... down 1` only
+  while 044 is the newest applied migration, start the previous image). It
+  restores a pending row only for an invitation whose address has a single
+  domain-confirmed holder with no entry on the link; every other pending
+  invitation is lost. The up step dropped pending rows on deleted links, for
+  freed placeholder addresses, an owner's own pending row on a link with
+  no owner row (that link then has no owner row) and those that clashed; no
+  step brings them back. Snapshot first: `pg_dump -t scheduling_link_hosts`.
 
 ### Rollback on the same host
 

@@ -58,8 +58,10 @@ func TestPAC132_CreateRosterFailureIs500AndLeavesNothing(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				e := newPAC119Env(t)
 				owner := e.owner("p132-create")
-				b, bAddr := e.confirmed("p132-b")
-				fired := f.install(t, b)
+				_, bAddr := e.confirmed("p132-b")
+				// PAC-149: B's invitation has no user record to read; the
+				// owner's is the one that fails.
+				fired := f.install(t, owner)
 				reported, logs := captureServerErrors(t)
 				body := map[string]any{"title": "PAC-132 create", "co_host_emails": []string{bAddr}}
 				key := ""
@@ -79,7 +81,7 @@ func TestPAC132_CreateRosterFailureIs500AndLeavesNothing(t *testing.T) {
 				if n := e.linkCount(owner); n != 0 {
 					t.Errorf("%d links after the 500; want none", n)
 				}
-				if e.hostRowsOf(owner) != 0 || e.hostRowsOf(b) != 0 {
+				if e.hostRowsOf(owner) != 0 || pac149InvitationsTo(t, e.db, bAddr) != 0 {
 					t.Error("the 500 left host rows")
 				}
 				if n := e.keyRows(owner); n != 0 {
@@ -148,12 +150,12 @@ func TestPAC132_FieldsOnlyPatchRosterFailureChangesNothing(t *testing.T) {
 func TestPAC132_AnswersCarryTheWholeRoster(t *testing.T) {
 	e := newPAC112Env(t)
 	owner, ownerAddr := e.confirmed("p132-ok")
-	b, bAddr := e.confirmed("p132-ok-b")
-	c, cAddr := e.confirmed("p132-ok-c")
+	_, bAddr := e.confirmed("p132-ok-b")
+	_, cAddr := e.confirmed("p132-ok-c")
 	s := pac112Saved(t, e.create(owner, map[string]any{"co_host_emails": []string{bAddr}}), http.StatusCreated)
-	pac132SameRoster(t, "create", s.Hosts, map[uuid.UUID]string{owner: ownerAddr + "/accepted", b: bAddr + "/pending"})
+	pac132SameRoster(t, "create", s.Hosts, map[uuid.UUID]string{owner: ownerAddr + "/accepted", pac149AddrKey(bAddr): bAddr + "/pending"})
 	p := pac112Saved(t, e.patch(owner, s.Id, map[string]any{"co_host_emails": []string{cAddr}}), http.StatusOK)
-	pac132SameRoster(t, "patch", p.Hosts, map[uuid.UUID]string{owner: ownerAddr + "/accepted", c: cAddr + "/pending"})
+	pac132SameRoster(t, "patch", p.Hosts, map[uuid.UUID]string{owner: ownerAddr + "/accepted", pac149AddrKey(cAddr): cAddr + "/pending"})
 }
 
 func pac132SameRoster(t *testing.T, what string, hosts []gen.SchedulingLinkHost, want map[uuid.UUID]string) {
@@ -161,7 +163,9 @@ func pac132SameRoster(t *testing.T, what string, hosts []gen.SchedulingLinkHost,
 	got := map[uuid.UUID]string{}
 	for _, h := range hosts {
 		if h.UserId == nil {
-			t.Fatalf("%s: host %s has no user_id", what, h.Email)
+			// PAC-149: a pending invitation is shown by address only.
+			got[pac149AddrKey(h.Email)] = h.Email + "/" + string(h.Status)
+			continue
 		}
 		got[*h.UserId] = string(h.Email) + "/" + string(h.Status)
 	}

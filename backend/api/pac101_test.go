@@ -408,9 +408,11 @@ func TestPAC101_DeleteDuringAPatchWaitsForItsCoHosts(t *testing.T) {
 	if title != "patched" {
 		t.Errorf("title = %q, want the PATCH's", title)
 	}
+	// PAC-149 (contract md §2.7): the PATCH's invitation to C committed
+	// first, and the delete that waited erased it in its own write.
 	hosts := e.hostRows(link.ID)
-	if len(hosts) != 2 || hosts[owner] != "accepted" || hosts[c] != "pending" {
-		t.Errorf("host rows = %v; want owner accepted and C pending", hosts)
+	if len(hosts) != 1 || hosts[owner] != "accepted" || pac149InvitationsTo(t, e.db, mustEmail(t, e.db, c)) != 0 {
+		t.Errorf("host rows = %v; want the owner accepted alone, C's invitation erased by the delete", hosts)
 	}
 }
 
@@ -492,7 +494,7 @@ func TestPAC101_RespondAndLeaveWaitForAHeldDelete(t *testing.T) {
 	for _, c := range cases {
 		for _, commit := range []bool{true, false} {
 			link := createSchedulingLinkRecord(t, owner, "pac101-ac13-"+uuid.NewString()[:8], "PAC-101 AC-13")
-			if _, err := storage.AddLinkHost(e.db, link.ID, cohost, c.initial); err != nil {
+			if _, err := pac149AddHost(e.db, link.ID, cohost, c.initial); err != nil {
 				t.Fatal(err)
 			}
 			tx := e.holdDelete(link.ID)
@@ -501,8 +503,12 @@ func TestPAC101_RespondAndLeaveWaitForAHeldDelete(t *testing.T) {
 			if commit {
 				_ = tx.Commit()
 				pac101NotFound(t, <-got, c.name+" after the delete committed")
-				if s := e.hostRows(link.ID)[cohost]; s != c.initial {
-					t.Errorf("%s: host row %q, want unchanged %q", c.name, s, c.initial)
+				want := c.initial
+				if want == "pending" {
+					want = "" // PAC-149: the delete erased the invitation in its own write
+				}
+				if s := e.hostRows(link.ID)[cohost]; s != want {
+					t.Errorf("%s: host row %q, want %q", c.name, s, want)
 				}
 				continue
 			}
@@ -518,7 +524,9 @@ func TestPAC101_RespondAndLeaveWaitForAHeldDelete(t *testing.T) {
 	}
 }
 
-// AC-14 (API-072): the invite's two 404 bodies differ.
+// AC-14 (API-072), rewritten by PAC-149 (API-072 superseded, spec AC-1): the
+// invite's only 404 is the unknown or deleted link; an address nobody
+// carries is invited (201) like any other.
 func TestPAC101_InviteNotFoundBodiesDiffer(t *testing.T) {
 	e := newPAC101Env(t)
 	owner := e.user("pac101-ac14-owner@example.com")
@@ -531,8 +539,8 @@ func TestPAC101_InviteNotFoundBodiesDiffer(t *testing.T) {
 		pac101NotFound(t, w, "invite on an unknown or deleted link")
 	}
 	w := e.do(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", owner, `{"email":"nobody-pac101@example.com"}`)
-	if w.Code != http.StatusNotFound || strings.TrimSpace(w.Body.String()) != `{"error":"user not found"}` {
-		t.Fatalf("unknown invitee: %d %s; want 404 user not found", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated || strings.TrimSpace(w.Body.String()) != `{"email":"nobody-pac101@example.com","is_owner":false,"status":"pending"}` {
+		t.Fatalf("unknown invitee: %d %s; want 201 with the invitation", w.Code, w.Body.String())
 	}
 }
 
@@ -557,7 +565,7 @@ func TestPAC101_ConcurrentWritesOnOneLinkNeverDeadlock(t *testing.T) {
 	if _, err := storage.AddLinkHost(e.db, link.ID, b, "accepted"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.AddLinkHost(e.db, link.ID, c, "pending"); err != nil {
+	if _, err := pac149AddPending(e.db, link.ID, c); err != nil {
 		t.Fatal(err)
 	}
 	p := "/api/scheduling-links/" + link.ID.String()

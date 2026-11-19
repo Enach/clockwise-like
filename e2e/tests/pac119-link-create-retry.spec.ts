@@ -159,9 +159,10 @@ test.describe('PAC-119 link create is safe to retry', () => {
         [a.id],
       );
       expect(links).toEqual([{ id, title }]);
+      // PAC-149: B's pending invitation holds B's address, not B's account.
       const bRows = await db.query<{ link_id: string; status: string }>(
-        'SELECT link_id, status FROM scheduling_link_hosts WHERE user_id = $1',
-        [b.id],
+        'SELECT link_id, status FROM scheduling_link_hosts WHERE user_id IS NULL AND lower(invitee_email) = lower($1)',
+        [b.email],
       );
       expect(bRows).toEqual([{ link_id: id, status: 'pending' }]);
       const invites = await apiAs(b).get('/api/scheduling-links/host-invites');

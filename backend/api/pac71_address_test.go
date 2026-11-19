@@ -72,19 +72,38 @@ func TestPAC71_AC28_AC40_GrantingSitesResolveOnlyDomainConfirmedHolders(t *testi
 			asked := "Henry@" + strings.ToUpper(d) // AC-29: any letter case
 			resolves := standing == storage.AddressDomainConfirmed
 
-			t.Run("co-host on create", func(t *testing.T) {
-				hosts := linkHosts(t, newLink(t, links, owner, asked))
-				if _, ok := hosts[holder]; ok != resolves {
-					t.Fatalf("hosts = %v", hosts)
+			// PAC-149 (spec §2.4, AC-7, AC-8): the three co-host subtests are
+			// superseded. Every address gets a pending invitation that points
+			// at no account; the granting site is acceptance, so only the
+			// domain-confirmed holder sees (and can accept) the invitation.
+			invitedOnly := func(t *testing.T, link string) {
+				t.Helper()
+				if _, ok := linkHosts(t, link)[holder]; ok {
+					t.Fatalf("an inviter-side write made a row for the account: %v", linkHosts(t, link))
 				}
+				invites, err := storage.GetPendingInvitesForUser(openTestDB(t), holder)
+				if err != nil {
+					t.Fatal(err)
+				}
+				listed := false
+				for _, inv := range invites {
+					listed = listed || inv.LinkID.String() == link
+				}
+				if listed != resolves {
+					t.Fatalf("the account lists the invitation: %v, want %v", listed, resolves)
+				}
+			}
+			t.Run("co-host on create", func(t *testing.T) {
+				invitedOnly(t, newLink(t, links, owner, asked))
 			})
 			t.Run("co-host add", func(t *testing.T) {
 				link := newLink(t, links, owner)
 				rec := httptest.NewRecorder()
 				links.ServeHTTP(rec, withUser(httptest.NewRequest(http.MethodPost, "/api/scheduling-links/"+link+"/hosts", strings.NewReader(`{"email":"`+asked+`"}`)), owner))
-				if (rec.Code == http.StatusCreated) != resolves || (!resolves && (rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "user not found"))) {
+				if rec.Code != http.StatusCreated || strings.Contains(rec.Body.String(), "user_id") {
 					t.Fatalf("= %d %s", rec.Code, rec.Body.String())
 				}
+				invitedOnly(t, link)
 			})
 			t.Run("co-host list patch, new entry", func(t *testing.T) {
 				link := newLink(t, links, owner)
@@ -93,9 +112,7 @@ func TestPAC71_AC28_AC40_GrantingSitesResolveOnlyDomainConfirmedHolders(t *testi
 				if rec.Code != http.StatusOK {
 					t.Fatalf("= %d %s", rec.Code, rec.Body.String())
 				}
-				if _, ok := linkHosts(t, link)[holder]; ok != resolves {
-					t.Fatal("patch resolution wrong")
-				}
+				invitedOnly(t, link)
 			})
 			t.Run("team invite acceptance", func(t *testing.T) {
 				team, err := storage.CreateTeam(openTestDB(t), "T", owner)
