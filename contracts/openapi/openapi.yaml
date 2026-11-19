@@ -16994,13 +16994,13 @@ components:
             has no fixed range. scoreCandidate gives +40 for a start hour in 09:00-11:59, or +20 for 14:00-15:59;
             -20 when the slot overlaps one of the caller''s focus blocks; -10 for a Friday start at 14:00
             or later; +10 for a Monday, Tuesday or Wednesday start. That part is between -30 and +50.
-            Its hour and weekday are read from the slot start as the engine carries it, not in the caller''s
-            timezone: in the offset of `range_start` as sent, or of the busy window the slot follows (as
-            Google sends it, normally UTC); so UTC for a `Z` `range_start`. The focus-block penalty only
-            sees the caller''s focus blocks dated in the 7 days from `range_start`''s date; a later slot
-            never gets it. adjustScoreForPreferences, which does use the caller''s timezone, then adds
-            +25 for each `preferred_times` range and -40 for each `avoid_times` range that contains the
-            slot''s start, so with preferences the score is unbounded either way and may be negative.
+            Its hour and weekday (and so its `reasons`) are the slot start''s wall clock in the caller''s
+            timezone (settings `timezone`, UTC by default), whatever offset `range_start` was sent in:
+            a Wednesday 09:00 Europe/Paris slot sent as `08:00Z` gets the morning +40. The focus-block
+            penalty sees every one of the caller''s focus blocks that overlaps the requested range, from
+            `range_start` to `range_end`, however long it is. adjustScoreForPreferences, in the same timezone,
+            then adds +25 for each `preferred_times` range and -40 for each `avoid_times` range that contains
+            the slot''s start, so with preferences the score is unbounded either way and may be negative.
             A client that draws it must normalise it itself (the web draws it over the answer''s own range:
             best slot full, worst empty).
 

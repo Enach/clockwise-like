@@ -68,6 +68,39 @@ func ListFocusBlocksForUserWeekCtx(ctx context.Context, db DBTX, userID uuid.UUI
 	return blocks, rows.Err()
 }
 
+// ListFocusBlocksForUserRangeCtx returns userID's focus blocks whose time
+// overlaps [from, to), ordered by start, never nil (PAC-147: the smart
+// scheduler reads the caller's focus time over the whole requested range, not
+// a 7-day week). It fires the same focus-block read seam as
+// ListFocusBlocksForUserWeekCtx; ownerless blocks are not returned.
+func ListFocusBlocksForUserRangeCtx(ctx context.Context, db DBTX, userID uuid.UUID, from, to time.Time) ([]FocusBlock, error) {
+	if hook, ok := focusBlocksRead.get(); ok {
+		if err := hook(userID); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, google_event_id, start_time, end_time, date, created_at
+		FROM focus_blocks WHERE user_id = $1 AND start_time < $3 AND end_time > $2
+		ORDER BY start_time`,
+		userID, from.UTC(), to.UTC(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	blocks := make([]FocusBlock, 0)
+	for rows.Next() {
+		var b FocusBlock
+		if err := rows.Scan(&b.ID, &b.GoogleEventID, &b.StartTime, &b.EndTime, &b.Date, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks, rows.Err()
+}
+
 // DeleteFocusBlock removes userID's focus block for googleEventID. Another
 // user's block with that event ID is left alone.
 func DeleteFocusBlock(db Querier, userID uuid.UUID, googleEventID string) error {
