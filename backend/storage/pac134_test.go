@@ -699,3 +699,97 @@ func TestPAC134_N2_AnalyzeExcludesRowKey(t *testing.T) {
 		t.Fatalf("analyze statements %q", analyze)
 	}
 }
+
+// A run that fails between two statements for a reason that is not a
+// database error (here a seam's error after erase_t2) changes nothing and
+// writes no record: the transaction is rolled back, never committed.
+func TestPAC134_FailedRunChangesNothing(t *testing.T) {
+	db := openTestDB(t)
+	p134Seed(t, db, "pat@ext.example")
+	boom := errors.New("stop after erase_t2")
+	InstallEraseAfterStatement(t, func(_ context.Context, name string) error {
+		if name == "erase_t2" {
+			return boom
+		}
+		return nil
+	})
+	if _, err := p134Run(db, "pat@ext.example", nil); !errors.Is(err, boom) {
+		t.Fatalf("err %v", err)
+	}
+	if p134Remaining(t, db, "pat@ext.example") != 10 || p134Audits(t, db) != 0 {
+		t.Fatal("a failed run changed data or wrote a record")
+	}
+}
+
+// p134LockOrderProbe holds the row whose key sorts last, runs sweep in the
+// background, waits until it waits on that row, then reports whether the row
+// that sorts first is already locked (by the sweep): it is when the sweep
+// locks in key order, not when it locks in scan order (the last-sorting row
+// was inserted first, so a scan meets it first).
+func p134LockOrderProbe(t *testing.T, db *sql.DB, lockLast, probeFirst string, args []any, sweep func() error) bool {
+	t.Helper()
+	holder, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(lockLast, args[1]); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- sweep() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for p134Count(t, db, `SELECT count(*) FROM pg_locks WHERE NOT granted AND locktype = 'transactionid'`) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the sweep never waited on the held row")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	probe, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, perr := probe.Exec(probeFirst, args[0])
+	_ = probe.Rollback()
+	_ = holder.Rollback()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	return pgCodeOf(perr) == "55P03"
+}
+
+// L-1 (contract md §6.2): the invitation expiry sweep locks its rows in id
+// order.
+func TestPAC134_L1_SweepLocksInIDOrder(t *testing.T) {
+	db := openTestDB(t)
+	s := p134Seed(t, db, "pat@ext.example")
+	ids := []uuid.UUID{uuid.New(), uuid.New()}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	tb := p134ID(t, db, `INSERT INTO teams (name, created_by) VALUES ('TB', $1) RETURNING id`, s.owner)
+	for _, id := range []uuid.UUID{ids[1], ids[0]} { // the last-sorting id first in the heap
+		p134Exec(t, db, `INSERT INTO team_invites (id, team_id, invitee_email, invited_by, token, expires_at) VALUES ($1, $2, $3, $4, $5, now() - interval '1 day')`,
+			id, tb, "x"+id.String()[:8]+"@pac134.example", s.owner, uuid.NewString())
+	}
+	if !p134LockOrderProbe(t, db, `SELECT 1 FROM team_invites WHERE id = $1 FOR UPDATE`,
+		`SELECT 1 FROM team_invites WHERE id = $1 FOR UPDATE NOWAIT`, []any{ids[0], ids[1]},
+		func() error { return ExpireOldInvites(db) }) {
+		t.Fatal("the sweep did not hold the first id while waiting on the last")
+	}
+}
+
+// L-2 (contract md §6.2): the keyed-create cleanup locks its rows by
+// (owner_user_id, idempotency_key "C").
+func TestPAC134_L2_CleanupLocksInKeyOrder(t *testing.T) {
+	db := openTestDB(t)
+	s := p134Seed(t, db, "pat@ext.example")
+	keys := []string{"pac134-l2-key-aaaaaaa", "pac134-l2-key-bbbbbbb"}
+	for _, k := range []string{keys[1], keys[0]} {
+		link := p134ID(t, db, `INSERT INTO scheduling_links (owner_user_id, slug, title) VALUES ($1, $2, 'K') RETURNING id`, s.owner, "k-"+k)
+		p134Exec(t, db, `INSERT INTO scheduling_link_create_keys (owner_user_id, idempotency_key, link_id, created_at, request_sha256)
+			VALUES ($1, $2, $3, now() - interval '25 hours', sha256('d'::bytea))`, s.owner, k, link)
+	}
+	q := `SELECT 1 FROM scheduling_link_create_keys WHERE owner_user_id = '` + s.owner.String() + `' AND idempotency_key = $1 FOR UPDATE`
+	if !p134LockOrderProbe(t, db, q, q+" NOWAIT", []any{keys[0], keys[1]},
+		func() error { _, err := ClearExpiredLinkCreateKeyData(context.Background(), db); return err }) {
+		t.Fatal("the cleanup did not hold the first key while waiting on the last")
+	}
+}
