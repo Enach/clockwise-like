@@ -73,7 +73,7 @@
   "schemasAdded": [
     "AINotConfigured {reason, provider?, enablers, message}: reason in ['off', needs_key, organization_unconfirmed, nothing_configured, provider_removed_organization_available, provider_removed]; the last-but-one and organization_unconfirmed are not produced before Part 2.",
     "LLMNotConfiguredResponse {error, notConfigured}: body of the two 409s; superset of the JSON error shape.",
-    "AIStatus {configured, provider?, inOrganization, notConfigured?}: provider present exactly when configured is true, notConfigured exactly when it is false (rev. 2).",
+    "AIStatus {configured, provider?, inOrganization, notConfigured?}: provider present exactly when configured is true, notConfigured exactly when it is false (rev. 2). Amended by PAC-148 (2026-11-19, spec docs/specs/PAC-148.md D-1, D-3; contract contracts/features/PAC-148.md §9): 'member', 'no-org' and 'in organisation' mean PAC-148's organisation membership rule (domain-confirmed, address's domain not on the consumer list, organisation of the address's domain), applied at every read; a stored association that fails it is answered as no organisation (membership 403, inOrganization false, no use of the organisation's configuration, key or policy). The text before this note is kept as written.",
     "LLMApiKeysSet {openai, anthropic, azure_openai, bedrock, vertex: boolean}."
   ],
   "schemasChanged": [

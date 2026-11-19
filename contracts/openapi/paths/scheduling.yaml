@@ -1120,6 +1120,17 @@ paths:
         organisation is the caller's, never a parameter, so no caller can
         name another organisation (P2-AC-8).
 
+        **Membership (PAC-148, spec D-1, D-3, AC-4; G-4).** "The caller's
+        organisation", "member" and "no organisation" on this operation, on
+        patchOrganizationAI, on confirmOrganizationAI and in `AIStatus` mean
+        the organisation membership rule stated on listOrgMembers, applied at
+        each request: a caller whose stored association fails it (not
+        domain-confirmed, at a consumer-list domain, or in another domain's
+        organisation) is answered as a caller with no organisation (the
+        membership 403), and no AI call of theirs uses the organisation's
+        configuration, key or personal-keys policy, even with a stored
+        confirmation.
+
         **Every member reads the same bytes.** The answer depends only on the
         organisation's stored configuration, never on the caller: not on
         whether the caller is an administrator (Paceday stores no admin role;
@@ -1191,7 +1202,9 @@ paths:
         '403':
           description: >
             The caller has no organisation (`org membership required`, also
-            when the user lookup fails) or its organisation row is gone (`org
+            when the user lookup fails; since PAC-148 also when its stored
+            association fails the organisation membership rule stated on
+            listOrgMembers) or its organisation row is gone (`org
             not found`). The body is SsoWriteMembershipRequired, the schema of
             every membership 403 (PAC-50). A client shows no organisation AI
             section to such a caller (spec P2-AC-9, P2-AC-30); it knows in
@@ -1486,8 +1499,9 @@ paths:
             Not permitted, configuration unchanged (P2-AC-1, P2-AC-2,
             P2-AC-17). Exactly one variant of
             OrganizationAIWriteForbiddenResponse, told apart by `error`:
-            `org membership required` / `org not found` (no organisation;
-            no step-up offered); `organization_ai_write_requires_admin_stepup`
+            `org membership required` / `org not found` (no organisation,
+            under PAC-148's membership rule (listOrgMembers); no step-up
+            offered); `organization_ai_write_requires_admin_stepup`
             (with how to start the step-up for this purpose; a live grant of
             another purpose is left unconsumed); or
             `organization_ai_write_requires_fresh_login` (a break-glass
@@ -1660,7 +1674,9 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
           description: >
-            No organisation (`org membership required`) or its row is gone
+            No organisation (`org membership required`; since PAC-148 also a
+            stored association that fails the organisation membership rule
+            stated on listOrgMembers) or its row is gone
             (`org not found`): SsoWriteMembershipRequired. Nothing recorded
             (P2-AC-9).
           content:
@@ -3103,6 +3119,13 @@ components:
           description: >
             Whether the caller belongs to an organisation. Lets a client offer
             "use my organisation's AI" only to a member (spec AC-21; Part 2). Says nothing else about the organisation.
+            Since PAC-148 (spec D-1, D-3, AC-4) "belongs" is the organisation
+            membership rule stated on listOrgMembers, decided at this read:
+            false for a caller whose stored association fails it, and then
+            the rest of this object is decided as for a caller with no
+            organisation (a stored `organization` choice is row 6,
+            `nothing_configured`; the organisation's personal-keys policy
+            does not bind the caller).
         notConfigured:
           $ref: '#/components/schemas/AINotConfigured'
           description: >

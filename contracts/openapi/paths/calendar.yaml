@@ -860,20 +860,71 @@ paths:
       operationId: listOrgMembers
       tags: [calendar]
       summary: List users in the caller's organization
-      description: >-
-        Returns all `users` rows sharing the caller's `org_id`, ordered by
-        `created_at` ascending. If the caller cannot be loaded, or has no `org_id`,
-        the handler returns 200 with `[]` rather than an error.
-        PAC-130 (spec §3.1, D-1, AC-17): the set of accounts this list returns to a caller
-        IS rule (b) of the Manager visibility rule (ManagerRosterMember.is_paceday_user):
-        both use one definition, so narrowing this list (follow-up PAC-148, which owns
-        this endpoint's own exposure for consumer domains) narrows Manager visibility with
-        it. The Manager read does not inherit this handler's fallback: a failure to load
-        the caller there is the 500, never "no organisation".
+      description: |-
+        Returns the accounts that BELONG to the caller's organisation (the
+        organisation membership rule below), the caller included, ordered by
+        `created_at` ascending. A caller that belongs to no organisation gets
+        `[]`.
+
+        **Organisation membership (PAC-148, spec §3.1, §3.2, D-1, D-3; contract
+        `contracts/features/PAC-148.md` §2).** This is the one statement of the
+        rule; every other operation that answers or acts on membership points
+        here. An account belongs to an organisation only while all three hold:
+        (1) its `addressStanding` is `domain_confirmed` (PAC-71: the identity
+        provider that bound it is the domain's own: Google Workspace for that
+        domain, an Entra tenant that verified it, or the domain's SSO issuer);
+        (2) the domain of its stored address is not on the consumer list (the
+        running release's generic-domain list, which PAC-148 extends with
+        Microsoft's personal-account domains); and (3) the organisation's stored
+        domain equals the domain of its stored address, exactly. The domain of
+        an address is the text after its first `@`, with surrounding Unicode
+        white space removed and lower-cased (none when there is no `@`): the
+        derivation that named the organisation when it was created.
+        Every other account belongs to NO organisation, whatever association is
+        stored (by an older release, an operator step, a fixture or a restore
+        rehearsal). The rule is applied at every read, by every operation that
+        answers or acts on membership: this list (and so rule (b) of the
+        Manager visibility rule, ManagerRosterMember.is_paceday_user),
+        getCurrentUser's `org`, `AIStatus.inOrganization`, getOrganizationAI,
+        patchOrganizationAI, confirmOrganizationAI, every AI call that would use
+        the organisation's AI (the parse, including MCP's parse tool through
+        it, a meeting-brief refresh, the provider probe), listSsoProviders,
+        createSsoProvider, deleteSsoProvider, startSsoAdminStepup,
+        getSsoStepupOptions and ssoAdminStepupCallback. An account that does not
+        belong is answered exactly as an account with no organisation: `[]`
+        here, no `org`, `inOrganization` false, the membership 403
+        (SsoWriteMembershipRequired), no use of the organisation's AI or
+        policy, `state_mismatch` at the step-up callback.
+        After every successful sign-in the stored association is brought in
+        line: an account that qualifies joins its address's domain's
+        organisation (created on first join); one that does not leaves any
+        organisation, and its organisation-AI confirmations end with it (PAC-87).
+        Whether it qualifies is decided from its own standing, address and the
+        consumer list before anything keyed on the domain is read, so a caller
+        that does not qualify causes no organisation to be looked up or created.
+        Before PAC-148 every account joined its address's domain's organisation
+        at any standing, unless the domain was on the 21-entry consumer list, so
+        anyone signing in with an address at an unlisted consumer provider
+        listed every Paceday account there (PAC-130 O-11).
+
+        For a caller that belongs to no organisation the answer, and the work
+        done to produce it, are the same whatever accounts exist at its
+        address's domain (spec AC-1).
+
+        PAC-130 (spec §3.1, D-1, AC-17): the set of accounts this list returns
+        to a caller IS rule (b) of the Manager visibility rule
+        (ManagerRosterMember.is_paceday_user): both use one definition, so
+        PAC-148's narrowing of this list narrows Manager visibility with it
+        (PAC-148 D-9). The Manager read does not take this list's `[]` for a
+        missing caller row: a failure to load the caller there is the 500,
+        never "no organisation".
       responses:
         "200":
           description: >-
-            Org members, or `[]` when the caller has no organization. The `org`
+            The accounts that belong to the caller's organisation, or `[]` when
+            the caller belongs to no organisation or its users row does not
+            exist (an account deleted under a live session, PAC-148 D-8: such an
+            account belongs to nothing, so `[]` is the true answer). The `org`
             property is never populated by this endpoint — storage.GetOrgMembers
             does not hydrate it, so it is always omitted.
           content:
@@ -893,7 +944,11 @@ paths:
                 $ref: "#/components/schemas/MiddlewareUnauthorized"
         "500":
           description: >-
-            Database error. Body: `{"error":"internal"}`, served as application/json (until
+            Database error: the caller's users row could not be read (any failure
+            other than the row not existing; PAC-148 D-8, API-047, SF-075: before
+            PAC-148 this answered `200 []`, indistinguishable from "no
+            organisation"), or the member read failed. Never `[]` for a fault.
+            Body: `{"error":"internal"}`, served as application/json (until
             PAC-21 was finished it was this same JSON literal with a text/plain
             Content-Type). The detail is written to the server log and Sentry only (PAC-21).
           content:
@@ -2096,7 +2151,10 @@ components:
 
     OrgMember:
       type: object
-      description: storage.User as returned by GET /api/org/members.
+      description: >-
+        storage.User as returned by GET /api/org/members: an account that belongs
+        to the caller's organisation under PAC-148's membership rule
+        (listOrgMembers). The fields are unchanged by PAC-148.
       required: [id, email, name, avatarUrl, provider, createdAt]
       additionalProperties: false
       properties:
@@ -2113,12 +2171,19 @@ components:
           description: camelCase, unlike most other fields in this domain. May be "".
         provider:
           type: string
+          enum: [google, microsoft, sso]
+          x-enum-varnames: [OrgMemberProviderGoogle, OrgMemberProviderMicrosoft, OrgMemberProviderSso]
           description: >-
-            The identity/calendar provider the user signed in with, e.g. `google` or
-            `microsoft`. Not constrained by an enum in Go.
-          x-uncertain: >-
-            Exact set of provider values written at signup was not traced; confirm
-            against handlers_auth.go / handlers_microsoft_auth.go.
+            The provider of the account's FIRST sign-in: the same `users.provider`
+            column, and the same three values, as CurrentUserResponse.provider.
+            Resolved by PAC-148 (spec D-8; the x-uncertain this property carried,
+            PAC-35 non-blocking 2): the column has no CHECK constraint (migration
+            006, `TEXT NOT NULL DEFAULT 'google'`), and its only writer is the
+            account insert of storage.ResolveSignIn, whose `FirstProvider` is one
+            of three literals: `google` (Google sign-in), `microsoft` (Microsoft
+            sign-in) and `sso` (SSO sign-in); storage.UpsertUser has no production
+            caller, and tests and the e2e seed write `google`. No migration adds a
+            constraint.
         org:
           $ref: "#/components/schemas/Org"
         createdAt:

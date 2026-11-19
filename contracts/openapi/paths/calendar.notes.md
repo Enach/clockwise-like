@@ -112,6 +112,13 @@ decide which.
 No reference anywhere in `smart-calendar-flow/src`. There is no `OrgMember` type in
 `types.ts` and no method on `ApiPort`.
 
+**PAC-148 (2026-11-19, spec D-7; contract `contracts/features/PAC-148.md` §1):** still no
+web, MCP or e2e consumer, and kept on purpose: it is the backing disclosure of PAC-130
+rule (b) (the Manager "On Paceday" flag), narrowed by PAC-148's organisation membership
+rule. Its 200 gets a second opinion: a Go contract test decodes it strictly against the
+bundle schema (spec AC-9, `TestPAC148_AC9_MemberListDecodesStrictly`), as PAC-133 did for
+`GET /api/calendar/freebusy` (API-091).
+
 ### 9. `PersonalCalendar.email` is declared but never sent
 `types.ts:98` has `email?: string` and the mock `addPersonalCalendar` fabricates
 `you.google@example.com`. `personalCalendarDTO` has no such field. Only the mock path
@@ -208,6 +215,9 @@ nobody "fixes" the backend to send structured details assuming the spec allows i
 
 15. **`GET /api/org/members` returns 200 `[]` when the user lookup errors**, not 500 —
     an error and "no organization" are indistinguishable to the client.
+    **PAC-148 (2026-11-19, spec D-8, AC-8):** a failed caller read is the 500
+    `{"error":"internal"}`; only a missing caller row, or a caller that belongs to no
+    organisation, is `200 []` (API-047, SF-075).
 
 16. **Error messages leak raw Go/provider error strings** into response bodies across
     this whole domain (`"not connected: "+err.Error()`, `"update failed: "+err.Error()`,
@@ -223,7 +233,7 @@ nobody "fixes" the backend to send structured details assuming the spec allows i
 | `patchEvent` (operation) | ~~The 200 body is the raw Google event, not `CalendarEvent`. Which side is authoritative?~~ Resolved: PAC-21 pinned the raw body; PAC-29 makes `CalendarEvent` authoritative (U-04). |
 | `listAuditEntries` (operation) | The audit log is global, not per-user/per-org. Intentional, or a data-exposure bug to fix before publishing? |
 | `CalendarEvent.is_personal_block` (property) | Dead field — is the tagging logic missing, or should the field be removed from the DTO? |
-| `OrgMember.provider` (property) | The exact set of values written at signup was not traced. Confirm against `handlers_auth.go` / `handlers_microsoft_auth.go` before adding an enum. |
+| `OrgMember.provider` (property) | ~~The exact set of values written at signup was not traced. Confirm against `handlers_auth.go` / `handlers_microsoft_auth.go` before adding an enum.~~ Resolved by PAC-148 (2026-11-19): enum `google`, `microsoft`, `sso`, the same column and writers PAC-35 traced for `CurrentUserResponse.provider` (the only production writer is `storage.ResolveSignIn`'s insert with `FirstProvider` `"google"` / `"microsoft"` / `"sso"`); marker removed. |
 
 Additional items a human should resolve that are not marked `x-uncertain` because the
 Go behaviour is unambiguous, only questionable:
