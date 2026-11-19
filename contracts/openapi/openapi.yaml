@@ -16989,8 +16989,15 @@ components:
           format: date-time
         score:
           type: integer
-          description: 'Integer score from scoreCandidate + adjustScoreForPreferences. No documented range
-            or normalisation.
+          description: 'Integer score from scoreCandidate + adjustScoreForPreferences; higher is better,
+            and `slots` is sorted by it, best first. It is a sum of fixed points, not a percentage, and
+            has no fixed range. scoreCandidate gives +40 for a start hour in 09:00-11:59, or +20 for 14:00-15:59;
+            -20 when the slot overlaps one of the caller''s focus blocks; -10 for a Friday start at 14:00
+            or later; +10 for a Monday, Tuesday or Wednesday start. That part is between -30 and +50.
+            adjustScoreForPreferences then adds +25 for each `preferred_times` range and -40 for each
+            `avoid_times` range that contains the slot''s start, so with preferences the score is unbounded
+            either way and may be negative. A client that draws it must normalise it itself (the web draws
+            it relative to the best slot in the same answer).
 
             '
         reasons:
