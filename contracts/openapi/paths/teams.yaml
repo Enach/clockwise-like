@@ -2438,6 +2438,9 @@ components:
         status:
           type: string
           enum: [pending, accepted, declined, expired]
+          # PAC-149: pinned so the generated Go names do not change when an unrelated
+          # enum with the same values (SchedulingLinkHostRecord.status) is removed.
+          x-enum-varnames: [TeamInviteStatusPending, TeamInviteStatusAccepted, TeamInviteStatusDeclined, TeamInviteStatusExpired]
         createdAt: { type: string, format: date-time }
         expiresAt:
           type: string

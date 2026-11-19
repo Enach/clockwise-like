@@ -265,7 +265,7 @@ func TestPAC119_AC3_ReplayShowsCurrentLinkAndOriginalOutcomes(t *testing.T) {
 	}
 	declined := false
 	for _, h := range s2.Hosts {
-		if h.UserId == b && string(h.Status) == "declined" {
+		if h.UserId != nil && *h.UserId == b && string(h.Status) == "declined" {
 			declined = true
 		}
 	}

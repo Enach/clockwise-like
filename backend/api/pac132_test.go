@@ -160,7 +160,10 @@ func pac132SameRoster(t *testing.T, what string, hosts []gen.SchedulingLinkHost,
 	t.Helper()
 	got := map[uuid.UUID]string{}
 	for _, h := range hosts {
-		got[h.UserId] = string(h.Email) + "/" + string(h.Status)
+		if h.UserId == nil {
+			t.Fatalf("%s: host %s has no user_id", what, h.Email)
+		}
+		got[*h.UserId] = string(h.Email) + "/" + string(h.Status)
 	}
 	pac112SameHosts(t, what, got, want)
 }

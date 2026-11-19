@@ -563,13 +563,6 @@ const (
 	SchedulingLinkHostLimitReached SchedulingLinkHostLimitErrorError = "this link has reached its limit of 5 co-hosts; remove a co-host before inviting another"
 )
 
-// Defines values for SchedulingLinkHostRecordStatus.
-const (
-	SchedulingLinkHostRecordStatusAccepted SchedulingLinkHostRecordStatus = "accepted"
-	SchedulingLinkHostRecordStatusDeclined SchedulingLinkHostRecordStatus = "declined"
-	SchedulingLinkHostRecordStatusPending  SchedulingLinkHostRecordStatus = "pending"
-)
-
 // Defines values for SchedulingLinkInviteResponseStatus.
 const (
 	SchedulingLinkInviteResponseStatusAccepted SchedulingLinkInviteResponseStatus = "accepted"
@@ -1645,7 +1638,7 @@ type CreateSchedulingLinkRequest struct {
 	BufferAfter        *int `json:"buffer_after,omitempty"`
 	BufferBefore       *int `json:"buffer_before,omitempty"`
 
-	// CoHostEmails Absent or null: no co-hosts besides the owner and no `co_host_changes`. Entries are trimmed and compared ignoring case. Each one is resolved (PAC-71 granting rule) and its outcome is reported in the 201's `co_host_changes`; an address that cannot be invited is reported as `not_added`, never silently dropped, and does not fail the create (spec D-5). On create the only current host is the owner, so a list of more than 5 entries is accepted only when every entry reaches the owner. PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). Blank means: no character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422). Trimming, everywhere in this operation, removes leading and trailing characters of that same set. `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. No `format` is declared because the server checks none: a string that is not an address is simply `not_added` (contract md §3.4).
+	// CoHostEmails Absent or null: no co-hosts besides the owner and no `co_host_changes`. Entries are trimmed and compared ignoring case. Each one is decided by the operation's PAC-149 rule (never resolved to an account) and its outcome is reported in the 201's `co_host_changes`; an entry that is not a well-formed address is reported as `not_added`, never silently dropped, and does not fail the create (spec D-5). On create the only current host is the owner, so a list of more than 5 entries is accepted only when every entry reaches the owner. PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). Blank means: no character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422). Trimming, everywhere in this operation, removes leading and trailing characters of that same set. `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. No `format` is declared because the server checks none: a string that is not an address is simply `not_added` (contract md §3.4).
 	CoHostEmails *[]string `json:"co_host_emails"`
 
 	// Days Alias for days_of_week, used only when days_of_week is absent or null. Accepts "sun".."sat", "sunday".."saturday" and "0".."6", case-insensitive, surrounding whitespace ignored. PAC-112 (API-053, spec §3.12): when the alias is used, an entry that is none of these makes the whole request a 422 "days contains an unrecognised day name" and nothing is created, a mixed list such as ["mon","Montag"] included (before PAC-112 such entries were silently dropped). When days_of_week is carried the alias is ignored entirely, unrecognised names included (PAC-40 D-5).
@@ -2214,7 +2207,7 @@ type InviteEmailRequest struct {
 
 // InviteSchedulingLinkHostRequest defines model for InviteSchedulingLinkHostRequest.
 type InviteSchedulingLinkHostRequest struct {
-	// Email Must be non-empty after trimming and must match an existing account (lowercased before lookup).
+	// Email PAC-149: the address to invite. Must be non-empty after trimming ECMA-262 `\s` from both ends (400 "email is required"), and, unless it is the owner's address or a current entry's ignoring case, a well-formed address (400 "email must be a valid email address"). Stored trimmed with its letter case kept. It is never looked up against accounts (before PAC-149 it had to match an account).
 	Email openapi_types.Email `json:"email"`
 }
 
@@ -3506,7 +3499,7 @@ type SchedulingLink struct {
 	Days      []SchedulingLinkDays `json:"days"`
 	Durations []int                `json:"durations"`
 
-	// Hosts Every host regardless of status, ordered by invited_at. Always an array, never null.
+	// Hosts Every host regardless of status. Always an array, never null. PAC-149 (spec §3.4 order, D-16): ordered by invitation time, then, for entries recorded by the same save, by the position of their first entry in that save's `co_host_emails` (the owner's row of a create first), then by address compared with `lower()`, then by the address's bytes, then by the entry's server-assigned id. Nothing in the order depends on accounts. An entry keeps its position when its invitee accepts or declines.
 	Hosts []SchedulingLinkHost `json:"hosts"`
 	Id    openapi_types.UUID   `json:"id"`
 
@@ -3566,25 +3559,25 @@ type SchedulingLinkBookingRecord struct {
 	Status string `json:"status"`
 }
 
-// SchedulingLinkCoHostChanges PAC-112 (spec §3.4, §3.5, §3.9, D-2; contract md §2). What this save did to the co-hosts, computed inside the write's transaction. Present in a `SchedulingLinkSaved` exactly when the request carried `co_host_emails` (non-null; `[]` included) and the save succeeded; absent otherwise. A client that sent a list and receives no `co_host_changes` is talking to a server without PAC-112 (rollback, spec §7): it must not claim any address was invited, and says it cannot tell which co-hosts were added (contract md §5.3). Counts are of people, not entries: two entries that reach one account count once.
+// SchedulingLinkCoHostChanges PAC-112 (spec §3.4, §3.5, §3.9, D-2; contract md §2). What this save did to the co-hosts, computed inside the write's transaction. Present in a `SchedulingLinkSaved` exactly when the request carried `co_host_emails` (non-null; `[]` included) and the save succeeded; absent otherwise. A client that sent a list and receives no `co_host_changes` is talking to a server without PAC-112 (rollback, spec §7): it must not claim any address was invited, and says it cannot tell which co-hosts were added (contract md §5.3). PAC-149: counts are of distinct entries (equal after the ECMA-262 trim and `lower()`), never of accounts; before PAC-149 two entries that reached one account counted once.
 type SchedulingLinkCoHostChanges struct {
-	// Addresses One item per entry of the request's `co_host_emails`, in the same order and of the same length, duplicates included, so item i describes entry i.
+	// Addresses One item per entry of the request's `co_host_emails`, in the same order and of the same length, duplicates included, so item i describes entry i. Every entry equal (trim, `lower()`) to an invited entry reports `invited`.
 	Addresses []SchedulingLinkCoHostOutcome `json:"addresses"`
 
-	// InvitedCount Distinct accounts whose outcome is `invited`.
+	// InvitedCount PAC-149: distinct new pending invitations this save recorded (entries equal after the trim and `lower()` count once). Before PAC-149: distinct accounts whose outcome was `invited`.
 	InvitedCount int `json:"invited_count"`
 
 	// NotAddedCount Distinct entries whose outcome is `not_added`. Two entries are the same entry when they are identical after trimming ECMA-262 `\s` from both ends and lowercasing with the database's `lower()`, the comparison the lookup itself applies (contract md §3.3).
 	NotAddedCount int `json:"not_added_count"`
 
-	// Removed Every non-owner host this save removed (not on the list by the keep rule), with the status they had. Empty when nobody was removed and always empty on create. Never the owner. Order not specified.
+	// Removed Every non-owner entry this save removed (its address equals no listed entry, ignoring case), with the status it had. Empty when nobody was removed and always empty on create. Never the owner. Order not specified. PAC-149: a removed pending invitation or declined entry is reported by address and status only (`SchedulingLinkRemovedHost`).
 	Removed []SchedulingLinkRemovedHost `json:"removed"`
 
 	// RemovedCount Equals the length of `removed`.
 	RemovedCount int `json:"removed_count"`
 }
 
-// SchedulingLinkCoHostOutcome PAC-112. The outcome of one listed entry, decided in this order (contract md §2.2): `own_address` when the entry's one domain-confirmed holder is the link's owner; `already_host` when that holder, or else any account carrying the entry at any standing (the keep rule), was a non-owner host of the link before this save, whatever their status, which they keep (PAC-61, PAC-71 AC-43); `invited` when the one domain-confirmed holder was not a host and a `pending` row was created by this save (every entry reaching that account reports `invited`); otherwise `not_added`. `not_added` carries no reason: nobody, an unconfirmed carrier and several accounts are not distinguished (spec D-6). The owner's address held only unconfirmed or shared is `not_added`, and the owner's row is unchanged (spec §3.7).
+// SchedulingLinkCoHostOutcome PAC-112, rules replaced by PAC-149 (spec docs/specs/PAC-149.md §3.2, D-1, D-7; contract contracts/features/PAC-149.md §2.2). The outcome of one listed entry, decided in this order, every comparison on the trimmed entry ignoring case with the database's `lower()` and none reading accounts by address: `own_address` when it equals the owner's stored address (the owner's row is unchanged, never demoted); `already_host` when it equals the address of a current non-owner entry of the link (pending invitation, accepted or declined host), which keeps its status (PAC-61; for a host this is PAC-71 AC-43's keep rule); `invited` when it is a well-formed address (lowercased, Go's `net/mail.ParseAddress` accepts it and returns exactly it) and a pending invitation for it was recorded by this save; otherwise `not_added`, which now means exactly "not a well-formed address" (PAC-112 D-6 relaxed: a client may say so). Before PAC-149 `invited` and `not_added` depended on whether a single domain-confirmed account held the address (oracle O-10b).
 type SchedulingLinkCoHostOutcome struct {
 	// Email The entry as sent, with leading and trailing ECMA-262 `\s` characters removed (the set of the request items' `pattern`, the PAC-67 test); letter case kept.
 	Email   string                             `json:"email"`
@@ -3616,26 +3609,26 @@ type SchedulingLinkCreateKeyLinkError struct {
 // SchedulingLinkCreateKeyLinkErrorError defines model for SchedulingLinkCreateKeyLinkError.Error.
 type SchedulingLinkCreateKeyLinkErrorError string
 
-// SchedulingLinkHost backend/api/handlers_scheduling_links.go schedulingHostDTO - the host shape embedded in SchedulingLink. Distinct from SchedulingLinkHostRecord, which is the raw DB row returned by POST /{id}/hosts.
+// SchedulingLinkHost backend/api/handlers_scheduling_links.go schedulingHostDTO - one entry of a link's roster (`SchedulingLink.hosts`), and since PAC-149 also the 200/201 body of `inviteSchedulingLinkHost`. PAC-149 (spec §3.4, D-6; contract md §2.5): what an entry shows depends only on its status and on the link, never on whether an account carries a pending invitation's address. The owner and an `accepted` entry: `user_id`, `email`, `name` and `avatar_url` as before (accepting is the invitee's consent to be shown). A `pending` entry is an invitation to an address: exactly `email` (the address as the owner typed it, trimmed), `is_owner: false` and `status`; it carries no account identifier, name or picture, so two pending entries differ only in `email`. A `declined` entry: exactly `email` (its account's stored address), `is_owner: false` and `status`. The only exception is an owner whose own row is `declined` (PAC-30's owner-decline follow-up), shown as the owner.
 type SchedulingLinkHost struct {
-	// AvatarUrl Omitted when empty.
+	// AvatarUrl Omitted when empty. PAC-149, never present on a `pending` or `declined` entry.
 	AvatarUrl *string `json:"avatar_url,omitempty"`
 
-	// Email The host's address. Never empty: every operation that answers a roster reads it strictly, and a host's user record that cannot be loaded is that operation's 500 (PAC-25, PAC-122, PAC-132; SF-029).
+	// Email The entry's address: for a pending invitation the recorded address (trimmed, letter case kept as typed); for the owner and an accepted or declined entry the account's stored address. Never empty: every operation that answers a roster reads it strictly, and a host's user record that cannot be loaded is that operation's 500 (PAC-25, PAC-122, PAC-132; SF-029).
 	Email   openapi_types.Email `json:"email"`
 	IsOwner bool                `json:"is_owner"`
 
-	// Name Omitted when empty.
+	// Name Omitted when empty. PAC-149, never present on a `pending` or `declined` entry.
 	Name *string `json:"name,omitempty"`
 
-	// Status Not constrained by the DB layer; these are the only three values the handlers write.
+	// Status Constrained by the database CHECK (pending, accepted, declined). PAC-149: `pending` is always an invitation to an address, never an entry bound to an account (a database CHECK enforces it).
 	Status SchedulingLinkHostStatus `json:"status"`
 
-	// UserId Declared `user_id,omitempty` but always populated from a uuid.UUID, so in practice always present.
-	UserId openapi_types.UUID `json:"user_id"`
+	// UserId The account's id. PAC-149: present exactly for the owner and for an `accepted` entry; absent for `pending` and `declined` entries (before PAC-149 it was always present, including the id of a pending invitee: oracle C-4).
+	UserId *openapi_types.UUID `json:"user_id,omitempty"`
 }
 
-// SchedulingLinkHostStatus Not constrained by the DB layer; these are the only three values the handlers write.
+// SchedulingLinkHostStatus Constrained by the database CHECK (pending, accepted, declined). PAC-149: `pending` is always an invitation to an address, never an entry bound to an account (a database CHECK enforces it).
 type SchedulingLinkHostStatus string
 
 // SchedulingLinkHostInvite backend/api/handlers_scheduling_links.go hostInviteDTO.
@@ -3652,31 +3645,13 @@ type SchedulingLinkHostInvite struct {
 	OwnerName string `json:"owner_name"`
 }
 
-// SchedulingLinkHostLimitError The 422 of `inviteSchedulingLinkHost` (PAC-120): the link already has 5 co-hosts or more (non-owner host rows of any status) and the invitation would add one. The text is distinct from the co-host list's over-5 422 on create and PATCH, and reads as a limit on the link, not on the request. Nothing was written.
+// SchedulingLinkHostLimitError The 422 of `inviteSchedulingLinkHost` (PAC-120): the link already has 5 co-hosts or more (non-owner entries of any status, pending invitations included) and the invitation would add one; the same for every new address (PAC-149). The text is distinct from the co-host list's over-5 422 on create and PATCH, and reads as a limit on the link, not on the request. Nothing was written.
 type SchedulingLinkHostLimitError struct {
 	Error SchedulingLinkHostLimitErrorError `json:"error"`
 }
 
 // SchedulingLinkHostLimitErrorError defines model for SchedulingLinkHostLimitError.Error.
 type SchedulingLinkHostLimitErrorError string
-
-// SchedulingLinkHostRecord Raw backend/storage/scheduling_links.go LinkHost row, returned by POST /api/scheduling-links/{id}/hosts. Not the same shape as the `hosts[]` entries inside SchedulingLink.
-type SchedulingLinkHostRecord struct {
-	// Id Host-row id. Note that accept/decline key on link_id, so this id is never used as a path parameter.
-	Id openapi_types.UUID `json:"id"`
-
-	// InvitedAt Raw time.Time marshalling (RFC3339 with nanoseconds and the DB offset), not the DTO millisecond format.
-	InvitedAt time.Time          `json:"invited_at"`
-	LinkId    openapi_types.UUID `json:"link_id"`
-
-	// RespondedAt Omitted while null (json `responded_at,omitempty`). Set by accept/decline.
-	RespondedAt *time.Time                     `json:"responded_at,omitempty"`
-	Status      SchedulingLinkHostRecordStatus `json:"status"`
-	UserId      openapi_types.UUID             `json:"user_id"`
-}
-
-// SchedulingLinkHostRecordStatus defines model for SchedulingLinkHostRecord.Status.
-type SchedulingLinkHostRecordStatus string
 
 // SchedulingLinkInviteResponse Echo of the status that was written. The only 200 body accept/decline returns.
 type SchedulingLinkInviteResponse struct {
@@ -3695,14 +3670,16 @@ type SchedulingLinkListResponse struct {
 	Shared []SchedulingLink `json:"shared"`
 }
 
-// SchedulingLinkRemovedHost PAC-112. A host removed by this save. Bookings already made on the link are untouched.
+// SchedulingLinkRemovedHost PAC-112. An entry removed by this save. Bookings already made on the link are untouched. PAC-149 (spec §3.4, D-6; contract md §2.5): shown as the roster shows the entry: an `accepted` entry with `user_id`; a `pending` invitation or a `declined` entry by `email` and `status` only, so two removed pending invitations differ only in `email`.
 type SchedulingLinkRemovedHost struct {
-	// Email The account's stored address, read inside the write; a failed read is the 500 with nothing changed, never an empty string.
+	// Email For a pending invitation its recorded address; otherwise the account's stored address, read inside the write. A failed read is the 500 with nothing changed, never an empty string.
 	Email string `json:"email"`
 
 	// Status The status the host had when removed.
 	Status SchedulingLinkRemovedHostStatus `json:"status"`
-	UserId openapi_types.UUID              `json:"user_id"`
+
+	// UserId PAC-149: present exactly when `status` is `accepted`. Before PAC-149 it was required and present for every status (a removed pending invitee's account id: oracle C-5).
+	UserId *openapi_types.UUID `json:"user_id,omitempty"`
 }
 
 // SchedulingLinkRemovedHostStatus The status the host had when removed.
@@ -3718,7 +3695,7 @@ type SchedulingLinkSaved struct {
 	BufferAfter        int `json:"buffer_after"`
 	BufferBefore       int `json:"buffer_before"`
 
-	// CoHostChanges PAC-112 (spec §3.4, §3.5, §3.9, D-2; contract md §2). What this save did to the co-hosts, computed inside the write's transaction. Present in a `SchedulingLinkSaved` exactly when the request carried `co_host_emails` (non-null; `[]` included) and the save succeeded; absent otherwise. A client that sent a list and receives no `co_host_changes` is talking to a server without PAC-112 (rollback, spec §7): it must not claim any address was invited, and says it cannot tell which co-hosts were added (contract md §5.3). Counts are of people, not entries: two entries that reach one account count once.
+	// CoHostChanges PAC-112 (spec §3.4, §3.5, §3.9, D-2; contract md §2). What this save did to the co-hosts, computed inside the write's transaction. Present in a `SchedulingLinkSaved` exactly when the request carried `co_host_emails` (non-null; `[]` included) and the save succeeded; absent otherwise. A client that sent a list and receives no `co_host_changes` is talking to a server without PAC-112 (rollback, spec §7): it must not claim any address was invited, and says it cannot tell which co-hosts were added (contract md §5.3). PAC-149: counts are of distinct entries (equal after the ECMA-262 trim and `lower()`), never of accounts; before PAC-149 two entries that reached one account counted once.
 	CoHostChanges *SchedulingLinkCoHostChanges `json:"co_host_changes,omitempty"`
 
 	// CreatedAt UTC, Go layout "2006-01-02T15:04:05.000Z07:00" (millisecond precision).
@@ -3728,7 +3705,7 @@ type SchedulingLinkSaved struct {
 	Days      []SchedulingLinkSavedDays `json:"days"`
 	Durations []int                     `json:"durations"`
 
-	// Hosts Every host regardless of status, ordered by invited_at. Always an array, never null.
+	// Hosts Every host regardless of status. Always an array, never null. PAC-149 (spec §3.4 order, D-16): ordered by invitation time, then, for entries recorded by the same save, by the position of their first entry in that save's `co_host_emails` (the owner's row of a create first), then by address compared with `lower()`, then by the address's bytes, then by the entry's server-assigned id. Nothing in the order depends on accounts. An entry keeps its position when its invitee accepts or declines.
 	Hosts []SchedulingLinkHost `json:"hosts"`
 	Id    openapi_types.UUID   `json:"id"`
 
@@ -5000,7 +4977,7 @@ type UpdateSchedulingLinkRequest struct {
 	BufferAfter        *int `json:"buffer_after"`
 	BufferBefore       *int `json:"buffer_before"`
 
-	// CoHostEmails When present (non-null), the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Absent or null leaves the co-hosts untouched. Entries are trimmed and compared ignoring case. Every entry's outcome and every removal are reported in the 200's `co_host_changes`; an address that cannot be invited is `not_added`, never silently dropped, and does not fail the PATCH (spec D-5). PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). Blank means: no character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422). Trimming, everywhere in this operation, removes leading and trailing characters of that same set. `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. No `format` is declared because the server checks none: a string that is not an address is simply `not_added` (contract md §3.4).
+	// CoHostEmails When present (non-null), the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Absent or null leaves the co-hosts untouched. Entries are trimmed and compared ignoring case. Every entry's outcome and every removal are reported in the 200's `co_host_changes`; an entry that is not a well-formed address (PAC-149: the only reason) is `not_added`, never silently dropped, and does not fail the PATCH (spec D-5). PAC-112 (spec §3.6, D-8): a blank entry is a 422 "co_host_emails must not contain a blank address" (before PAC-112 it was skipped). Blank means: no character outside ECMA-262 `\s` (WhiteSpace and LineTerminator), exactly the set the items' `pattern: '\S'` uses, the PAC-67 test (API-052). So "\u0085" is not blank (reported `not_added`) and "\ufeff" is blank (422). Trimming, everywhere in this operation, removes leading and trailing characters of that same set. `maxItems` is deliberately not set: a list of more than 5 entries is refused 422 only when an entry does not reach a current host of the link (see the operation), which JSON Schema cannot express. No `format` is declared because the server checks none: a string that is not an address is simply `not_added` (contract md §3.4).
 	CoHostEmails *[]string `json:"co_host_emails"`
 
 	// Days Alias for days_of_week, applied only when days_of_week is absent or null. Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won on PATCH), unrecognised names included. Same names as on create. PAC-112 (API-053): when applied, an unrecognised entry makes the PATCH a 422 "days contains an unrecognised day name" with the link unchanged, a mixed list included (before PAC-112 it was dropped and the rest saved).
@@ -8123,7 +8100,7 @@ type ServerInterface interface {
 	// Decline a co-host invitation.
 	// (POST /api/scheduling-links/host-invites/{id}/decline)
 	DeclineSchedulingLinkHostInvite(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
-	// Alias of GET /api/scheduling-links/host-invites (identical handler).
+	// Deprecated alias of GET /api/scheduling-links/host-invites (identical handler).
 	// (GET /api/scheduling-links/invites)
 	ListSchedulingLinkInvitesAlias(w http.ResponseWriter, r *http.Request)
 	// Delete a scheduling link (owner only).
@@ -8135,16 +8112,16 @@ type ServerInterface interface {
 	// Partially update a scheduling link (owner only).
 	// (PATCH /api/scheduling-links/{id})
 	UpdateSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
-	// Accept a co-host invitation, addressed by link id.
+	// Accept a co-host invitation, addressed by link id (deprecated spelling).
 	// (POST /api/scheduling-links/{id}/accept)
 	AcceptSchedulingLinkInviteByLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
 	// Bookings made on a link (owner only).
 	// (GET /api/scheduling-links/{id}/bookings)
 	ListSchedulingLinkBookings(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
-	// Decline a co-host invitation, addressed by link id.
+	// Decline a co-host invitation, addressed by link id (deprecated spelling).
 	// (POST /api/scheduling-links/{id}/decline)
 	DeclineSchedulingLinkInviteByLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
-	// Invite an existing user as a co-host (owner only).
+	// Invite an email address as a co-host (owner only).
 	// (POST /api/scheduling-links/{id}/hosts)
 	InviteSchedulingLinkHost(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
 	// Remove the caller from a link's host list.
@@ -8837,7 +8814,7 @@ func (_ Unimplemented) DeclineSchedulingLinkHostInvite(w http.ResponseWriter, r 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Alias of GET /api/scheduling-links/host-invites (identical handler).
+// Deprecated alias of GET /api/scheduling-links/host-invites (identical handler).
 // (GET /api/scheduling-links/invites)
 func (_ Unimplemented) ListSchedulingLinkInvitesAlias(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -8861,7 +8838,7 @@ func (_ Unimplemented) UpdateSchedulingLink(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Accept a co-host invitation, addressed by link id.
+// Accept a co-host invitation, addressed by link id (deprecated spelling).
 // (POST /api/scheduling-links/{id}/accept)
 func (_ Unimplemented) AcceptSchedulingLinkInviteByLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -8873,13 +8850,13 @@ func (_ Unimplemented) ListSchedulingLinkBookings(w http.ResponseWriter, r *http
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Decline a co-host invitation, addressed by link id.
+// Decline a co-host invitation, addressed by link id (deprecated spelling).
 // (POST /api/scheduling-links/{id}/decline)
 func (_ Unimplemented) DeclineSchedulingLinkInviteByLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Invite an existing user as a co-host (owner only).
+// Invite an email address as a co-host (owner only).
 // (POST /api/scheduling-links/{id}/hosts)
 func (_ Unimplemented) InviteSchedulingLinkHost(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -19338,7 +19315,7 @@ type InviteSchedulingLinkHostResponseObject interface {
 	VisitInviteSchedulingLinkHostResponse(w http.ResponseWriter) error
 }
 
-type InviteSchedulingLinkHost200JSONResponse SchedulingLinkHostRecord
+type InviteSchedulingLinkHost200JSONResponse SchedulingLinkHost
 
 func (response InviteSchedulingLinkHost200JSONResponse) VisitInviteSchedulingLinkHostResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -19347,7 +19324,7 @@ func (response InviteSchedulingLinkHost200JSONResponse) VisitInviteSchedulingLin
 	return json.NewEncoder(w).Encode(response)
 }
 
-type InviteSchedulingLinkHost201JSONResponse SchedulingLinkHostRecord
+type InviteSchedulingLinkHost201JSONResponse SchedulingLinkHost
 
 func (response InviteSchedulingLinkHost201JSONResponse) VisitInviteSchedulingLinkHostResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -21037,7 +21014,7 @@ type StrictServerInterface interface {
 	// Decline a co-host invitation.
 	// (POST /api/scheduling-links/host-invites/{id}/decline)
 	DeclineSchedulingLinkHostInvite(ctx context.Context, request DeclineSchedulingLinkHostInviteRequestObject) (DeclineSchedulingLinkHostInviteResponseObject, error)
-	// Alias of GET /api/scheduling-links/host-invites (identical handler).
+	// Deprecated alias of GET /api/scheduling-links/host-invites (identical handler).
 	// (GET /api/scheduling-links/invites)
 	ListSchedulingLinkInvitesAlias(ctx context.Context, request ListSchedulingLinkInvitesAliasRequestObject) (ListSchedulingLinkInvitesAliasResponseObject, error)
 	// Delete a scheduling link (owner only).
@@ -21049,16 +21026,16 @@ type StrictServerInterface interface {
 	// Partially update a scheduling link (owner only).
 	// (PATCH /api/scheduling-links/{id})
 	UpdateSchedulingLink(ctx context.Context, request UpdateSchedulingLinkRequestObject) (UpdateSchedulingLinkResponseObject, error)
-	// Accept a co-host invitation, addressed by link id.
+	// Accept a co-host invitation, addressed by link id (deprecated spelling).
 	// (POST /api/scheduling-links/{id}/accept)
 	AcceptSchedulingLinkInviteByLink(ctx context.Context, request AcceptSchedulingLinkInviteByLinkRequestObject) (AcceptSchedulingLinkInviteByLinkResponseObject, error)
 	// Bookings made on a link (owner only).
 	// (GET /api/scheduling-links/{id}/bookings)
 	ListSchedulingLinkBookings(ctx context.Context, request ListSchedulingLinkBookingsRequestObject) (ListSchedulingLinkBookingsResponseObject, error)
-	// Decline a co-host invitation, addressed by link id.
+	// Decline a co-host invitation, addressed by link id (deprecated spelling).
 	// (POST /api/scheduling-links/{id}/decline)
 	DeclineSchedulingLinkInviteByLink(ctx context.Context, request DeclineSchedulingLinkInviteByLinkRequestObject) (DeclineSchedulingLinkInviteByLinkResponseObject, error)
-	// Invite an existing user as a co-host (owner only).
+	// Invite an email address as a co-host (owner only).
 	// (POST /api/scheduling-links/{id}/hosts)
 	InviteSchedulingLinkHost(ctx context.Context, request InviteSchedulingLinkHostRequestObject) (InviteSchedulingLinkHostResponseObject, error)
 	// Remove the caller from a link's host list.

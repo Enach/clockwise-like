@@ -1,0 +1,181 @@
+{
+  "featureId": "PAC-149",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-149/security-scheduling-link-co-host-invite-and-co-host-list-reveal",
+  "status": "draft, 2026-11-19: contract revision 1 written by contract-author; next: contract-challenger",
+  "contractRevision": "1",
+  "contractHash": "4f05bd2406016510b7116247b5c558f01d9dcfc8d4c7bde602e7c5881dc92805",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) on factory/pac-149 after contract revision 1, on base origin/main cb9e44e (PAC-148 #324; main bundle 21610e0ea3b88d11e506aab8a1d9d47f3e3d28ef8b9e87ccd116767391684c1e). Produced by python scripts/openapi_assemble.py; backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by python scripts/openapi_migration_report.py. Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and python scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
+  "baseCommit": "cb9e44e (clockwise-like origin/main, PAC-148 #324) = merge base of factory/pac-149; spec approved at 84466c3 (revision 2), clarifications folded in at 9140d66. Web origin/main 9a75a7d.",
+  "contractDoc": "contracts/features/PAC-149.md",
+  "specDoc": "docs/specs/PAC-149.md (revision 2, approved after the re-challenge of b0c1586; non-blocking clarifications at 9140d66; OQ-1 to OQ-5 on their defaults)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "followUps": [
+    "Removal of the deprecated spellings listSchedulingLinkInvitesAlias, acceptSchedulingLinkInviteByLink, declineSchedulingLinkInviteByLink (API-069; spec §5).",
+    "Unregistered, for the coordinator (md 7): the owner can decline the owner's own row (PAC-30 follow-up owner-decline); kept by PAC-149.",
+    "Spec OQ-3 (expiry) and OQ-4 (rate limit) stay candidates for later tickets."
+  ],
+  "scope": "A co-host invitation is to an address. The single invite and the co-host list (create, PATCH) never read accounts by address: outcomes own_address, already_host, invited (well-formed: lowercased, net/mail.ParseAddress returns it unchanged), not_added (not well-formed); the single invite decides owner address, existing entry, well-formedness (400), limit (422), then records a pending invitation (201 SchedulingLinkHost {email, is_owner:false, status:pending}); 404 'user not found' removed. Pending invitations are scheduling_link_hosts rows with user_id NULL and invitee_email set; roster and removal report show pending by address only, declined by address and status only, accepted as before; fixed order (invited_at, invite_position, lower(address), bytes, id). The invitee side (list, accept, decline, leave; both spellings) matches only the caller's own address and only when the caller is its single domain-confirmed holder; a failed match is the 500. Delete erases pending invitations in its write. Three duplicate spellings are deprecated. Migration 044 converts pending rows in place and drops those on deleted links, for freed placeholders, and clashes; down restores those with a holder.",
+  "interfaceKind": "HTTP: inviteSchedulingLinkHost 200/201 body SchedulingLinkHostRecord -> SchedulingLinkHost (schema removed), 404 second body removed, 400 third body added; SchedulingLinkHost.user_id and SchedulingLinkRemovedHost.user_id no longer required; three operations deprecated; descriptions on createSchedulingLink, updateSchedulingLink, getSchedulingLink, deleteSchedulingLink, listSchedulingLinkHostInvites, the accept/decline spellings, leaveSchedulingLink, SchedulingLink.hosts, SchedulingLinkCoHostChanges, SchedulingLinkCoHostOutcome, InviteSchedulingLinkHostRequest, SchedulingLinkHostLimitError; TeamInvite.status x-enum-varnames (generated names only). Non-HTTP and binding: storage shape and migration 044 (md 4), invitee-side match (md 2.4), order (md 2.5), equal work and seams (md 2.6, 6), web (md 5).",
+  "mergeAfter": "origin/main cb9e44e or later. Migration 044. Server before web (README section 1).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/storage/migrations/044_cohost_address_invitations.up.sql, .down.sql (md 4.1, 4.2, binding in substance; renumbered only if 044 is taken first)",
+        "backend/storage/scheduling_links.go, backend/storage/guarded_writes.go (LinkHost with nullable account and invitee address; invite, list save, removal, roster read and order, limit count, invitee-side match, accept/decline/leave, delete erasure)",
+        "backend/storage/test_seams.go (InstallCarriersRead, InstallCoHostStatement, InstallInviteeMatch; md 6), backend/storage/identity.go (carriersOfTrimmed fires the carriers seam only)",
+        "backend/api/handlers_scheduling_links.go (inviteHost, createLink/updateLink co-host report, roster DTO, listHostInvites, respondToInvite, leaveLink, deleteLink)",
+        "backend/api/pac149_*_test.go, backend/storage/pac149_*_test.go (new)",
+        "Fixture and superseded tests named in md 9 (backend/api and backend/storage test files), rewritten not deleted",
+        "e2e/tests/pac149-*.spec.ts (new), e2e/tests/pac112-cohosts.spec.ts, e2e/tests/pac120-cohost-limit.spec.ts, e2e/tests/pac119-link-create-retry.spec.ts (md 9)",
+        "docs/runbook.md ('Rollback' bullet, md 4.5; PAC-149 release note and pre-deploy count, md 4.3, 4.6)",
+        "docs/plans/PAC-149.md",
+        "docs/factory/api-audit.md (API-069, API-072), docs/factory/silent-failures.md (SF-068): status and test names only",
+        "contracts/features/PAC-149.{md,yaml} (contractHash and stage-4 notes only)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; openapi.yaml and backend/api/gen by hand",
+        "backend/storage/emptiness.go and the PAC-71 rule (b) (spec D-9: data effect only)",
+        "backend/storage/signin.go, operator.go (no sign-up hook; matching is at read time, spec §3.3)",
+        "internal/outbound/** (no email to invitees, spec D-4)",
+        "public booking paths (accepted hosts only, unchanged)",
+        "exported or package-level func variables as new seams (PAC-80)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/generated/** (regeneration only, against the merged bundle)",
+        "src/components/links/coHostSave.ts, src/components/links/HostAvatars.tsx, src/components/links/LinkEditDrawer.tsx, src/demo/schedulingLinks.ts and their tests (md 5)",
+        "src/api/schedulingLinks.ts (only if a type follows the regenerated schema)"
+      ],
+      "forbiddenPaths": [
+        "src/api/generated/** by hand",
+        "the invitee banner, accept and decline flow in src/pages/Links.tsx (unchanged, spec §3.7)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    { "operationId": "inviteSchedulingLinkHost", "change": "no account lookup; order owner address, existing entry, well-formedness (400 'email must be a valid email address'), limit (422 for every new address), then 201 pending invitation; 200/201 body SchedulingLinkHost; 404 'user not found' removed (API-072 superseded); ECMA-262 trim" },
+    { "operationId": "createSchedulingLink", "change": "co-host outcomes by address only; not_added = not well-formed; invited_count = distinct new invitations; roster shapes and order (md 2.5); no co-host lookup or invitee lock 500 causes" },
+    { "operationId": "updateSchedulingLink", "change": "as create; removal by entry address; removed[] user_id only for accepted" },
+    { "operationId": "getSchedulingLink, listSchedulingLinks", "change": "roster: pending by address only, declined by address and status only, fixed order" },
+    { "operationId": "listSchedulingLinkHostInvites, listSchedulingLinkInvitesAlias", "change": "pending invitations whose address the caller holds (single domain-confirmed holder), excluding links the caller owns or has an entry on; 500 on a failed match; alias deprecated" },
+    { "operationId": "acceptSchedulingLinkHostInvite, declineSchedulingLinkHostInvite, acceptSchedulingLinkInviteByLink, declineSchedulingLinkInviteByLink", "change": "own entry as today (stray invitation removed); else a held pending invitation becomes the caller's entry in place; else 404; 500 on a failed match; ByLink spellings deprecated" },
+    { "operationId": "leaveSchedulingLink", "change": "also removes a pending invitation the caller holds; 500 on a failed match" },
+    { "operationId": "deleteSchedulingLink", "change": "erases the link's pending invitations in the delete's write" }
+  ],
+  "componentsChanged": [
+    "SchedulingLinkHost: user_id optional (owner and accepted only); per-status shape; description",
+    "SchedulingLink.hosts: order",
+    "SchedulingLinkRemovedHost: user_id optional (accepted only)",
+    "SchedulingLinkCoHostOutcome, SchedulingLinkCoHostChanges, InviteSchedulingLinkHostRequest, SchedulingLinkHostLimitError, CreateSchedulingLinkRequest.co_host_emails, UpdateSchedulingLinkRequest.co_host_emails: descriptions",
+    "SchedulingLinkHostRecord: removed (gen: SchedulingLinkHostRecord and SchedulingLinkHostRecordStatus removed)",
+    "TeamInvite.status: x-enum-varnames pinning the existing generated names (md 1.4)"
+  ],
+  "refusals": [
+    { "operation": "inviteSchedulingLinkHost", "status": 400, "body": { "error": "email must be a valid email address" }, "when": "not the owner's address, no current entry equal ignoring case, and not well-formed; decided under the link lock; nothing written" },
+    { "operation": "inviteSchedulingLinkHost", "status": 422, "body": { "error": "this link has reached its limit of 5 co-hosts; remove a co-host before inviting another" }, "when": "5 or more non-owner entries (pending included) and a new well-formed address; the same for every address" },
+    { "operation": "listSchedulingLinkHostInvites (+alias), accept/decline (4 spellings), leaveSchedulingLink", "status": 500, "body": { "error": "internal error" }, "when": "the caller's account row or the read of the link's pending invitations for the caller's address fails (D-10); never [] or the 404" }
+  ],
+  "nonHttpInterface": {
+    "storage": "md 4.0: scheduling_link_hosts.user_id nullable (FK and cascade kept), invitee_email, invite_position; CHECK (status='pending') = (user_id IS NULL); CHECK (user_id IS NULL) = (invitee_email IS NOT NULL); UNIQUE (link_id, lower(invitee_email)) WHERE invitee_email IS NOT NULL. Invitation equal to an entry's or the owner's address is not refusable by the storage (no trigger), so AC-19's behaviour is required.",
+    "holderMatch": "md 2.4: caller C holds A iff lower(C.email) = lower(A), C domain_confirmed, no other account with that lower(email); computed only for the caller's own address.",
+    "order": "md 2.5: invited_at, invite_position (0 for owner and single invites; 1 + first index in the request for list entries), lower(address), address COLLATE \"C\", id.",
+    "equalWork": "md 2.6: recheck, link-lock, entries-read, owner-read, count, invitation-insert, roster-read; no read keyed on the typed address except the insert.",
+    "seams": "md 6: InstallCarriersRead, InstallCoHostStatement, InstallInviteeMatch; existing confirmedHolderLookup kept."
+  },
+  "migration": {
+    "number": "044_cohost_address_invitations (free on origin/main cb9e44e and on every origin branch, checked 2026-11-19; P = 43, N = 44)",
+    "up": "md 4.1: alter columns; one DO block dropping, in order, pending rows on deleted links, for freed placeholders (freed+<id>@paceday.invalid), clashing with the owner's or an accepted/declined entry's address under lower(), and duplicates under lower() keeping the earliest (invited_at, address COLLATE C, id); counts; converts the rest in place (invitee_email = account's stored address, user_id NULL); RAISE LOG and NOTICE with the six counts; then the two CHECKs and the partial unique index.",
+    "down": "md 4.2: drop index and CHECKs; restore user_id for invitations whose address has a single domain-confirmed holder that neither owns the link nor has an entry on it; delete the rest; drop columns; user_id NOT NULL. Lossy.",
+    "preDeployCount": "md 4.3, read only, same categories and precedence as the up step.",
+    "pac116": "applied with no backend serving (stop-migrate-start). Image-only rollback refused on a database at 044: fix forward, restore the backup, or (dev/test/staging) down 1 while 044 is newest.",
+    "releaseNote": "md 4.6",
+    "locks": "ACCESS EXCLUSIVE on scheduling_link_hosts for the ALTERs and the index; ACCESS SHARE on users and scheduling_links; no backend serving."
+  },
+  "gates": {
+    "contractApproval": "pending: contract-challenger has not reviewed revision 1.",
+    "assembler": "Revision 1 (base cb9e44e): python scripts/openapi_assemble.py (wrote; 112 paths, 134 operations, 217 schemas, x-uncertain 3) and --check ('OK: bundle is in sync (112 paths)'); bash scripts/openapi_gen_go.sh and --check ('OK: backend/api/gen matches the contract'); python scripts/openapi_migration_report.py and --check ('OK: MIGRATION.md covers all 134 operations (14 generated)'); cd backend && go build ./... ok; go vet ./... ok after the compile-only test adaptation (md 1.2). make is not installed on the authoring host. golangci-lint could not run (built with go1.25; module targets go1.26). Cross-repo half (openapi-check-web) not run: web types drift until the web PR.",
+    "executedEvidence": "postgres:16.15-alpine, migrations 001-043 applied with psql -1 per file, AC-10 fixture: pre-deploy count 1/3/1/1/3/1 exactly as spec AC-10; up NOTICE with the same counts and the expected rows; constraint probes refused; AC-19 direct inserts accepted; down restored holders and dropped the rest without a uniqueness error; up re-applied cleanly (md 4.4).",
+    "webGate": "Stage 4: smart-calendar-flow PR regenerating src/api/generated against the merged bundle and the md 5 changes; cross-repo openapi-check on the pair.",
+    "stage4": "make verify in both repos (factory section 3); DB-backed tests need Docker; 'could not run' stated, never silent.",
+    "defaultBranch": "main",
+    "ci": "GitHub Actions .github/workflows/ci.yml; required check verify",
+    "deployment": "release manager runs md 4.3 and records the counts, snapshots scheduling_link_hosts, then the server PR (migration 044, stop-migrate-start), then the paired web PR"
+  },
+  "acceptanceTests": [
+    "AC-1  [contract] L; O invites H, N, U, C with the single invite: all 201, byte-identical modulo the address, no account identifier (today H 201 with id, others 404 'user not found').",
+    "AC-2  [contract] list [H, N, U, C] on create and on PATCH of a link with no co-hosts: all invited, invited_count 4, not_added_count 0; swapping H and N gives a byte-identical answer modulo addresses, including the roster in the answer and in a following read, in request order; O's own address in another case -> own_address, also when O's address has a legacy case-variant carrier.",
+    "AC-3  [contract] AC-1's four invitations: in O's single read and list, and an accepted co-host's read, the four pending entries are byte-identical modulo the address, show the typed address and pending, no user_id, name or avatar_url.",
+    "AC-4  [contract] L with 5 co-hosts: single invite of H, N, U, C each the same 422, nothing written; a list adding any one of them is the over-5 422 alike.",
+    "AC-5  [contract] L with pending invitations for H and N; a list keeping neither: both removed; the two removed items byte-identical modulo the address, no user_id.",
+    "AC-6  [unit] single invites of H and N on fresh links and list saves [H], [N]: zero InstallCarriersRead calls on every inviter path; equal InstallCoHostStatement sequences for H and N.",
+    "AC-7  [contract] O invited H: H's account lists L; accept -> today's answer; roster shows H accepted with user_id, name, avatar_url; public slots exclude H's busy time. Decline instead -> H's entry declined, by address, no name or picture.",
+    "AC-8  [contract] O invited N; later an account for N: domain-confirmed -> lists L and accepts (AC-7 outcome); unconfirmed -> lists nothing, accept 404. Invitation to C: neither account lists L, each accept 404. U's unconfirmed carrier lists nothing.",
+    "AC-9  [unit] O invites H and N by both paths: no row points at H's account until H answers (the CHECK holds); an unbound legacy account whose only data is another owner's pending invitation to its address binds under PAC-71 rule (b); with an accepted or declined entry it is still refused with the existing emptiness kind.",
+    "AC-10 [unit] migration 044 on the spec fixture (L1 with P, P2, K, F pending, Q accepted, R declined, distinct times; L2 deleted with P pending; L3-L6 clash links): P, P2, K converted by address with times and order unchanged; P lists and accepts L1; P2 lists after binding; neither K account lists L1, O sees it; F's and L2's rows gone; L3 one invitation Kim@y.example at K1's time; L4-L6 no pending row, entries unchanged; no uniqueness error; pre-deploy count exactly: converted with a holder 1, without 3, placeholder 1, deleted link 1, clash with another pending row 1, clash with an entry or the owner 3; Q and R unchanged including responded_at; nothing else changes. Down: owner-address invitation and invitation for a holder with an accepted entry (direct inserts, accepted by the storage, md 4.0) -> existing entry survives, invitation dropped; no-holder invitation dropped; never a uniqueness failure.",
+    "AC-11 [unit] (web) summary for invited_count 2 has the new sentence and not 'they can accept from Paceday'; not_added named as not a valid email address; pending chip tooltip shows the address; demo invites someone@unknown.example as invited with no name, not_added only for a malformed entry.",
+    "AC-12 [e2e] real web app, one run inviting H and one inviting N through the link editor: rendered editor text after save and reopen identical modulo the address, neither shows 'couldn't be added'; pac112-cohosts AC-11 and AC-24 rewritten with a malformed address.",
+    "AC-13 [contract] 'not-an-address': single invite 400 {\"error\":\"email must be a valid email address\"}, nothing written; in a list not_added, nothing written; blank entry 422 (PAC-112 AC-34); U+0085-only entry not_added (PAC-112 C-4).",
+    "AC-14 [contract] InstallInviteeMatch error: invitation list (both spellings), accept, decline (both spellings), leave -> 500, never [] or 404; nothing changes.",
+    "AC-15 [contract] the bundle states the single invite without 'user not found' and its 422 for every new address; the four outcomes by address; invited_count as distinct new invitations; the roster and removal shapes (md 2.5); no account lookup on inviter paths; acceptance by the single domain-confirmed holder. AC-2, AC-3, AC-5 answers decode strictly into the gen types; web: roster loose parse, report strict or its documented fallback (md 1.3).",
+    "AC-16 [contract] accept, decline and the invitation list answer identically under both spellings for AC-7, AC-8 and AC-18's cases; the three older spellings carry deprecated: true.",
+    "AC-17 [contract] L with pending H and N and accepted Q; delete (no bookings; and bookings whose bookers were already erased): both invitations gone in the delete's write, Q's row kept; H lists L before and not after; accept, decline, leave on L 404 for H.",
+    "AC-18 [contract] O invited H: H leaves 204, invitation gone from O's roster, second leave 404; an unrelated account leaves 404, invitation unchanged; O invites U on L' and U's unconfirmed carrier Uc leaves 404, invitation unchanged; O leaves 400, nothing changed.",
+    "AC-19 [contract] direct inserts (accepted by the storage, md 4.0): A holds a@x.example with an accepted entry on L plus a pending invitation for A@x.example: A's list omits L; A's decline acts on A's entry and removes the invitation in the same write. Invitation equal to O's address on O's link: O's list omits the link; O's accept is 200 on the owner's row and removes the invitation (deviation D-a from the spec's '404', md 13). No 500."
+  ],
+  "resolvesFindings": [
+    "API-072: Superseded (PAC-149) in docs/factory/api-audit.md; the second 404 body removed from the contract.",
+    "API-069: Partly fixed (PAC-149); three spellings deprecated; removal later.",
+    "SF-068: annotated; rule carried to the invitee-side match (AC-14); TestPAC120_AC14_FailedLookupIs500 retired with the lookup in stage 4."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "OQ-1 to OQ-5: defaults (visible decline by address only; no email; no expiry; no rate limit; later sign-up sees earlier invitations)."
+  ],
+  "doesNotResolve": [
+    "Removal of the deprecated spellings (API-069 remainder).",
+    "Owner-decline of the owner's own row (PAC-30 follow-up).",
+    "Expiry and rate limits (OQ-3, OQ-4)."
+  ],
+  "documentsAmended": [
+    "contracts/features/PAC-71.yaml: createSchedulingLink and inviteSchedulingLinkHost changes, API-072 resolution (suffixes).",
+    "contracts/features/PAC-112.yaml: AC-7, AC-11, SchedulingLinkCoHostOutcome (suffixes).",
+    "contracts/features/PAC-120.md: section 2 step 6, the 422 property list, the recorded existence signal (amendment paragraphs).",
+    "contracts/features/PAC-130.yaml: followUps PAC-149 entry and doesNotResolve O-10/O-10b (suffixes).",
+    "contracts/openapi/paths/booking.notes.md: two notes.",
+    "docs/factory/api-audit.md (API-069, API-072), docs/factory/silent-failures.md (SF-068)."
+  ],
+  "consumersAffected": [
+    { "consumer": "smart-calendar-flow src/api/generated", "breaks": "drift only", "detail": "user_id optional on two schemas; SchedulingLinkHostRecord gone (unused by web code)" },
+    { "consumer": "smart-calendar-flow coHostChangesOf (strict report parse)", "breaks": "documented fallback", "detail": "old web, release window: a report removing a pending or declined entry fails the strict parse and shows the fallback sentence; the save is reported as saved (md 1.3)" },
+    { "consumer": "smart-calendar-flow roster normaliser, chips, demo, wording", "breaks": "no (old web) / changed in the web PR", "detail": "md 1.3, md 5" },
+    { "consumer": "backend/api tests using gen.SchedulingLinkHost.UserId / SchedulingLinkRemovedHost.UserId", "breaks": "compile adapted in this commit", "detail": "pac119_test.go, pac132_test.go, pac112_test.go: nil guards only" },
+    { "consumer": "backend tests creating pending host rows by account", "breaks": "fixtures adapted in stage 4", "detail": "md 9 list; the CHECK refuses a pending row with an account" },
+    { "consumer": "backend tests superseded by the spec (section 2.4)", "breaks": "rewritten", "detail": "md 9" },
+    { "consumer": "e2e pac112-cohosts, pac120-cohost-limit, pac119-link-create-retry", "breaks": "adapted", "detail": "read or insert pending rows by user_id; AC-11/AC-24 rewritten" },
+    { "consumer": "backend/storage/emptiness.go", "breaks": "data only", "detail": "pending invitations no longer count for any account (spec D-9)" },
+    { "consumer": "MCP", "breaks": "no", "detail": "no scheduling-link tool" }
+  ],
+  "deviationsFromSpec": [
+    "D-a (AC-19 owner half): owner's accept stays 200 on the owner's row (PAC-30; spec §3.3 'acts on its own entry exactly as today'), and removes the stray invitation; the spec's AC-19 says 404. Needs confirmation.",
+    "D-b: leave also removes a stray invitation of the caller's own address when the caller has an entry.",
+    "D-c: owner's own address on a link with no owner row: 200 with the owner entry, nothing written (the CHECK forbids the pending owner row created before).",
+    "D-d: migration drop-category precedence (deleted link, placeholder, entry/owner clash, pending duplicate), not stated by the spec."
+  ],
+  "mergeConditions": [
+    "This revision (or a later one) accepted by contract-challenger, D-a confirmed or revised.",
+    "The stage-4 PR's bundle sha256 equals contractHash, or a recorded rebased hash with no fragment text change.",
+    "The release manager runs md 4.3 before deploying and records the counts; the server PR (migration 044) deploys before the web PR.",
+    "make verify output pasted in each PR body (factory section 3)."
+  ],
+  "rollback": "Migration 044's down step restores a pending row only for invitations whose address has a single domain-confirmed holder without an entry on the link; the rest are lost; rows dropped by the up step never return. Image-only rollback is refused on a database at 044 (PAC-116): fix forward, restore the pre-deploy backup, or in development, tests and staging run down 1 while 044 is newest and start the previous image ('user not found' returns, expected). Snapshot scheduling_link_hosts before deploy. A web-only rollback is safe: old wording; the old web parses the new answers as md 1.3 says.",
+  "notVerified": [
+    "openapi-check-web (no web PR yet).",
+    "The backend test suite (no behaviour changed in this stage; the scheduling-link tests encode the pre-PAC-149 rule until stage 4).",
+    "golangci-lint (installed binary built with go1.25; module targets go1.26).",
+    "Migration 044 through the golang-migrate runner and on production-shaped data (stage 4, AC-10); it ran with psql on postgres:16.15-alpine (md 4.4)."
+  ]
+}

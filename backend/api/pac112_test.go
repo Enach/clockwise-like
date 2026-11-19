@@ -228,7 +228,7 @@ func TestPAC112_AC8_PatchReportsEveryOutcomeAndRemoval(t *testing.T) {
 	pac112Equal(t, "addresses", pac112Outcomes(t, s),
 		[]string{eAddr + "=already_host", fAddr + "=already_host", gAddr + "=invited", cAddr + "=not_added"})
 	pac112Counts(t, s, 1, 1, 1)
-	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId.String() != b.String() || r[0].Email != bAddr || string(r[0].Status) != "pending" {
+	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId == nil || r[0].UserId.String() != b.String() || r[0].Email != bAddr || string(r[0].Status) != "pending" {
 		t.Errorf("removed = %+v; want B (%s) pending", r, bAddr)
 	}
 	pac112SameHosts(t, "after PATCH", e.hostRows(l.ID),
@@ -436,7 +436,7 @@ func TestPAC112_AC32_RemoveOneOfSeven(t *testing.T) {
 	l, ids, addrs, all := e.seven(owner, "ac32")
 	s := pac112Saved(t, e.patch(owner, l.ID, map[string]any{"co_host_emails": addrs[1:]}), http.StatusOK)
 	pac112Counts(t, s, 0, 1, 0)
-	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId.String() != ids[0].String() || string(r[0].Status) != "accepted" {
+	if r := s.CoHostChanges.Removed; len(r) != 1 || r[0].UserId == nil || r[0].UserId.String() != ids[0].String() || string(r[0].Status) != "accepted" {
 		t.Errorf("removed = %+v", r)
 	}
 	delete(all, ids[0])
