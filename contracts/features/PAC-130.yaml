@@ -1,7 +1,7 @@
 {
   "featureId": "PAC-130",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-130/security-manager-mode-reveals-whether-an-email-address-has-a-paceday",
-  "status": "contract revision 2, 2026-11-19: revision 1 (39d8591) challenged at b92eed5 (REVISE: 2 blocking, 7 non-blocking); every item applied in revision 2 (md 'Contract revision 2'); awaiting re-challenge",
+  "status": "accepted, 2026-11-19: contract revision 2 (0de79a1) accepted by contract-challenger; next stage: plan",
   "contractRevision": "2",
   "contractHash": "feca6355f1510122eb5909738b6e2b713b09365186c7518f20fca6848a64dcae",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) on factory/pac-130-contract after contract revision 2, which merged origin/main a5d2752 (PAC-135 #319; main bundle eb0a2902e8779d2f79a14958bca4e31338123dad94bf2cb69cd39df05397c478) with no fragment text change and no regeneration diff; equal to the challenger's scratch merge. Revision 1 (39d8591, base efa67c5, bundle a665e5d3f0c2460568fb4bbd4ce1a07667b6f4e0b705e29328d9018e03c606f4) was ea70196e02396df92ed519b75f860bc83e158cc4ad3a12be3908d6f48190b584. Produced by py -3 scripts/openapi_assemble.py; backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by py -3 scripts/openapi_migration_report.py. Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and py -3 scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
@@ -134,7 +134,7 @@
     "web": "md 5: exact note text; the demo add never guesses."
   },
   "gates": {
-    "contractApproval": "contract-challenger 2026-11-19: revision 1 (b92eed5) REVISE, applied in revision 2; re-challenge pending",
+    "contractApproval": "accepted by contract-challenger 2026-11-19 (revision 2, 0de79a1; revision 1 REVISE at b92eed5); one non-blocking item for the plan: COALESCE the orgMemberSetSQL exclusion parameter (md Challenge revision 2)",
     "assembler": "Revision 2 (base origin/main a5d2752, merged): py -3 scripts/openapi_assemble.py --check ('OK: bundle is in sync (112 paths)'); py -3 scripts/openapi_migration_report.py (wrote) and --check ('OK: MIGRATION.md covers all 134 operations (14 generated)'); bash scripts/openapi_gen_go.sh (no diff) and --check ('OK: backend/api/gen matches the contract'); cd backend && go build ./... ok. Revision 1 ran the same on efa67c5 (218 schemas, x-uncertain 4). make is not installed on the authoring host. TestPAC21Every5xxInTheContractIsTheJSONEnvelope not run (TestMain needs the test database; no Docker). Cross-repo half (openapi-check-web) not run.",
     "webGate": "Stage 4: smart-calendar-flow PR regenerating src/api/generated against the merged bundle plus md 5; cross-repo openapi-check on the pair.",
     "stage4": "make verify in both repos (factory section 3); DB-backed tests need Docker; 'could not run' stated, never silent.",
