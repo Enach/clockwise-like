@@ -318,7 +318,7 @@ func TestOrgAIStateAndConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := AssociateUserWithOrg(db, other.ID, other.Email); err != nil {
+	if err := pac148ConfirmAndJoin(t, db, other.ID); err != nil {
 		t.Fatal(err)
 	}
 	loner, _ := UpsertUser(db, "loner-orgai@gmail.com", "L", "", "google", "sub-loner-orgai")

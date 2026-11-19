@@ -270,6 +270,124 @@ free/busy call:
   (contract `contracts/features/PAC-133.md` §3.1 and "Resolution — revision
   1.1", m-3).
 
+### PAC-148 release: organisation membership needs a vouched-for address (before deploy)
+
+PAC-148's migration `043_org_membership_rule` ends every stored organisation
+membership that fails the membership rule (the account is `domain_confirmed`,
+its address's domain is not on the consumer list, and the organisation is the
+one for its address's domain), together with those accounts'
+organisation-AI confirmations. It cannot be undone except by restoring the
+backup. Spec `docs/specs/PAC-148.md` §7, contract
+`contracts/features/PAC-148.md` §5.5.
+
+1. **Release precondition.** The production database must read exactly
+   `42 | f`:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml exec postgres \
+     psql -U clockwise -d clockwise -c 'SELECT version, dirty FROM schema_migrations'
+   ```
+
+   Any other answer stops the release. The release carrying PAC-130's
+   `042_manager_member_link_erase` is deployed and settled first, in a
+   release of its own; only then is PAC-148 deployed. This is what makes the
+   recovery of [PAC-148 migration gate](#pac-148-migration-gate) work (its
+   step 4 starts the image whose highest migration is 42).
+2. **Query 0** (informational): the ctype the organisation domain expression
+   was verified against.
+
+   ```sql
+   SELECT datcollate, datctype FROM pg_database WHERE datname = current_database();
+   ```
+
+   Expected `en_US.utf8`. Report any other value to the owner before deploy
+   (the rule then fails closed for an address whose domain has non-ASCII
+   upper-case letters; it does not stop the release).
+3. Run queries 1 and 2 in `psql`, `listed` being the release's consumer list:
+   the block between the `consumer-list` markers of
+   `backend/storage/migrations/043_org_membership_rule.up.sql`, which
+   `TestPAC148_AC16_MigrationListIsTheGoList` keeps equal to
+   `domain.GenericDomains()`. The domain expression is the one migration 043
+   and `storage.addrDomainSQL` use, verbatim.
+
+   ```
+   \set listed '{aol.com,fastmail.com,gmail.com,gmx.com,googlemail.com,hotmail.be,hotmail.co.uk,hotmail.com,hotmail.de,hotmail.es,hotmail.fr,hotmail.it,icloud.com,live.be,live.co.uk,live.com,live.de,live.fr,live.it,live.nl,mac.com,mail.com,me.com,msn.com,outlook.com,outlook.de,outlook.es,outlook.fr,outlook.it,proton.me,protonmail.com,windowslive.com,yahoo.co.uk,yahoo.com,yahoo.fr,yandex.com,yandex.ru,zoho.com}'
+   ```
+
+   **Query 1, memberships that will end, per organisation domain** (report it
+   to the owner):
+
+   ```sql
+   SELECT o.domain,
+          count(*) FILTER (WHERE u.address_standing <> 'domain_confirmed') AS unconfirmed,
+          count(*) FILTER (WHERE o.domain = ANY(:'listed'::text[]))         AS consumer_domain,
+          count(*) FILTER (WHERE o.domain <> CASE WHEN strpos(u.email, '@') = 0 THEN ''
+                         ELSE lower(btrim(substr(u.email, strpos(u.email, '@') + 1),
+                              U&'\0020\0009\000A\000B\000C\000D\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000'))
+                    END) AS other_domain,
+          count(*)                                                          AS ending
+     FROM users u JOIN organizations o ON o.id = u.org_id
+    WHERE u.address_standing <> 'domain_confirmed'
+       OR o.domain = ANY(:'listed'::text[])
+       OR o.domain <> CASE WHEN strpos(u.email, '@') = 0 THEN ''
+                         ELSE lower(btrim(substr(u.email, strpos(u.email, '@') + 1),
+                              U&'\0020\0009\000A\000B\000C\000D\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000'))
+                    END
+    GROUP BY o.domain
+    ORDER BY ending DESC;
+   ```
+
+   **Query 2, configurations on listed domains** (the stop condition):
+
+   ```sql
+   SELECT 'sso_provider' AS kind, lower(domain) AS domain FROM sso_providers WHERE lower(domain) = ANY(:'listed'::text[])
+   UNION ALL
+   SELECT 'org_ai_configuration', o.domain
+     FROM org_ai_configurations c JOIN organizations o ON o.id = c.org_id
+    WHERE o.domain = ANY(:'listed'::text[]);
+   ```
+
+   **Stop condition: query 2 returns any row.** The release stops and the rows
+   go to the owner. Such a configuration can only have been made through
+   break-glass; its fate (delete it, or drop the domain from the release's
+   consumer list in a new build) is decided before release, never by the
+   migration. The migration applies the same check and aborts on it (see
+   [PAC-148 migration gate](#pac-148-migration-gate)).
+4. **Snapshot** for rollback fidelity: `pg_dump -t org_ai_confirmations`, and
+   a copy of `SELECT id, org_id FROM users WHERE org_id IS NOT NULL`.
+5. Deploy as in [Applying migrations](#applying-migrations-stop-migrate-start).
+   PostgreSQL's log carries `PAC-148 migration 043: ended N organisation
+   memberships and M organisation-AI confirmations` (`RAISE LOG`).
+
+Release note for PAC-148:
+
+- **Who leaves their organisation:** accounts whose address is not confirmed
+  by their domain's identity provider: accounts made with a consumer Google
+  account on a work address; accounts not signed in since PAC-71; any account
+  whose organisation is not the one for its address's domain. They lose the
+  organisation AI (they see "nothing configured" until they choose their own
+  key) and disappear from colleagues' member lists and from the Manager "On
+  Paceday" badge unless they share a team.
+- **Legacy accounts** (not signed in since PAC-71) rejoin automatically at
+  their next sign-in with their company account, and are asked to confirm the
+  organisation AI again.
+- **Accounts bound on mailbox evidence do not rejoin, ever, on their own.** A
+  sign-in with the company's Workspace or Entra identity for the same address
+  is refused (the address belongs to the bound account). Support handles
+  these with the operator `reassign` (see [Account recovery](#account-recovery)).
+  Expect these requests after a company adopts Google Workspace or Entra.
+- **The erase is irreversible**; snapshot as in step 4.
+- **Sign-in detection** answers `generic` for the added Microsoft
+  personal-account domains (`hotmail.fr`, `hotmail.co.uk`, `hotmail.de`,
+  `hotmail.it`, `hotmail.es`, `hotmail.be`, `live.fr`, `live.co.uk`,
+  `live.de`, `live.it`, `live.nl`, `live.be`, `outlook.fr`, `outlook.de`,
+  `outlook.it`, `outlook.es`, `windowslive.com`), and PAC-71's `pac71:
+  REVIEW …` log line no longer fires for a mailbox binding at those domains.
+- **Legacy accounts may become bindable**: deleting a detached unbound legacy
+  account's organisation-AI confirmations may leave it empty; it then binds
+  on authoritative evidence at its next sign-in (PAC-71 rule (b)). Expected,
+  not a support incident.
+
 ## Rollback
 
 - **The backend is not ready after a migration** (it exited, or never
@@ -339,6 +457,17 @@ free/busy call:
   teams and organisation; erasing links may make some unbound legacy
   accounts empty, so they bind on authoritative evidence at their next
   sign-in (PAC-71 rule (b)) — expected, not a support incident.
+
+- **Going back past PAC-148** (organisation membership rule, migration
+  `043_org_membership_rule`): this section applies unchanged — fix forward, or
+  restore the pre-deploy backup (which restores the ended memberships and
+  confirmations) and start the previous image. An image-only rollback does not
+  work: the previous image cannot start on a database at 043. The down step
+  changes nothing and cannot restore the memberships or confirmations; it is
+  for development, tests and staging. The previous image joins on the domain
+  alone again at the next sign-in (the oracle returns, expected on a
+  rollback); accounts that do not sign in stay detached. **If 043 aborted** on
+  its gate, follow [PAC-148 migration gate](#pac-148-migration-gate).
 
 ### Rollback on the same host
 
@@ -415,6 +544,62 @@ previous version. Run every command from the directory holding
 `scripts/ops/rehearse-backup-restore.sh` rehearses this path (its part 2): a
 dirty database at version 32, the backend refusing it, `restore.sh` refusing
 it, then the steps above.
+
+### PAC-148 migration gate
+
+**When**: `compose logs backend` shows `PAC-148 migration 043 refused:
+configuration on a consumer-list domain: …` and `Dirty database version 43`.
+Use this procedure **only** after this abort. After any other failed
+migration, follow [Rollback on the same host](#rollback-on-the-same-host).
+Never force while a migration is running ("being applied by …" means it is
+still running).
+
+**What the abort left**: no data row changed (043's work is one `DO`
+statement, which rolled back); `schema_migrations` reads `43 | t`, because
+golang-migrate marks the version dirty before it runs the file. Neither the
+new image nor the previous one starts on a dirty database.
+
+**P** is the version immediately before this release's migration: **42**
+(`042_manager_member_link_erase`). **N** is 43. P is the **data state** (042's
+erase has been applied), not "whatever the previous image embeds". The release
+precondition of
+[PAC-148 release](#pac-148-release-organisation-membership-needs-a-vouched-for-address-before-deploy)
+guarantees the database read `42 | f` before this release was deployed, so 043
+is the only migration this release applied.
+
+1. **Stop every backend**, so the new image stops restarting and cannot re-run
+   043 against the forced version: `docker compose -f docker-compose.prod.yml
+   stop backend` (on every host with a backend). Check that `docker compose -f
+   docker-compose.prod.yml ps backend` shows it exited, not `Restarting`.
+2. **Check the state**: `SELECT version, dirty FROM schema_migrations` must
+   read `43 | t`. Any other answer: stop, and follow
+   [Rollback on the same host](#rollback-on-the-same-host).
+3. **Force to P**: `UPDATE schema_migrations SET version = 42, dirty = false;`
+   (equivalent to golang-migrate `force 42`; `schema_migrations` is its single
+   row). Check it reads `42 | f`.
+4. **Start a backend image whose highest embedded migration is 42**: the
+   PAC-130 release (the image deployed under the release precondition, which
+   is the previous release). Its start-up check classifies `42 | f` as current
+   and starts (`TestPAC148_AC17_GateAbortsAndForceRecovers`). An image whose
+   highest migration is below 42 refuses (it does not know version 42), and a
+   newer one would apply 043 again. **If no image with highest = 42 is
+   available, do not continue: follow
+   [Rollback on the same host](#rollback-on-the-same-host)** (restore the
+   pre-deploy backup).
+5. **Resolve the conflict** reported in the log: for each named
+   `sso_provider` or `org_ai_configuration`, the owner decides to delete it or
+   to drop the domain from the release's consumer list (a new build, with the
+   migration's literal changed to match;
+   `TestPAC148_AC16_MigrationListIsTheGoList` keeps the two equal). Never edit
+   the migration to skip the gate.
+6. **Re-run pre-deploy query 2** of the PAC-148 release against the database.
+   It must return no row; if it returns any, go back to step 5. Only then
+   redeploy the new image, which applies 043 from the start.
+
+Forcing is safe here only because 043's work is one statement that rolled
+back (no data changed). The alternative is always
+[Rollback on the same host](#rollback-on-the-same-host) (restore the
+pre-deploy backup), which is heavier but valid.
 
 ## Expected interruption during a deploy
 
@@ -983,6 +1168,15 @@ Recovering an account whose only sign-in method stopped working, or that
 is bound to the wrong identity, is documented in
 [`docs/operator/PAC-71-account-recovery.md`](operator/PAC-71-account-recovery.md)
 (the `paceday-operator` command ships in the backend image).
+
+**PAC-148: a mailbox-bound account cannot rejoin its organisation.** An
+account bound on mailbox evidence (a consumer Google account registered with
+a work address) is `unconfirmed` for good, so it belongs to no organisation;
+a sign-in with the company's Workspace or Entra identity for the same address
+is refused (PAC-71 rule 3). When the person proves the address is theirs at
+the company, the recourse is the operator `reassign` to that identity with
+authoritative evidence (`docs/operator/PAC-71-account-recovery.md` §3b); the
+account joins its organisation at its next sign-in through that identity.
 
 ## Documentation site
 

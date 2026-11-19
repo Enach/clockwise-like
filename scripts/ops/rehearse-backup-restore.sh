@@ -194,10 +194,13 @@ get_as() { # port token path — the response body
 step "source backend :$api_base (runs migrations), seed data, issue a session"
 start_backend source "$api_base" "$src_port" "$JWT_SECRET" "$(enc_key)"
 source_pid="$last_pid"
-uid="$(psql_src "INSERT INTO users (email, name) VALUES ('rehearsal-owner@example.com', 'Rehearsal Owner') RETURNING id" | head -1)"
-mid="$(psql_src "INSERT INTO users (email, name) VALUES ('rehearsal-member@example.com', 'Rehearsal Member') RETURNING id" | head -1)"
-psql_src "INSERT INTO organizations (name, domain) VALUES ('Rehearsal', 'rehearsal.example.com')" >/dev/null
-psql_src "UPDATE users SET org_id = (SELECT id FROM organizations WHERE domain = 'rehearsal.example.com')" >/dev/null
+# PAC-148 (contract md §8): organisation members are domain-confirmed at the
+# organisation's domain, which is their address's domain (example.com), or the
+# membership rule reads them as belonging to no organisation.
+uid="$(psql_src "INSERT INTO users (email, name, address_standing) VALUES ('rehearsal-owner@example.com', 'Rehearsal Owner', 'domain_confirmed') RETURNING id" | head -1)"
+mid="$(psql_src "INSERT INTO users (email, name, address_standing) VALUES ('rehearsal-member@example.com', 'Rehearsal Member', 'domain_confirmed') RETURNING id" | head -1)"
+psql_src "INSERT INTO organizations (name, domain) VALUES ('Rehearsal', 'example.com')" >/dev/null
+psql_src "UPDATE users SET org_id = (SELECT id FROM organizations WHERE domain = 'example.com')" >/dev/null
 # Stored provider credentials, written plain as a release before PAC-84 left
 # them: a connected Google calendar for the owner (expiry far ahead, so no
 # renewal is attempted against Google) and a webcal calendar for the member.

@@ -22,11 +22,15 @@ import (
 // pac142UserInOrg makes a user in a fresh organisation.
 func pac142UserInOrg(t *testing.T, db *sql.DB, tag string) (uuid.UUID, uuid.UUID) {
 	t.Helper()
-	u, err := UpsertUser(db, "pac142-"+tag+"@example.com", "P", "", "google", "sub-pac142-"+tag)
+	// PAC-148 (contract md §8): the member is domain-confirmed at the
+	// organisation's domain.
+	d := "pac142-" + tag + "-" + uuid.NewString()[:8] + ".example"
+	u, err := UpsertUser(db, "pac142-"+tag+"@"+d, "P", "", "google", "sub-pac142-"+tag)
 	if err != nil {
 		t.Fatal(err)
 	}
-	org, err := UpsertOrg(db, "pac142-"+tag+"-"+uuid.NewString()[:8]+".example", "Org "+tag)
+	pac148Confirm(t, db, u.ID)
+	org, err := UpsertOrg(db, d, "Org "+tag)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +102,7 @@ func TestPAC142_GetUserByIDNoOrgNeverReadsTheOrg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserByIDNoOrg must not read the org: %v", err)
 	}
-	if u.ID != user || u.Org != nil || u.OrgID == nil || *u.OrgID != org || u.Email != "pac142-noorg@example.com" {
+	if u.ID != user || u.Org != nil || u.OrgID == nil || *u.OrgID != org || !strings.HasPrefix(u.Email, "pac142-noorg@") {
 		t.Fatalf("user = %+v", u)
 	}
 	if _, err := GetUserByIDNoOrg(db, uuid.New()); !errors.Is(err, sql.ErrNoRows) {

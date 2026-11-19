@@ -104,7 +104,7 @@
     "AC-18 [e2e] <random>@gmail.com on /signin: detect answers google; next request /api/auth/google with login_hint = the address; stops at the provider start; the backend's 302 to accounts.google.com is asserted, not followed; hermeticity passes.",
     "AC-19 [e2e] <random>@yahoo.com: personal-address step with the address, no password field, no Microsoft button; Google click -> /api/auth/google with the hint; no request to a path ending /api/auth/login or /api/auth/register during the journey.",
     "AC-20 [e2e] carol@<fresh>.microsoft-mx.pac97.test on the Google-only stack: detect answers microsoft; no request to /api/auth/microsoft; PAC-97 choose step with the address, Google button, no Microsoft button. Replaces pac97-signin-detect.spec.ts:160-168 until PAC-99.",
-    "AC-21 [integration] AssociateUserWithOrg for every consumer-list entry leaves org_id null and creates no org row; alice@acme-pac98.test is linked to an org for acme-pac98.test."
+    "AC-21 [integration] AssociateUserWithOrg for every consumer-list entry leaves org_id null and creates no org row; alice@acme-pac98.test is linked to an org for acme-pac98.test. Amended by PAC-148 (2026-11-19, spec docs/specs/PAC-148.md D-1, D-3; contract contracts/features/PAC-148.md §9): extended by PAC-148 AC-2: the account at each entry is DOMAIN-CONFIRMED, the list includes PAC-148's 17 Microsoft personal-account domains, and the function under test is PAC-148's sign-in membership step (AssociateUserWithOrg's successor); the company half's account becomes domain-confirmed. The text before this note is kept as written."
   ],
   "amendedExistingTests": [
     "backend/auth/sso_detect_test.go:10-30 (gmail.com -> google; not-an-email -> choose).",
@@ -166,7 +166,7 @@
     {
       "consumer": "backend/storage/orgs.go AssociateUserWithOrg, backend/storage/signin.go review log",
       "breaks": "no",
-      "detail": "Same consumer list; AC-21 pins the organisation skip."
+      "detail": "Same consumer list; AC-21 pins the organisation skip. Amended by PAC-148 (2026-11-19, spec docs/specs/PAC-148.md D-1, D-3; contract contracts/features/PAC-148.md §9): the consumer list grows by PAC-148's Microsoft personal-account domains (detection answers generic for them, PAC-148 AC-11), and organisation membership additionally requires domain-confirmed standing. The text before this note is kept as written."
     },
     {
       "consumer": "mcp",

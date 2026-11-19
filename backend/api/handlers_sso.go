@@ -204,7 +204,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := res.User
-	associateOrg(h.ah.db, user.ID, user.Email)
+	associateOrg(h.ah.db, user.ID)
 
 	if err := h.ah.issueJWT(w, user, res.Gen); err != nil {
 		h.ah.signInFailed(w, r, "issue session", err)

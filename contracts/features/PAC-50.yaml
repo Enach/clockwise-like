@@ -101,7 +101,7 @@
   ],
   "schemasAdded": [
     "SsoWriteForbiddenResponse - oneOf SsoWriteMembershipRequired | SsoWriteDomainMismatch | SsoWriteStepupRequired | SsoWriteFreshLoginRequired, disjoint on `error` (fourth variant added in revision 5).",
-    "SsoWriteMembershipRequired - error in {org membership required, org not found}.",
+    "SsoWriteMembershipRequired - error in {org membership required, org not found}. Amended by PAC-148 (2026-11-19, spec docs/specs/PAC-148.md D-1, D-3; contract contracts/features/PAC-148.md §9): also the answer for a stored association that fails PAC-148's organisation membership rule. The text before this note is kept as written.",
     "SsoWriteStepupRequired - error const sso_write_requires_admin_stepup; stepup_url (SsoStepupUrl), stepup_scopes (SsoStepupScopes), without_stepup (SsoWithoutStepup); all four required (scopes and without_stepup added in revision 5, spec §9 D-11; components extracted in revision 8).",
     "SsoWriteFreshLoginRequired - error const sso_write_requires_fresh_login.",
     "SsoStepupProvider - enum google, microsoft.",
@@ -204,7 +204,7 @@
     ]
   },
   "decisionsAssumed": [
-    "D-1 startSsoAdminStepup for an orgless caller: 403 org membership required, no cookie.",
+    "D-1 startSsoAdminStepup for an orgless caller: 403 org membership required, no cookie. Amended by PAC-148 (2026-11-19, spec docs/specs/PAC-148.md D-1, D-3; contract contracts/features/PAC-148.md §9): 'orgless' includes a caller whose stored association fails PAC-148's organisation membership rule; the same holds at every SSO membership gate (create, delete, list, options) and at the callback's check 0 (state_mismatch, no grant). The text before this note is kept as written.",
     "D-2 startSsoAdminStepup with the chosen provider unconfigured: 503 `<provider> step-up not configured`, no cookie.",
     "D-3 Callback cases spec §4.3 does not name mapped onto the existing enum: provider error / missing code / exchange or token failure -> token_invalid; absent/expired/tampered cookie, state mismatch, cookie for another org -> state_mismatch; Microsoft organisation lookup failure -> tid_mismatch; Microsoft role lookup failure -> not_admin; Google email_verified not true -> email_mismatch.",
     "D-4 Callback storage failure: 500 JSON, no usable grant.",

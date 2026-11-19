@@ -44,18 +44,16 @@ func p2Org(t *testing.T, b *byok, domain string) uuid.UUID {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.SetUserOrg(db, b.user, org.ID); err != nil {
-		t.Fatal(err)
-	}
+	// PAC-148 (contract md §8): a member is domain-confirmed at its
+	// organisation's domain.
+	pac148Into(t, db, b.user, org.ID)
 	return org.ID
 }
 
 func p2Member(t *testing.T, label string, org uuid.UUID) *byok {
 	t.Helper()
 	b := newBYOK(t, label)
-	if err := storage.SetUserOrg(openTestDB(t), b.user, org); err != nil {
-		t.Fatal(err)
-	}
+	pac148Into(t, openTestDB(t), b.user, org) // PAC-148 (contract md §8)
 	return b
 }
 

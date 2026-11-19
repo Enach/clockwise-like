@@ -11,10 +11,10 @@
   "specDoc": "docs/specs/PAC-130.md (revision 2, accepted by the challenge of revision 2 at ff9b3f6; OQ-1 and OQ-2 on their defaults; status line tidied on this branch)",
   "sourceOfTruth": "Enach/clockwise-like",
   "followUps": [
-    "PAC-148 (spec F-2, O-11): the organisation member list; rule (b) narrows with it (md 2.5).",
+    "PAC-148 (spec F-2, O-11): the organisation member list; rule (b) narrows with it (md 2.5). Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): narrowed as stated in contracts/features/PAC-148.md.",
     "PAC-149 (spec F-1, O-10, O-10b): scheduling-link co-host invite and co-host list."
   ],
-  "scope": "Manager mode stops revealing whether an address has a Paceday account. The add, the patch and schedule materialisation, and detection perform no account lookup and store no link; member_user_id is always null and deprecated. is_paceday_user means 'visible on Paceday' to the caller: an account carrying the address (any standing, case-insensitive) that is a Paceday member of a team the caller is a Paceday member of, or that the organisation member list returns to the caller. Figures by three branches decided once per entry per request: Paceday figures (visible, known account, PAC-60 owner, consent), no read (visible but not entitled), estimate (not visible: free/busy through the caller's credential, exactly as for an address with no account). The analytics cache serves a row only on the branch that computed it. A failed visibility read is the 500. Migration 042 erases stored links outside the rule. Web: badge only from the flag, neutral note, the demo guesses nothing.",
+  "scope": "Manager mode stops revealing whether an address has a Paceday account. The add, the patch and schedule materialisation, and detection perform no account lookup and store no link; member_user_id is always null and deprecated. is_paceday_user means 'visible on Paceday' to the caller: an account carrying the address (any standing, case-insensitive) that is a Paceday member of a team the caller is a Paceday member of, or that the organisation member list returns to the caller. Figures by three branches decided once per entry per request: Paceday figures (visible, known account, PAC-60 owner, consent), no read (visible but not entitled), estimate (not visible: free/busy through the caller's credential, exactly as for an address with no account). The analytics cache serves a row only on the branch that computed it. A failed visibility read is the 500. Migration 042 erases stored links outside the rule. Web: badge only from the flag, neutral note, the demo guesses nothing. Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): 'returns to the caller' now means the accounts that belong to the caller's organisation under PAC-148's membership rule (domain-confirmed, address's domain not on the consumer list, organisation of the address's domain); rule (b) narrows with the list; the text before this note is kept as written.",
   "interfaceKind": "HTTP: no operation, status or schema shape changes; descriptions on 8 operations and 5 schemas, deprecated on one property (md 1). Non-HTTP and binding: the visibility statement and branch order (md 2), writes (md 3), migration 042 and runbook text (md 4), web texts (md 5), test seams (md 6).",
   "mergeAfter": "origin/main efa67c5 or later. Migration 042. Server before web (README section 1).",
   "repositories": {
@@ -27,7 +27,7 @@
         "backend/engine/manager.go (DetectTeam without ConfirmedHolder; the branch decision and GetMemberWeek per md 2.2, 2.3)",
         "backend/engine/test_seams.go (StepVisibilityRead, StepHolderLookup)",
         "backend/api/handlers_manager.go (addMember without the lookup; member_user_id null on the add and patch answers; getOrCreateScopedMember without the link; getTeam and getAnalytics flag and branch; 500 on a visibility failure)",
-        "backend/api/handlers_org.go (only to read the shared organisation-set definition; its [] fallback stays)",
+        "backend/api/handlers_org.go (only to read the shared organisation-set definition; its [] fallback stays) Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): the [] fallback on a failed caller read is replaced by the 500 in PAC-148.",
         "backend/api/pac130_*_test.go, backend/engine/pac130_*_test.go, backend/storage/pac130_*_test.go (new)",
         "backend/api/pac71_address_test.go ('manager member add' subtest), backend/api/pac122_b4_test.go and backend/engine/pac122_b4_test.go (SF-010 tests), backend/api/pac34_invite_analytics_test.go (unowned row), backend/engine/manager_scope_test.go: rewritten to the new rule, not deleted",
         "backend/api/interfaces.go (ManagerWorkflow, only if the plan adds a per-entry decision method) and its fakes in backend/api/handlers_manager_test.go, backend/api/manager_contract_test.go, failingWeekWorkflow in backend/api/pac122_b4_test.go; fixtures backend/engine/pac122_b4_test.go (SF-040) and backend/engine/pac133_test.go that drive today's branch through MemberUserID: adapted, assertions kept (md 9)",
@@ -98,7 +98,7 @@
     },
     {
       "operationId": "listOrgMembers",
-      "change": "description only: its result set is rule (b), through the shared SQL fragment orgMemberSetSQL (md 2.5); behaviour unchanged"
+      "change": "description only: its result set is rule (b), through the shared SQL fragment orgMemberSetSQL (md 2.5); behaviour unchanged Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): PAC-148 changes listOrgMembers' behaviour (membership rule; 500 on a failed caller read)."
     }
   ],
   "componentsChanged": [
@@ -129,7 +129,7 @@
     "visibility": "md 2.1: one SQL statement per manual/auto entry per request, of the same shape for every address; formal entries are visible by construction (no statement); added entries keep PAC-129's rule.",
     "branches": "md 2.2: order added -> visibility -> known account (formal: the member; manual/auto: ConfirmedHolder) -> PAC-60 -> consent (no user_profiles row = NOT shared, branch (2); NULL column = shared; as today, and PAC-107 owns whether that should change) -> figures; decided once per entry per request, before any week is read.",
     "cache": "md 2.2: branch (1) serves and writes only is_paceday_user=true rows, branch (3) only false, branch (2) never touches the cache.",
-    "orgSet": "md 2.5: one SQL fragment orgMemberSetSQL(viewer, excluded), embedded in the visibility statement and used by GetOrgMembers (keyed by the viewer, answer unchanged); the Manager read never falls back on a failure.",
+    "orgSet": "md 2.5: one SQL fragment orgMemberSetSQL(viewer, excluded), embedded in the visibility statement and used by GetOrgMembers (keyed by the viewer, answer unchanged); the Manager read never falls back on a failure. Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): the fragment additionally requires both the viewer and each listed account to satisfy PAC-148's membership rule through effectiveOrgSQL (PAC-148 md §2.2); still one fragment keyed by the viewer, still embedded; listOrgMembers no longer falls back to [] on a failed caller read (500, PAC-148 D-8).",
     "writes": "md 3: no Manager path writes a non-null member_user_id; kept links are frozen.",
     "seams": "md 6: engine managerStep gains visibility-read and holder-lookup; storage InstallOrgMembersExclude supplies orgMemberSetSQL's exclusion list.",
     "web": "md 5: exact note text; the demo add never guesses."
@@ -153,7 +153,7 @@
     "AC-7  [contract] detection (request and scheduled job) over 1:1s with H and N, confirm for T: preview entries equal modulo the address; no stored link; AC-4's equalities hold.",
     "AC-8  [unit] AC-4's reads with H and (empty cache) N: equal fake-provider requests with V's token; zero analytics-week-read (and owner-check, consent-read, holder-lookup) for H; equal step sequences, one visibility-read per entry.",
     "AC-9  [contract, e2e] co-member R (accepted, confirmed, outside V's org, shares, 615 focus, manual row on T): flag true, 615; sharing off -> flag true, no data (also with a row cached before); no user_profiles row -> flag true, no data, nothing read past consent-read; a row with the column NULL -> 615. e2e manager-team.spec.ts:30-60 and team-invite-analytics.spec.ts:91-110 unchanged.",
-    "AC-10 [contract] P (co-member, V not owner) and Q (V's org, no team): add answers null; flag true, no data, no free/busy request, no Paceday read. Also: an unconfirmed carrier in the org and in a shared team; a case pair with one carrier in a shared team; an account address in another letter case. Transition: cached estimate, then visible -> flag true, no data, cache not served.",
+    "AC-10 [contract] P (co-member, V not owner) and Q (V's org, no team): add answers null; flag true, no data, no free/busy request, no Paceday read. Also: an unconfirmed carrier in the org and in a shared team; a case pair with one carrier in a shared team; an account address in another letter case. Transition: cached estimate, then visible -> flag true, no data, cache not served. Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): the 'unconfirmed carrier in the org' sub-case now gives flag false and the estimate (PAC-148 AC-10; test rewritten, not deleted); the other sub-cases are unchanged.",
     "AC-11 [unit] R as AC-9 with cached figures, removed by DELETE /api/teams/{id}/members/{userId}, or by the Manager team-scoped removal then a re-add: flag false, no cached Paceday figure served, estimate as N. Pre-change Paceday rows for a viewer outside the rule never served; TestGetMemberWeek_IgnoresFiguresCachedBeforeTheGate kept.",
     "AC-12 [unit] migration 042 on a fixture at 041: H's link erased; R's and an organisation link kept; nothing else changes; afterwards V's add of H answers null and the roster shows AC-4's result.",
     "AC-13 [contract] fault on visibility-read, one-entry roster (and analytics over it) -> 500 internal error; never not visible, never an estimate; no cache row written for that entry.",
@@ -178,7 +178,7 @@
   ],
   "doesNotResolve": [
     "O-10, O-10b co-host oracles (PAC-149).",
-    "O-11 organisation member list (PAC-148); rule (b) carries its exposure until then.",
+    "O-11 organisation member list (PAC-148); rule (b) carries its exposure until then. Amended by PAC-148 (2026-11-19, spec D-9, contract PAC-148.md §9): O-11 is resolved by PAC-148; (b) no longer carries a consumer-domain exposure.",
     "PAC-71 D12 emptiness rule (D-12).",
     "Removal of member_user_id (a later ticket, no earlier than the release after PAC-130's).",
     "SF-106, API-086, SF-074, SF-107.",

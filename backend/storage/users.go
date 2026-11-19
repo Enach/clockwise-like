@@ -45,10 +45,13 @@ func UpsertUser(db DBTX, email, name, avatarURL, provider, providerID string) (*
 	return u, row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &u.CreatedAt)
 }
 
+// GetUserByEmail reads the user holding exactly email; OrgID is the
+// effective organisation (PAC-148 contract md §2.3), as for getUserRow. A
+// missing row is (nil, nil). No production caller reads it today.
 func GetUserByEmail(db DBTX, email string) (*User, error) {
 	row := db.QueryRow(`
-		SELECT id, email, name, avatar_url, provider, address_standing, org_id, created_at
-		FROM users WHERE email = $1
+		SELECT u.id, u.email, u.name, u.avatar_url, u.provider, u.address_standing, `+effectiveOrgSQL("u")+`, u.created_at
+		FROM users u WHERE u.email = $1
 	`, email)
 
 	u := &User{}
@@ -99,16 +102,21 @@ func GetUserByIDNoOrg(db DBTX, id uuid.UUID) (*User, error) {
 }
 
 // getUserRow is the users-row read both readers share. The InstallUserRead
-// seam fires here, so it covers both.
+// seam fires here, so it covers both. OrgID is the EFFECTIVE organisation
+// (PAC-148 contract md §2.3): the stored association only when the account
+// belongs to it under the membership rule (effectiveOrgSQL), nil otherwise,
+// whatever users.org_id holds. A caller that needs the stored column reads it
+// with SQL.
 func getUserRow(db DBTX, id uuid.UUID) (*User, error) {
 	if hook, ok := userRead.get(); ok {
 		if err := hook(id); err != nil {
 			return nil, err
 		}
 	}
+	fireOrgMembershipStatement("user-row")
 	row := db.QueryRow(`
-		SELECT id, email, name, avatar_url, provider, address_standing, org_id, created_at
-		FROM users WHERE id = $1
+		SELECT u.id, u.email, u.name, u.avatar_url, u.provider, u.address_standing, `+effectiveOrgSQL("u")+`, u.created_at
+		FROM users u WHERE u.id = $1
 	`, id)
 
 	u := &User{}

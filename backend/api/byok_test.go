@@ -251,9 +251,7 @@ func joinOrg(t *testing.T, user uuid.UUID, domain string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.SetUserOrg(db, user, org.ID); err != nil {
-		t.Fatal(err)
-	}
+	pac148Into(t, db, user, org.ID) // PAC-148 (contract md §8)
 }
 
 // --------------------------------------------------------------- AC-2, AC-40

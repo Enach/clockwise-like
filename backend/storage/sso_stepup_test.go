@@ -24,8 +24,8 @@ func stepupFixture(t *testing.T, db *sql.DB, label string) (uuid.UUID, uuid.UUID
 	if err != nil {
 		t.Fatalf("UpsertUser: %v", err)
 	}
-	if err := AssociateUserWithOrg(db, u.ID, u.Email); err != nil {
-		t.Fatalf("AssociateUserWithOrg: %v", err)
+	if err := pac148ConfirmAndJoin(t, db, u.ID); err != nil {
+		t.Fatalf("join organisation: %v", err)
 	}
 	u, err = GetUserByID(db, u.ID)
 	if err != nil || u.OrgID == nil {

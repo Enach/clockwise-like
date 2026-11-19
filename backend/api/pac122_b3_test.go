@@ -113,16 +113,27 @@ func pac122FailOrgAssociation(t *testing.T, email string) {
 }
 
 // pac122AssertOrgAssociationReported checks that the sign-in went through,
-// that email's account has no org, and that the failure was reported once
-// under the account's id, with neither the address nor its domain.
+// that email's account has no stored org, and that the failure was reported
+// once under the account's id, with neither the address nor its domain. The
+// stored users.org_id is read by SQL: User.OrgID is the effective
+// organisation since PAC-148 (contract md §2.3), nil for every non-member
+// whatever is stored, so it cannot show that the association failed.
 func pac122AssertOrgAssociationReported(t *testing.T, rec *lifecycletest.Recorder, email string) {
 	t.Helper()
-	u, err := storage.GetUserByEmail(openTestDB(t), email)
+	pac122AssertOrgFailureReported(t, rec, email, uuid.NullUUID{})
+}
+
+// pac122AssertOrgFailureReported is pac122AssertOrgAssociationReported with
+// the stored org_id the failed step must have left (want; invalid: none).
+func pac122AssertOrgFailureReported(t *testing.T, rec *lifecycletest.Recorder, email string, want uuid.NullUUID) {
+	t.Helper()
+	db := openTestDB(t)
+	u, err := storage.GetUserByEmail(db, email)
 	if err != nil || u == nil {
 		t.Fatalf("account for the sign-in: %v", err)
 	}
-	if u.OrgID != nil {
-		t.Fatalf("the account has org %s although the association failed", u.OrgID)
+	if raw := pac148RawOrg(t, db, u.ID); raw != want {
+		t.Fatalf("the account's stored org_id is %v, want %v (the failed step rolled back)", raw, want)
 	}
 	got := rec.Matching("org-association", "")
 	if len(got) != 1 || got[0].Unit.ID != u.ID.String() {
@@ -140,12 +151,24 @@ func pac122AssertOrgAssociationReported(t *testing.T, rec *lifecycletest.Recorde
 func TestPAC122_SF071_OrgAssociationFailureIsReported(t *testing.T) {
 	t.Run("google", func(t *testing.T) {
 		rec := lifecycletest.Record(t)
-		email := "pac122-sf071-google-" + uuid.NewString()[:8] + "@example.com"
+		// A run-unique domain, so "no organisation row for it" below is
+		// about this sign-in alone (the test database is shared).
+		d := "pac122-sf071-" + uuid.NewString()[:8] + ".test"
+		email := "google@" + d
 		pac122FailOrgAssociation(t, email)
 		p := newFakeOAuthProvider(t)
-		p.profile = jsonProfile(map[string]any{"verified_email": true, "id": "g-sf071-" + uuid.NewString()[:8], "email": email, "name": "G"})
+		// PAC-148 (contract md §8): domain-confirmed at its own domain (hd),
+		// so the sign-in step takes the join and the trigger fires; a
+		// mailbox-evidence account (no hd) would write nothing.
+		p.profile = jsonProfile(map[string]any{"verified_email": true, "hd": d, "id": "g-sf071-" + uuid.NewString()[:8], "email": email, "name": "G"})
 		assertSignedIn(t, runGoogleCallback(t, &authHandlers{db: openTestDB(t), jwtSecret: "secret"}, p), pac35Frontend+"/auth/callback")
 		pac122AssertOrgAssociationReported(t, rec, email)
+		// PAC-148 (contract md §2.4, review non-blocking 2): the organisation
+		// upsert runs inside the step's transaction, so the failed join
+		// leaves no organisation row behind.
+		if n := pac122Count(t, `SELECT count(*) FROM organizations WHERE domain = $1`, d); n != 0 {
+			t.Fatalf("%d organisation rows for %s after the failed join, want 0 (the upsert must roll back with it)", n, d)
+		}
 	})
 	t.Run("microsoft", func(t *testing.T) {
 		rec := lifecycletest.Record(t)
@@ -168,6 +191,46 @@ func TestPAC122_SF071_OrgAssociationFailureIsReported(t *testing.T) {
 			ServeHTTP(w, oidcCallbackRequest(d, &http.Cookie{Name: "sso_state", Value: "s1|" + d}))
 		assertSignedIn(t, w, pac35Frontend+"/auth/callback?provider=sso")
 		pac122AssertOrgAssociationReported(t, rec, idp.email)
+	})
+	// PAC-148 (contract md §2.4, §8, revision 3): the leave branch is reported
+	// too. A mailbox-bound (unconfirmed) account does not qualify, so its
+	// sign-in step ends its stored association; that UPDATE is forced to fail.
+	t.Run("leave", func(t *testing.T) {
+		db := openTestDB(t)
+		d := "pac122-sf071-leave-" + uuid.NewString()[:8] + ".test"
+		email := "u@" + d
+		profile := map[string]any{"verified_email": true, "id": "g-sf071-leave-" + uuid.NewString()[:8], "email": email, "name": "U"}
+		p := newFakeOAuthProvider(t)
+		p.profile = jsonProfile(profile)
+		// First sign-in: creates and binds the account on mailbox evidence;
+		// it does not qualify and has no association, so nothing is written.
+		assertSignedIn(t, runGoogleCallback(t, &authHandlers{db: db, jwtSecret: "secret"}, p), pac35Frontend+"/auth/callback")
+		u, err := storage.GetUserByEmail(db, email)
+		if err != nil || u == nil || u.AddressStanding != storage.AddressUnconfirmed {
+			t.Fatalf("mailbox-bound account = %+v, %v", u, err)
+		}
+		// Plant an association and a confirmation, then install the trigger.
+		org, err := storage.UpsertOrg(db, d, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pac148Plant(t, db, u.ID, org.ID)
+		if _, err := db.Exec(`INSERT INTO org_ai_confirmations (user_id, org_id, consent_since_version, confirmed_at) VALUES ($1, $2, 1, now())`, u.ID, org.ID); err != nil {
+			t.Fatal(err)
+		}
+		pac122FailOrgAssociation(t, email)
+		recorded := pac148Record(t)
+		rec := lifecycletest.Record(t)
+		// Second sign-in: PAC-71 rule 1 reaches the bound identity.
+		assertSignedIn(t, runGoogleCallback(t, &authHandlers{db: db, jwtSecret: "secret"}, p), pac35Frontend+"/auth/callback")
+		steps := recorded()
+		if !pac148Contains(steps, "membership-leave") || pac148Contains(steps, "org-upsert") || pac148Contains(steps, "membership-set") {
+			t.Fatalf("sign-in step statements = %v, want the leave branch (membership-leave, no org-upsert or membership-set)", steps)
+		}
+		pac122AssertOrgFailureReported(t, rec, email, uuid.NullUUID{UUID: org.ID, Valid: true})
+		if n := pac122Count(t, `SELECT count(*) FROM org_ai_confirmations WHERE user_id=$1`, u.ID); n != 1 {
+			t.Fatalf("%d organisation-AI confirmations after the failed leave, want 1 (rolled back)", n)
+		}
 	})
 }
 

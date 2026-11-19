@@ -257,9 +257,10 @@ func TestPAC71_AC38_BreakGlassIsTheAccountNotTheClaim(t *testing.T) {
 		execT(t, `UPDATE users SET address_standing = 'unconfirmed' WHERE id = $1`, u.ID)
 		e = newSSOEnv(t, u.Email)
 		rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(org.Domain), session(t, u, time.Now()))
-		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "sso_write_requires_admin_stepup") {
-			t.Fatalf("= %d %s", rec.Code, rec.Body.String())
-		}
+		// Amended by PAC-148 (spec D-1, contract md §2.1): an unconfirmed
+		// account belongs to no organisation, so gate step 1 (membership)
+		// refuses it before break-glass is consulted; it still writes nothing.
+		pac148AssertBreakGlassRefused(t, e, rec, org.Domain)
 	})
 	t.Run("a listed claim on an account whose address was freed does not", func(t *testing.T) {
 		e := newSSOEnv(t)
@@ -272,9 +273,10 @@ func TestPAC71_AC38_BreakGlassIsTheAccountNotTheClaim(t *testing.T) {
 		execT(t, `UPDATE users SET session_generation = 0 WHERE id = $1`, u.ID) // keep the session valid: only the claim is in question
 		e = newSSOEnv(t, listed)
 		rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(org.Domain), sess)
-		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "sso_write_requires_admin_stepup") {
-			t.Fatalf("= %d %s", rec.Code, rec.Body.String())
-		}
+		// Amended by PAC-148 (spec §3.1 condition 3): the freed address is no
+		// longer at the organisation's domain, so the account belongs to no
+		// organisation and gate step 1 refuses it before break-glass.
+		pac148AssertBreakGlassRefused(t, e, rec, org.Domain)
 	})
 }
 

@@ -259,6 +259,7 @@ func TestPAC130_OrgMemberSetIsOneDefinition(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		pac148Confirm(t, db, u.ID) // PAC-148 (contract md §8)
 		if inOrg {
 			if err := SetUserOrg(db, u.ID, org.ID); err != nil {
 				t.Fatal(err)

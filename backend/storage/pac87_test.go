@@ -59,6 +59,7 @@ func (o *pac87Org) member(label string) uuid.UUID {
 	if err != nil {
 		o.t.Fatal(err)
 	}
+	pac148Confirm(o.t, o.db, u.ID) // PAC-148 (contract md §8): a member is domain-confirmed
 	if err := SetUserOrg(o.db, u.ID, o.org); err != nil {
 		o.t.Fatal(err)
 	}
@@ -476,6 +477,17 @@ type pac87Seed struct {
 	org, admin, x, y, z uuid.UUID
 }
 
+// pac87ConfirmMembers gives every account of org a domain-confirmed standing
+// (PAC-148, contract md §8: a member is domain-confirmed at the
+// organisation's domain). The seed runs at 034, before 035 adds the column,
+// and 035's down step drops it, so this runs after each migration to 036.
+func pac87ConfirmMembers(t *testing.T, db *sql.DB, org uuid.UUID) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE users SET address_standing = 'domain_confirmed' WHERE org_id = $1`, org); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedPAC87(t *testing.T, db *sql.DB) pac87Seed {
 	t.Helper()
 	var s pac87Seed
@@ -545,6 +557,7 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 	s := seedPAC87(t, db)
 	before := settingsFacts(t, db)
 	to(36)
+	pac87ConfirmMembers(t, db, s.org)
 	if !constraintExists(t, db, "org_ai_confirmations_consent_since_version_check") || constraintExists(t, db, "org_ai_confirmations_configuration_version_check") ||
 		!constraintExists(t, db, "org_ai_configurations_consent_since_check") {
 		t.Fatal("constraint names after up")
@@ -584,7 +597,7 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 		t.Fatal("Z confirming (row 9)")
 	}
 	var n uuid.UUID
-	if err := db.QueryRow(`INSERT INTO users (email, name, org_id) VALUES ('n@a87.example', 'N', $1) RETURNING id`, s.org).Scan(&n); err != nil {
+	if err := db.QueryRow(`INSERT INTO users (email, name, org_id, address_standing) VALUES ('n@a87.example', 'N', $1, 'domain_confirmed') RETURNING id`, s.org).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if o.confirm(n, rotated.Version) != OrgAIConfirmed {
@@ -621,6 +634,7 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 	}
 	rows.Close()
 	to(36)
+	pac87ConfirmMembers(t, db, s.org)
 	if state(s.x).Confirmed() || state(s.z).Confirmed() {
 		t.Fatal("a confirmation ended by down came back with up")
 	}

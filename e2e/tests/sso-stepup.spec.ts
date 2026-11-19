@@ -36,7 +36,9 @@ async function orgMember(): Promise<{ user: SessionUser; domain: string }> {
     ])
   )[0];
   if (!org) throw new Error('organization not created');
-  await query('INSERT INTO users (id, email, name, org_id, created_at) VALUES ($1, $2, $3, $4, NOW())', [
+  // PAC-148 (contract md §8): the member is domain-confirmed at the
+  // organisation's domain, or it belongs to no organisation.
+  await query("INSERT INTO users (id, email, name, org_id, address_standing, created_at) VALUES ($1, $2, $3, $4, 'domain_confirmed', NOW())", [
     user.id,
     user.email,
     user.name,

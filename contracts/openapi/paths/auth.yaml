@@ -1238,6 +1238,11 @@ paths:
         Since PAC-71 the response carries `addressStanding`, so the web app's
         Settings can say that an unconfirmed address cannot accept
         invitations yet (spec §3 "What standing allows").
+        Since PAC-148 (spec §3.1, D-1, AC-1, AC-3) `org` is present only
+        when the account BELONGS to an organisation under the organisation
+        membership rule stated on listOrgMembers; a stored association that
+        fails the rule is answered as no organisation (no `org`), and no
+        organisation is read for it.
       responses:
         '200':
           description: The user row (with its org when one is associated).
@@ -1371,7 +1376,12 @@ paths:
         1. Membership: the caller must belong to an org, and the org is always
            the caller's own; nothing in the body chooses it. Otherwise 403
            `org membership required`, or `org not found` when the org row is
-           gone. Decided before the body is read, so before every 400, and
+           gone. Since PAC-148 (spec D-1, D-3, AC-4) "belong" is the
+           organisation membership rule stated on listOrgMembers, applied at
+           this read: a caller with a stored association that fails it
+           (unconfirmed, at a consumer-list domain, or in another domain's
+           organisation) gets `org membership required`, before every other
+           step, exactly as a caller with no association. Decided before the body is read, so before every 400, and
            before the break-glass check, so a break-glass email with no org
            gets this same 403. It carries no `stepup_url`.
         2. Body, each refusal a 400 that stores nothing and consumes no grant.
@@ -1615,7 +1625,10 @@ paths:
       summary: List the SSO configurations belonging to the caller's org
       description: |
         Any member of the org may call it (unchanged by PAC-22; restricting
-        who may read is out of PAC-22's scope, spec §5). Since PAC-22 the
+        who may read is out of PAC-22's scope, spec §5). Since PAC-148 (spec
+        D-1, D-3, AC-4; G-5) "member" is the organisation membership rule
+        stated on listOrgMembers, applied at this read; a caller outside it
+        gets the 403, whatever association is stored. Since PAC-22 the
         response is an SsoProviderList: a named container, not a bare array
         (spec §3.7), whose items never carry the client secret or a signing
         certificate under any name, nor anything derived from either, whoever
@@ -1646,7 +1659,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required" — the user has no org_id (also returned when the user lookup errors).'
+          description: '"org membership required" — the user belongs to no organisation under the PAC-148 membership rule (listOrgMembers): no stored association, or one that fails the rule (also returned when the user lookup errors; PAC-148 does not change that).'
           content:
             application/json:
               schema:
@@ -1668,7 +1681,9 @@ paths:
       description: |
         Same gate as createSsoProvider, in the same order (spec §4.2), with no
         body to check: membership (403 `org membership required` / `org not
-        found`), then the `{domain}` segment (as the router yields it, see
+        found`; since PAC-148 the organisation membership rule stated on
+        listOrgMembers, so a stored association that fails it is refused here
+        and nothing is deleted, AC-4), then the `{domain}` segment (as the router yields it, see
         below; not trimmed) must equal the caller's org domain exactly, case-insensitive for
         ASCII letters only; any other difference, including non-ASCII case
         folding, is a different domain (createSsoProvider's DOMAIN MATCH,
@@ -2071,7 +2086,10 @@ paths:
             `org membership required`: the caller has no org, or its org row
             is gone (this operation does not distinguish the second case as
             `org not found`), so there is no org domain to step up for. No
-            state cookie is set. (Assumed by the factory at stage 2, pending
+            state cookie is set, and nothing is redirected to a provider.
+            Since PAC-148 (spec D-1, D-3, AC-4; G-6) "has no org" includes a
+            caller whose stored association fails the organisation
+            membership rule stated on listOrgMembers. (Assumed by the factory at stage 2, pending
             owner confirmation; spec "Decisions", D-1.) The body is
             SsoWriteMembershipRequired, the same schema as the membership 403
             of getSsoStepupOptions and of the SSO writes, so a generated
@@ -2189,7 +2207,9 @@ paths:
             The caller has no org (`org membership required`, also when the
             user lookup fails) or its org row is gone (`org not found`): there
             is no org domain to step up for (as at the start, spec §9 D-1, and
-            as at step 1 of the SSO writes). The body is
+            as at step 1 of the SSO writes). Since PAC-148 (spec D-1, D-3,
+            AC-4) "has no org" includes a caller whose stored association
+            fails the organisation membership rule stated on listOrgMembers. The body is
             SsoWriteMembershipRequired; it carries no `stepup_url`. A client
             offers no step-up entry point to such a caller (spec AC-25).
           content:
@@ -2215,7 +2235,13 @@ paths:
 
         0. The `sso_stepup_state` cookie is present, unexpired, untampered,
            matches `state`, and is bound to the session's user and current
-           org; else `state_mismatch`.
+           org; else `state_mismatch`. Since PAC-148 (spec D-3, AC-4) the
+           "current org" is the organisation the user BELONGS to under the
+           organisation membership rule stated on listOrgMembers, decided at
+           this request: a user whose stored association fails it has no
+           current org, so even a validly signed state naming that
+           association's organisation is `state_mismatch` and no grant is
+           issued.
         1. The authorization code is exchanged and the ID token verified
            (signature, audience, issuer, expiry). A provider `error`, a
            missing `code` or any failure here gives `token_invalid`.
@@ -2716,15 +2742,26 @@ components:
             `domain_confirmed` address acts as a person at the granting sites
             (team-invite acceptance, scheduling-link co-host invitations,
             the manager's member add, roster import and roster entries,
-            break-glass); an `unconfirmed` one works fully for its own user
+            break-glass, and, since PAC-148, organisation membership: see
+            listOrgMembers); an `unconfirmed` one works fully for its own user
             but resolves to nobody there. It changes only when the account
             binds (sign-in) or through the operator procedure; never on an
             ordinary sign-in, a connect or a refusal.
         org:
           description: |
-            Present only when the user has an org_id AND the org row loads
-            (json tag "org,omitempty"). org_id itself is `json:"-"` and never
-            serialized.
+            Present only when the user BELONGS to an organisation AND the org
+            row loads (json tag "org,omitempty"). org_id itself is `json:"-"`
+            and never serialized.
+            Since PAC-148 (spec §3.1, §3.2, D-1, D-3; G-3) "belongs" is the
+            organisation membership rule stated on listOrgMembers, applied at
+            this read: `addressStanding` is `domain_confirmed`, the address's
+            domain is not on the consumer list, and the organisation is the one
+            for the address's domain. A stored association that fails it
+            (written by an older release, an operator step, a fixture) gives no
+            `org`, and the organisation row is not read. Before PAC-148 any
+            stored association was shown, so an account at a consumer domain,
+            or one bound on mailbox evidence, learned whether and since when
+            an organisation existed for its domain. The shape is unchanged.
           $ref: '#/components/schemas/OrgSummary'
         createdAt:
           type: string
@@ -2803,6 +2840,18 @@ components:
                sign-in. A company domain is never "generic". No SSO row is
                read and no lookup is made for any consumer domain, so an SSO
                row for one of them never applies.
+               PAC-148 (spec §3.3, D-4, AC-11) adds Microsoft's personal-account
+               domains to the list: hotmail.fr, hotmail.co.uk, hotmail.de,
+               hotmail.it, hotmail.es, hotmail.be, live.fr, live.co.uk,
+               live.de, live.it, live.nl, live.be, outlook.fr, outlook.de,
+               outlook.it, outlook.es and windowslive.com (each admitted only
+               if, when the plan is written, its MX resolves only to the
+               Outlook.com consumer host `*.olc.protection.outlook.com`; the
+               plan records any entry dropped by that rule). Each is
+               "generic" like outlook.com until PAC-77; before PAC-148 they
+               took the MX path and answered "choose". The list is also the
+               consumer list of the organisation membership rule
+               (listOrgMembers).
                Paceday has no password sign-in and no password or
                registration route. A client never shows a password form for
                any value of this field ("generic" included); builds older
@@ -3121,7 +3170,11 @@ components:
       type: object
       description: |
         The caller has no org (or its org row is gone). Checked before
-        anything else, including break-glass. No `stepup_url`: there is no org
+        anything else, including break-glass. Since PAC-148 (spec D-1, D-3)
+        "has no org" means the caller belongs to no organisation under the
+        organisation membership rule stated on listOrgMembers, decided at the
+        request: a stored association that fails the rule is refused with
+        `org membership required`, like no association at all. No `stepup_url`: there is no org
         to step up for. Also the 403 of getSsoStepupOptions and of
         startSsoAdminStepup (the latter always with `org membership
         required`), and (NEW-llm-bring-your-own Part 2) of getOrganizationAI,

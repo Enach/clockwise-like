@@ -209,7 +209,10 @@ func TestStepupMicrosoft_Denials(t *testing.T) {
 		mutate func(i *stepupIdP, email, domain string)
 		reason string
 	}{
-		{"domain not verified (AC-9a)", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT1, d)(i); i.verified = []string{"sub." + d} }, "tid_mismatch"},
+		{"domain not verified (AC-9a)", "", func(i *stepupIdP, email, d string) {
+			microsoftAdmin(email, msTenantT1, d)(i)
+			i.verified = []string{"sub." + d}
+		}, "tid_mismatch"},
 		{"organisation id differs from tid", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT1, d)(i); i.orgID = msTenantT9 }, "tid_mismatch"},
 		{"organisation lookup fails (D-3)", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT1, d)(i); i.orgStatus = 403 }, "tid_mismatch"},
 		{"pinned to another tenant (AC-9c)", msTenantT1, func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT2, d)(i) }, "tid_changed"},
@@ -351,9 +354,10 @@ func TestStepupCallback_StateAndSession(t *testing.T) {
 
 	// The cookie is bound to the org: U moves org, the old state is refused.
 	_, other := e.member(t, "state-moved")
-	if err := storage.SetUserOrg(e.db, u.ID, other.ID); err != nil {
-		t.Fatal(err)
-	}
+	// PAC-148 (contract md §8): U is a member of the other organisation
+	// under the rule, so the mismatch is the moved organisation, not the
+	// absence of one.
+	pac148Into(t, e.db, u.ID, other.ID)
 	rec = e.do(t, http.MethodGet, cb, "", sessU, stateCookie(start))
 	wantOutcome(t, rec, rec.Code, "stepup=denied&reason=state_mismatch")
 }

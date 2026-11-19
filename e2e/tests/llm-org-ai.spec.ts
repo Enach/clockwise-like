@@ -35,7 +35,12 @@ async function orgWithMembers(): Promise<{ admin: SessionUser; member: SessionUs
   if (!org) throw new Error('organization not created');
   const make = async (local: string, name: string): Promise<SessionUser> => {
     const user = { id: randomUUID(), email: `${local}@${domain}`, name };
-    await query('INSERT INTO users (id, email, name, org_id, created_at) VALUES ($1, $2, $3, $4, NOW())', [user.id, user.email, user.name, org.id]);
+    // PAC-148 (contract md §8): members are domain-confirmed at the
+    // organisation's domain, or they belong to no organisation.
+    await query(
+      "INSERT INTO users (id, email, name, org_id, address_standing, created_at) VALUES ($1, $2, $3, $4, 'domain_confirmed', NOW())",
+      [user.id, user.email, user.name, org.id],
+    );
     return user;
   };
   return { admin: await make('admin', 'E2E org AI admin'), member: await make('member', 'E2E org AI member'), other: await make('other', 'E2E org AI other'), domain };

@@ -384,6 +384,13 @@ const (
 	MeetingBriefResponseStatusReady   MeetingBriefResponseStatus = "ready"
 )
 
+// Defines values for OrgMemberProvider.
+const (
+	OrgMemberProviderGoogle    OrgMemberProvider = "google"
+	OrgMemberProviderMicrosoft OrgMemberProvider = "microsoft"
+	OrgMemberProviderSso       OrgMemberProvider = "sso"
+)
+
 // Defines values for OrganizationAIConfigurationChangeableBy.
 const (
 	OrganizationAIConfigurationChangeableByOrganizationAdmin OrganizationAIConfigurationChangeableBy = "organization_admin"
@@ -941,7 +948,7 @@ type AIStatus struct {
 	// Configured True exactly in rows 2, 4 and 9 (row 9 since PAC-87).
 	Configured bool `json:"configured"`
 
-	// InOrganization Whether the caller belongs to an organisation. Lets a client offer "use my organisation's AI" only to a member (spec AC-21; Part 2). Says nothing else about the organisation.
+	// InOrganization Whether the caller belongs to an organisation. Lets a client offer "use my organisation's AI" only to a member (spec AC-21; Part 2). Says nothing else about the organisation. Since PAC-148 (spec D-1, D-3, AC-4) "belongs" is the organisation membership rule stated on listOrgMembers, decided at this read: false for a caller whose stored association fails it, and then the rest of this object is decided as for a caller with no organisation (a stored `organization` choice is row 6, `nothing_configured`; the organisation's personal-keys policy does not bind the caller).
 	InOrganization bool `json:"inOrganization"`
 
 	// NotConfigured NEW-llm-bring-your-own. Why AI is not configured for a caller, and who
@@ -1701,7 +1708,8 @@ type CurrentUserResponse struct {
 	// `domain_confirmed` address acts as a person at the granting sites
 	// (team-invite acceptance, scheduling-link co-host invitations,
 	// the manager's member add, roster import and roster entries,
-	// break-glass); an `unconfirmed` one works fully for its own user
+	// break-glass, and, since PAC-148, organisation membership: see
+	// listOrgMembers); an `unconfirmed` one works fully for its own user
 	// but resolves to nobody there. It changes only when the account
 	// binds (sign-in) or through the operator procedure; never on an
 	// ordinary sign-in, a connect or a refusal.
@@ -1754,7 +1762,8 @@ type CurrentUserResponse struct {
 // `domain_confirmed` address acts as a person at the granting sites
 // (team-invite acceptance, scheduling-link co-host invitations,
 // the manager's member add, roster import and roster entries,
-// break-glass); an `unconfirmed` one works fully for its own user
+// break-glass, and, since PAC-148, organisation membership: see
+// listOrgMembers); an `unconfirmed` one works fully for its own user
 // but resolves to nobody there. It changes only when the account
 // binds (sign-in) or through the operator procedure; never on an
 // ordinary sign-in, a connect or a refusal.
@@ -2434,7 +2443,7 @@ type ManagerRosterMember struct {
 	// FocusTrendPct engine.TrendPct(this_week.focus, last_week.focus). Clamped to [-200, 200], rounded to one decimal. Returns exactly 200 when prior is 0 and current is non-zero, and 0 when both are 0. Never NaN or Inf.
 	FocusTrendPct float32 `json:"focus_trend_pct"`
 
-	// IsPacedayUser PAC-130 (spec §3.1, D-1, D-5, AC-4, AC-10, AC-17): true iff the entry's address is VISIBLE ON PACEDAY to the caller, decided at read time. It is visible when some account whose stored address equals the entry's address ignoring letter case, at ANY address standing, is (a) a Paceday member (a team_members row, owner or member; never a person added under PAC-129) of a team the caller is also a Paceday member of, in either role, or (b) an account the organisation member list (listOrgMembers, GET /api/org/members) returns to the caller. Rule (b) IS that list, not a separate organisation rule: whatever narrows the list (follow-up PAC-148) narrows (b) with it, and until then (b) carries the list's exposure for consumer domains missing from the generic-domain list. An account outside (a) and (b) is never consulted, so the value is the same for an address no account holds and for one held only outside them. true does not promise figures (see getManagerRoster's branches), false does NOT mean "has no Paceday account", and a client must not say so. Always true for source "formal" (a co-member by construction); always false for source "added" (PAC-129). Before PAC-130: true iff a stored member_user_id was set, which revealed account existence for any address.
+	// IsPacedayUser PAC-130 (spec §3.1, D-1, D-5, AC-4, AC-10, AC-17): true iff the entry's address is VISIBLE ON PACEDAY to the caller, decided at read time. It is visible when some account whose stored address equals the entry's address ignoring letter case, at ANY address standing, is (a) a Paceday member (a team_members row, owner or member; never a person added under PAC-129) of a team the caller is also a Paceday member of, in either role, or (b) an account the organisation member list (listOrgMembers, GET /api/org/members) returns to the caller. Rule (b) IS that list, not a separate organisation rule: whatever narrows the list narrows (b) with it. Since PAC-148 (spec §3.6, D-9) the list holds only accounts that belong to the caller's organisation under the organisation membership rule stated on listOrgMembers (domain-confirmed, not at a consumer-list domain, in the organisation of their address's domain), and only when the caller belongs to one: a caller that is not domain-confirmed, or is at a consumer domain, has an empty (b), and an unconfirmed account at the caller's own company domain is outside (b) (estimated, unless (a) holds). No Paceday figure moves: such an entry goes from "no data" to the estimate, the answer for an address no account holds. (Before PAC-148, (b) carried the list's exposure for consumer domains missing from the generic-domain list.) An account outside (a) and (b) is never consulted, so the value is the same for an address no account holds and for one held only outside them. true does not promise figures (see getManagerRoster's branches), false does NOT mean "has no Paceday account", and a client must not say so. Always true for source "formal" (a co-member by construction); always false for source "added" (PAC-129). Before PAC-130: true iff a stored member_user_id was set, which revealed account existence for any address.
 	IsPacedayUser  bool       `json:"is_paceday_user"`
 	LastOneOnOneAt *time.Time `json:"last_one_on_one_at"`
 
@@ -2722,7 +2731,7 @@ type Org struct {
 	Name      string             `json:"name"`
 }
 
-// OrgMember storage.User as returned by GET /api/org/members.
+// OrgMember storage.User as returned by GET /api/org/members: an account that belongs to the caller's organisation under PAC-148's membership rule (listOrgMembers). The fields are unchanged by PAC-148.
 type OrgMember struct {
 	// AvatarUrl camelCase, unlike most other fields in this domain. May be "".
 	AvatarUrl string              `json:"avatarUrl"`
@@ -2734,9 +2743,12 @@ type OrgMember struct {
 	// Org storage.Org. Present in the User struct with `omitempty`, but storage.GetOrgMembers never hydrates it, so it never appears on GET /api/org/members responses.
 	Org *Org `json:"org,omitempty"`
 
-	// Provider The identity/calendar provider the user signed in with, e.g. `google` or `microsoft`. Not constrained by an enum in Go.
-	Provider string `json:"provider"`
+	// Provider The provider of the account's FIRST sign-in: the same `users.provider` column, and the same three values, as CurrentUserResponse.provider. Resolved by PAC-148 (spec D-8; the x-uncertain this property carried, PAC-35 non-blocking 2): the column has no CHECK constraint (migration 006, `TEXT NOT NULL DEFAULT 'google'`), and its only writer is the account insert of storage.ResolveSignIn, whose `FirstProvider` is one of three literals: `google` (Google sign-in), `microsoft` (Microsoft sign-in) and `sso` (SSO sign-in); storage.UpsertUser has no production caller, and tests and the e2e seed write `google`. No migration adds a constraint.
+	Provider OrgMemberProvider `json:"provider"`
 }
+
+// OrgMemberProvider The provider of the account's FIRST sign-in: the same `users.provider` column, and the same three values, as CurrentUserResponse.provider. Resolved by PAC-148 (spec D-8; the x-uncertain this property carried, PAC-35 non-blocking 2): the column has no CHECK constraint (migration 006, `TEXT NOT NULL DEFAULT 'google'`), and its only writer is the account insert of storage.ResolveSignIn, whose `FirstProvider` is one of three literals: `google` (Google sign-in), `microsoft` (Microsoft sign-in) and `sso` (SSO sign-in); storage.UpsertUser has no production caller, and tests and the e2e seed write `google`. No migration adds a constraint.
+type OrgMemberProvider string
 
 // OrgSummary storage.Org (backend/storage/orgs.go).
 type OrgSummary struct {
@@ -4179,6 +4191,18 @@ type SsoDetectResponse struct {
 	//    sign-in. A company domain is never "generic". No SSO row is
 	//    read and no lookup is made for any consumer domain, so an SSO
 	//    row for one of them never applies.
+	//    PAC-148 (spec §3.3, D-4, AC-11) adds Microsoft's personal-account
+	//    domains to the list: hotmail.fr, hotmail.co.uk, hotmail.de,
+	//    hotmail.it, hotmail.es, hotmail.be, live.fr, live.co.uk,
+	//    live.de, live.it, live.nl, live.be, outlook.fr, outlook.de,
+	//    outlook.it, outlook.es and windowslive.com (each admitted only
+	//    if, when the plan is written, its MX resolves only to the
+	//    Outlook.com consumer host `*.olc.protection.outlook.com`; the
+	//    plan records any entry dropped by that rule). Each is
+	//    "generic" like outlook.com until PAC-77; before PAC-148 they
+	//    took the MX path and answered "choose". The list is also the
+	//    consumer list of the organisation membership rule
+	//    (listOrgMembers).
 	//    Paceday has no password sign-in and no password or
 	//    registration route. A client never shows a password form for
 	//    any value of this field ("generic" included); builds older
@@ -4230,6 +4254,18 @@ type SsoDetectResponse struct {
 //     sign-in. A company domain is never "generic". No SSO row is
 //     read and no lookup is made for any consumer domain, so an SSO
 //     row for one of them never applies.
+//     PAC-148 (spec §3.3, D-4, AC-11) adds Microsoft's personal-account
+//     domains to the list: hotmail.fr, hotmail.co.uk, hotmail.de,
+//     hotmail.it, hotmail.es, hotmail.be, live.fr, live.co.uk,
+//     live.de, live.it, live.nl, live.be, outlook.fr, outlook.de,
+//     outlook.it, outlook.es and windowslive.com (each admitted only
+//     if, when the plan is written, its MX resolves only to the
+//     Outlook.com consumer host `*.olc.protection.outlook.com`; the
+//     plan records any entry dropped by that rule). Each is
+//     "generic" like outlook.com until PAC-77; before PAC-148 they
+//     took the MX path and answered "choose". The list is also the
+//     consumer list of the organisation membership rule
+//     (listOrgMembers).
 //     Paceday has no password sign-in and no password or
 //     registration route. A client never shows a password form for
 //     any value of this field ("generic" included); builds older
@@ -4624,7 +4660,11 @@ type SsoWriteFreshLoginRequired struct {
 type SsoWriteFreshLoginRequiredError string
 
 // SsoWriteMembershipRequired The caller has no org (or its org row is gone). Checked before
-// anything else, including break-glass. No `stepup_url`: there is no org
+// anything else, including break-glass. Since PAC-148 (spec D-1, D-3)
+// "has no org" means the caller belongs to no organisation under the
+// organisation membership rule stated on listOrgMembers, decided at the
+// request: a stored association that fails the rule is refused with
+// `org membership required`, like no association at all. No `stepup_url`: there is no org
 // to step up for. Also the 403 of getSsoStepupOptions and of
 // startSsoAdminStepup (the latter always with `org membership
 // required`), and (NEW-llm-bring-your-own Part 2) of getOrganizationAI,

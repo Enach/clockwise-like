@@ -1974,8 +1974,17 @@ components:
             also a Paceday member of, in either role, or (b) an account the organisation
             member list (listOrgMembers, GET /api/org/members) returns to the caller.
             Rule (b) IS that list, not a separate organisation rule: whatever narrows the
-            list (follow-up PAC-148) narrows (b) with it, and until then (b) carries the
-            list's exposure for consumer domains missing from the generic-domain list.
+            list narrows (b) with it. Since PAC-148 (spec §3.6, D-9) the list holds only
+            accounts that belong to the caller's organisation under the organisation
+            membership rule stated on listOrgMembers (domain-confirmed, not at a
+            consumer-list domain, in the organisation of their address's domain), and
+            only when the caller belongs to one: a caller that is not domain-confirmed,
+            or is at a consumer domain, has an empty (b), and an unconfirmed account at
+            the caller's own company domain is outside (b) (estimated, unless (a)
+            holds). No Paceday figure moves: such an entry goes from "no data" to the
+            estimate, the answer for an address no account holds. (Before PAC-148, (b)
+            carried the list's exposure for consumer domains missing from the
+            generic-domain list.)
             An account outside (a) and (b) is never consulted, so the value is the same
             for an address no account holds and for one held only outside them. true does
             not promise figures (see getManagerRoster's branches), false does NOT mean

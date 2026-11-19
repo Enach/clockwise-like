@@ -117,9 +117,10 @@ func TestSSOWrite_GrantForAnotherOrgDoesNotAuthorize(t *testing.T) {
 	u, orgA := e.member(t, "ac2a-a")
 	_, orgB := e.member(t, "ac2a-b")
 	g := issueGrant(t, e, u.ID, orgA.ID, e.clock.Now())
-	if err := storage.SetUserOrg(e.db, u.ID, orgB.ID); err != nil {
-		t.Fatal(err)
-	}
+	// PAC-148 (contract md §8): U becomes a member of B under the rule
+	// (confirmed at B's domain), so the request reaches the grant check
+	// rather than the membership 403.
+	pac148Into(t, e.db, u.ID, orgB.ID)
 	rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(orgB.Domain), session(t, u, time.Now()))
 	wantStepupRequired(t, rec, rec.Code, errorBody(t, rec))
 	if grantConsumed(t, e, g.ID) {

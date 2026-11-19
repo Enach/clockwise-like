@@ -72,7 +72,7 @@ func pac22NewOrg(t *testing.T) pac22Org {
 	if err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
-	if err := storage.AssociateUserWithOrg(db, u.ID, u.Email); err != nil {
+	if err := pac148ConfirmAndJoin(t, db, u.ID); err != nil {
 		t.Fatalf("associate org: %v", err)
 	}
 	return pac22Org{domain: d, userID: u.ID}
