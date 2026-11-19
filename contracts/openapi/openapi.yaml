@@ -17184,7 +17184,12 @@ components:
           format: uuid
         inviteeEmail:
           type: string
-          format: email
+          description: 'The stored form of the invited address, written by the one address normaliser
+            of AddTeamPersonRequest.email (PAC-129 §3.0). No `format: email` (PAC-138): the normaliser
+            (net/mail) accepts addresses such as `a&b@x.example` or `pat@x.y`, so a stricter pattern here
+            would refuse an invitation the server already created.
+
+            '
         invitedBy:
           type: string
           format: uuid
@@ -17337,8 +17342,11 @@ components:
             '
         email:
           type: string
-          format: email
-          description: Joined from users.email, also omitempty.
+          description: 'Joined from users.email, also omitempty. No `format: email` (PAC-138, as TeamPerson.email
+            since PAC-129 contract 1.1, B-1): a response may not apply a stricter pattern than the server''s
+            address normaliser (net/mail), which accepts addresses such as `a&b@x.example` or `pat@x.y`.
+
+            '
       required:
       - teamId
       - userId

@@ -1,0 +1,41 @@
+{
+  "featureId": "PAC-138",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-138",
+  "status": "contract revision 1 (light process), 2026-11-19",
+  "contractRevision": "1",
+  "contractHash": "a665e5d3f0c2460568fb4bbd4ce1a07667b6f4e0b705e29328d9018e03c606f4",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) on factory/pac-138, base origin/main 3ff4797 (bundle 83d7d5555bf0dc5cf8985bde941215e349b0050f15ef6c33d62b3cc8558e820d). Produced by python3 scripts/openapi_assemble.py; backend/api/gen by bash scripts/openapi_gen_go.sh; MIGRATION.md by python3 scripts/openapi_migration_report.py (no row changed). If main's bundle moves before merge, the generators are re-run and this hash updated, nothing else.",
+  "contractDoc": "contracts/features/PAC-138.md",
+  "specDoc": "none (light process: the Linear issue is the spec)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "Drop format: email from the response fields TeamInvite.inviteeEmail and TeamMember.email. No behaviour change.",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "contracts/openapi/paths/teams.yaml (the two fields)",
+        "contracts/openapi/openapi.yaml, backend/api/gen (generated)",
+        "contracts/features/PAC-138.{md,yaml}"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/generated/** (regeneration only)",
+        "src/api/teams.ts (remove the PAC-129 review derived schemas)"
+      ]
+    }
+  },
+  "gates": {
+    "api": "go build, go vet, openapi assemble/migration/gen-go --check, go test -p 1 ./api/... against a throwaway Postgres, sfguard",
+    "web": "npm ci, typecheck, lint, vitest (full), build, openapi-gen --check"
+  },
+  "acceptanceTests": [
+    "The bundle declares TeamInvite.inviteeEmail and TeamMember.email as type string without format.",
+    "Generated Go types are string / *string; backend builds and its api tests pass unchanged.",
+    "The web parses TeamDetail and TeamInviteResult with the generated schemas, and the tests using a&b@x.example and pat@x.y pass."
+  ],
+  "resolvesFindings": [],
+  "resolvesUncertain": [],
+  "rollback": "Revert both PRs (web first, then api). No data or migration involved."
+}
