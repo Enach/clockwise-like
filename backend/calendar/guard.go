@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/config"
+	"github.com/Enach/paceday/backend/internal/testdial"
 )
 
 // ErrPeerRefused is returned, wrapped, when the connection guard refuses the
@@ -47,13 +48,18 @@ func checkPeer(address string) error {
 // from the answer that connection is using: a name that resolves to a
 // permitted address now and a public one later is refused later. In
 // production guard is off and, with no test hook, Control is nil.
+//
+// Inside a test binary (and only there) Control also applies testdial.Check,
+// last, so no test can connect to anything but loopback through this
+// dialler, whatever was or was not configured (PAC-145).
 func newDialer(guard bool, h dialHooks) *net.Dialer {
 	d := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 		Resolver:  h.resolver,
 	}
-	if !guard && h.record == nil {
+	inTest := testdial.Active()
+	if !guard && h.record == nil && !inTest {
 		return d
 	}
 	d.Control = func(network, address string, _ syscall.RawConn) error {
@@ -64,6 +70,9 @@ func newDialer(guard bool, h dialHooks) *net.Dialer {
 		}
 		if h.record != nil {
 			h.record(network, address)
+		}
+		if inTest {
+			return testdial.Check(address)
 		}
 		return nil
 	}
