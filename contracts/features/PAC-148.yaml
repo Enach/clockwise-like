@@ -1,7 +1,7 @@
 {
   "featureId": "PAC-148",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-148/security-the-organisation-member-list-lets-anyone-at-a-consumer-email",
-  "status": "draft, 2026-11-19: contract revision 3 (answers the challenge of revision 2 at 9b43ecf: REVISE, 1 blocking); next: contract-challenger",
+  "status": "accepted, 2026-11-19: contract revision 3 (1eb5a5c) accepted by contract-challenger (challenge of revision 3 in contracts/features/PAC-148.md); next: plan-author",
   "contractRevision": "3",
   "contractHash": "21610e0ea3b88d11e506aab8a1d9d47f3e3d28ef8b9e87ccd116767391684c1e",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) on factory/pac-148-contract after contract revision 3 (no fragment text change since revision 1, 565b7dd; same hash), which merged origin/main 05fff37 (PAC-150 #322; main bundle e831536e6a187bf49f88ecf6b49ff2149d54bfc97068dc54202474a48e6c84b7) into the spec head 1f8d077. Produced by python3 scripts/openapi_assemble.py; backend/api/gen by bash scripts/openapi_gen_go.sh (oapi-codegen v2.4.1); MIGRATION.md by python3 scripts/openapi_migration_report.py (no diff). Reproduce with git show <commit>:contracts/openapi/openapi.yaml | sha256sum and python3 scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs the generators on its base and records the new hash here; a fragment text change needs a contract revision.",
@@ -175,7 +175,7 @@
     "releasePrecondition": "binding (revision 2, B-2 (a)): before the PAC-148 release is deployed, docker compose -f docker-compose.prod.yml exec postgres psql -U clockwise -d clockwise -c 'SELECT version, dirty FROM schema_migrations' must read exactly 42 | f; otherwise stop: PAC-130's release (042_manager_member_link_erase) is deployed and settled first. P = 42 is the data state."
   },
   "gates": {
-    "contractApproval": "revision 1 (565b7dd): REVISE at 2da61d8; revision 2 (a77b1bd): REVISE at 9b43ecf (1 blocking); revision 3 pending contract-challenger",
+    "contractApproval": "accepted: revision 3 (1eb5a5c) accepted by contract-challenger, 2026-11-19. History: revision 1 (565b7dd) REVISE at 2da61d8; revision 2 (a77b1bd) REVISE at 9b43ecf (1 blocking).",
     "assembler": "Revision 1 (base origin/main 05fff37, merged): python3 scripts/openapi_assemble.py (wrote; 112 paths, 134 operations, 218 schemas, x-uncertain 3) and --check ('OK: bundle is in sync (112 paths)'); python3 scripts/openapi_migration_report.py (no diff) and --check ('OK: MIGRATION.md covers all 134 operations (14 generated)'); bash scripts/openapi_gen_go.sh and --check ('OK: backend/api/gen matches the contract'); cd backend && go build ./... ok. make is not installed on the authoring host. Cross-repo half (openapi-check-web) not run: web types drift until the web PR.",
     "executedEvidence": "postgres:16.15-alpine (en_US.utf8): addrDomainSQL equal to ExtractDomain on 25/25 fixtures (und-x-icu: 23/25); md 5.1 SQL on a minimal schema: gate abort changed nothing, clean run ended 4 memberships and 4 confirmations as expected.",
     "webGate": "Stage 4: smart-calendar-flow PR regenerating src/api/generated against the merged bundle; regression pins of md 6; cross-repo openapi-check on the pair.",
