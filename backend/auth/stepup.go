@@ -17,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/Enach/paceday/backend/config"
+	"github.com/Enach/paceday/backend/internal/testdial"
 )
 
 // PAC-50 (spec docs/specs/PAC-50.md §4.3): the admin step-up's conversation
@@ -144,20 +145,12 @@ var errPeerRefused = errors.New("identity provider: peer address refused by the 
 // newIdPHTTPClient never follows redirects and uses no ambient proxy. With
 // guard on (a stand-in deployment) it connects only to config.PermittedPeer
 // addresses, judged per connection like the calendar guard (PAC-43).
+// Inside a test binary (and only there) it also connects only to loopback,
+// guard or not (PAC-145, backend/internal/testdial).
 func newIdPHTTPClient(guard bool) *http.Client {
-	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	if guard {
-		d.Control = func(_, address string, _ syscall.RawConn) error {
-			ap, err := netip.ParseAddrPort(address)
-			if err != nil || !config.PermittedPeer(ap.Addr()) {
-				return fmt.Errorf("%w: %s", errPeerRefused, address)
-			}
-			return nil
-		}
-	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
-	t.DialContext = d.DialContext
+	t.DialContext = newIdPDialer(guard).DialContext
 	return &http.Client{
 		Transport: t,
 		Timeout:   15 * time.Second,
@@ -165,6 +158,27 @@ func newIdPHTTPClient(guard bool) *http.Client {
 			return http.ErrUseLastResponse
 		},
 	}
+}
+
+// newIdPDialer is newIdPHTTPClient's dialler: the connection guard when guard
+// is on, testdial.Check in a test binary, and no Control otherwise.
+func newIdPDialer(guard bool) *net.Dialer {
+	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	if inTest := testdial.Active(); guard || inTest {
+		d.Control = func(_, address string, _ syscall.RawConn) error {
+			if guard {
+				ap, err := netip.ParseAddrPort(address)
+				if err != nil || !config.PermittedPeer(ap.Addr()) {
+					return fmt.Errorf("%w: %s", errPeerRefused, address)
+				}
+			}
+			if inTest {
+				return testdial.Check(address)
+			}
+			return nil
+		}
+	}
+	return d
 }
 
 // AuthURL is the provider's authorization URL for one step-up. state and
