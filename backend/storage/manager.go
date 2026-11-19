@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 	"time"
 
@@ -283,7 +284,15 @@ func ConfirmManagerTeamMembers(db Querier, managerID, teamID uuid.UUID, emails [
 		return 0, 0, 0, err
 	}
 	defer func() { _ = sc.Rollback() }()
+	// PAC-134 L-3 (contract md §6.2): normalise and de-duplicate first
+	// (empty and duplicate entries are skipped exactly as before), then
+	// process the distinct addresses in byte order, the erase-address tool's
+	// order on a manager's roster ((manager, member_email "C")), and read
+	// each entry FOR KEY SHARE: a confirm racing an erasure (or a Manager
+	// delete) of the entry waits for it, then answers skipped instead of
+	// failing the assignment's foreign key after the delete commits.
 	seen := make(map[string]struct{}, len(emails))
+	distinct := make([]string, 0, len(emails))
 	for _, raw := range emails {
 		email := strings.ToLower(strings.TrimSpace(raw))
 		if email == "" {
@@ -295,10 +304,14 @@ func ConfirmManagerTeamMembers(db Querier, managerID, teamID uuid.UUID, emails [
 			continue
 		}
 		seen[email] = struct{}{}
+		distinct = append(distinct, email)
+	}
+	sort.Strings(distinct)
+	for _, email := range distinct {
 		var exists bool
 		if err := tx.QueryRow(`SELECT EXISTS(
 			SELECT 1 FROM manager_team_members
-			WHERE manager_user_id=$1 AND member_email=$2)`, managerID, email).Scan(&exists); err != nil {
+			WHERE manager_user_id=$1 AND member_email=$2 FOR KEY SHARE)`, managerID, email).Scan(&exists); err != nil {
 			return 0, 0, 0, err
 		}
 		if !exists {

@@ -1188,7 +1188,7 @@ type ArchivedSchedulingLink struct {
 	// DeletedAt The deletion instant, UTC, recorded by `deleteSchedulingLink`.
 	DeletedAt time.Time `json:"deleted_at"`
 
-	// ErasedAt When this link's bookings were last erased (the latest `booker_erased_at` among its bookings). Null when none has been erased. Always set with `erasure_state: erased`; also set alongside `awaiting_erasure` when a booking arrived after an earlier erasure.
+	// ErasedAt When this link's bookings were last erased (the latest `booker_erased_at` among its bookings). Null when none has been erased. Always set with `erasure_state: erased`; also set alongside `awaiting_erasure` when a booking arrived after an earlier erasure, or when an operator's erasure of one person's address (PAC-134) erased some but not all of the link's bookers.
 	ErasedAt *time.Time `json:"erased_at"`
 
 	// ErasureDueAt The instant at which the bookers' names and emails become due for erasure: `last_booking_end_at` + 90 x 24 hours (AC-21). Shown to the owner as a date. Null when `erasure_state` is not `awaiting_erasure`, and always null while `BookerErasurePolicy.enabled` is false (nothing will be erased, so no date is promised).
@@ -1226,7 +1226,7 @@ type ArchivedSchedulingLinkBooking struct {
 	Id         openapi_types.UUID `json:"id"`
 	LinkId     openapi_types.UUID `json:"link_id"`
 
-	// Notes Kept at erasure (spec D-11; if the owner answers OQ-8 "yes", notes become erasable too, which is a contract change). Always present, possibly the empty string.
+	// Notes Kept by the automatic erasure (spec D-11; if the owner answers OQ-8 "yes", notes become erasable too, which is a contract change). Blanked to the empty string by an operator's erasure of the booker's address (PAC-134 OQ-2): an erased booking whose notes are empty may have had notes. Always present, possibly the empty string.
 	Notes     string    `json:"notes"`
 	StartTime time.Time `json:"start_time"`
 
@@ -1330,7 +1330,7 @@ type AuthStatusResponseProvider string
 
 // BookerErasurePolicy PAC-40 copy hook. Whether this deployment erases bookers' names and emails from deleted links, and after how long. Carried by `listArchivedSchedulingLinks` only (not by `listSchedulingLinks`, whose consumers decode it as a map of arrays). The web builds the delete confirmation from it (spec §3.2 last bullet, AC-25): it promises erasure ONLY when `enabled` is true, and while the policy is not loaded (or the read failed) it does not promise erasure. `enabled` is a property of the server build, not an operator setting (no environment variable changes it; a deployment does not opt out of the owner's decision): false only in a build that ships the deleted state and the archive without the erasure job (PR split, contracts/features/PAC-40.md §6), true in every build that has the job.
 type BookerErasurePolicy struct {
-	// Enabled True when the erasure job (spec §3.5) runs in this build. While false, no archived link has an `erasure_due_at` and no booking is ever erased.
+	// Enabled True when the erasure job (spec §3.5) runs in this build. While false, no archived link has an `erasure_due_at` and the job erases no booking. It describes the automatic job only: an operator's erasure of one person's address (PAC-134) erases that person's bookings whatever `enabled` is.
 	Enabled bool `json:"enabled"`
 
 	// RetentionDays Days after the link's last booking end at which erasure becomes due (90 x 24 hours; owner decision 2026-10-27). Sent whatever `enabled` is, so the figure the copy quotes is pinned by the contract, not by web text. A different value is a contract change.
@@ -3542,16 +3542,22 @@ type SchedulingLinkMyStatus string
 // SchedulingLinkUsageType defines model for SchedulingLink.UsageType.
 type SchedulingLinkUsageType string
 
-// SchedulingLinkBookingRecord Raw backend/storage/scheduling_links.go Booking row, returned by GET /api/scheduling-links/{id}/bookings. Field names differ from PublicBookingConfirmation.
+// SchedulingLinkBookingRecord One booking of a live or paused link, returned by GET /api/scheduling-links/{id}/bookings. Field names differ from PublicBookingConfirmation. Two shapes (PAC-134): a booking whose booker was not erased carries `booker_name` and `booker_email` as typed and no `booker_erased_at`; an ERASED booking (an operator erased its booker's address, contracts/features/PAC-134.md) carries `booker_erased_at` and null `booker_name` and `booker_email`, with `notes` blanked. Erased is explicit and cannot be confused with a value, as in `ArchivedSchedulingLinkBooking` (a booker cannot submit a missing name or email, so null is never a typed value).
 type SchedulingLinkBookingRecord struct {
-	BookerEmail string             `json:"booker_email"`
-	BookerName  string             `json:"booker_name"`
-	CreatedAt   time.Time          `json:"created_at"`
-	EndTime     time.Time          `json:"end_time"`
-	Id          openapi_types.UUID `json:"id"`
-	LinkId      openapi_types.UUID `json:"link_id"`
+	// BookerEmail As stored at booking time (trimmed, letter case kept; SF-005: not validated); null if and only if `booker_erased_at` is present.
+	BookerEmail *string `json:"booker_email"`
 
-	// Notes No omitempty - always present, possibly the empty string.
+	// BookerErasedAt Present only on an erased booking (PAC-134): when the operator's erasure removed this booker's name, email and notes, UTC. Absent, never null, on every other booking, so an answer with no erased booking is JSON-equal to what it was before PAC-134.
+	BookerErasedAt *time.Time `json:"booker_erased_at,omitempty"`
+
+	// BookerName As typed by the booker; null if and only if `booker_erased_at` is present.
+	BookerName *string            `json:"booker_name"`
+	CreatedAt  time.Time          `json:"created_at"`
+	EndTime    time.Time          `json:"end_time"`
+	Id         openapi_types.UUID `json:"id"`
+	LinkId     openapi_types.UUID `json:"link_id"`
+
+	// Notes No omitempty - always present, possibly the empty string. The empty string on an erased booking (PAC-134 blanks the notes with the name and email: they are the erased person's own words).
 	Notes     string    `json:"notes"`
 	StartTime time.Time `json:"start_time"`
 

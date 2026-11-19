@@ -605,6 +605,8 @@ the action list restates **all** eight actions (a comment in this migration
 says so). No inventory column changes type, default or nullability (D-3).
 The up step encrypts nothing (SQL has no key); the conversion does.
 
+
+> **Amended by PAC-134 (2026-11-19, contract `contracts/features/PAC-134.md`).** Migration 045 restates `operator_audit_action_check` with ten actions: these eight plus `erase_address` and `erase_address_dry_run`. Its down step keeps the ten-action CHECK, as 7.2 keeps this one.
 ### 7.2 Down: `NNN_encryption_at_rest.down.sql`
 
 1. A `DO` block raises

@@ -1,6 +1,9 @@
 package storage
 
-import "strings"
+import (
+	"net/mail"
+	"strings"
+)
 
 // addressSpace is the address trim set of PAC-129 contract §2.2 (revision
 // 1.2, P2-B1, P2-M1): exactly these 26 code points, the union of ECMAScript
@@ -33,4 +36,22 @@ func TrimAddressSpace(s string) string {
 // has already produced this form, so it is a no-op there.
 func NormaliseStoredAddress(s string) string {
 	return strings.ToLower(TrimAddressSpace(s))
+}
+
+// ValidAddress is the validity rule of the one address normaliser (PAC-129
+// contract §3.0, spec PAC-134 §2.3): t is already trimmed of the address
+// set; l = strings.ToLower(t) must be non-empty and net/mail must parse l to
+// exactly l. It returns l and whether t is valid. The Manager/team
+// normaliser (api normalizeManagerEmail) and paceday-operator erase-address
+// (PAC-134 contract md §2.1 item 3) both call it, so the two cannot drift.
+func ValidAddress(t string) (string, bool) {
+	l := strings.ToLower(t)
+	if l == "" {
+		return "", false
+	}
+	parsed, err := mail.ParseAddress(l)
+	if err != nil || parsed.Address != l {
+		return l, false
+	}
+	return l, true
 }

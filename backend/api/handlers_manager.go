@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"sort"
 	"strings"
@@ -869,12 +868,11 @@ func currentWeekStart() time.Time {
 // add, detection confirm, inviteTeamMember, addTeamPerson, removeTeamPerson
 // and the Manager {email} paths use it, and storage writes the same form.
 func normalizeManagerEmail(raw string) (string, error) {
-	email := strings.ToLower(storage.TrimAddressSpace(raw))
+	email, ok := storage.ValidAddress(storage.TrimAddressSpace(raw))
 	if email == "" {
 		return "", fmt.Errorf("email is required")
 	}
-	parsed, err := mail.ParseAddress(email)
-	if err != nil || parsed.Address != email {
+	if !ok {
 		return "", fmt.Errorf("email must be a valid email address")
 	}
 	return email, nil

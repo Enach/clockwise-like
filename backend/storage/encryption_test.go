@@ -1120,7 +1120,8 @@ func TestPAC84_PerFieldFailure(t *testing.T) {
 
 // AC-32: operator_audit equals PAC-71's definition (035_identity_binding,
 // written as 033 when this test was added); its CHECK admits
-// exactly the eight actions.
+// exactly the listed actions: ten since PAC-134's 045 (erase_address,
+// erase_address_dry_run), and refuses any other.
 func TestPAC84_OperatorAuditPinned(t *testing.T) {
 	db, _, _ := openEncDB(t)
 	rows, err := db.Query(`SELECT column_name, data_type, is_nullable, COALESCE(column_default, '')

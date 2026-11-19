@@ -1714,10 +1714,26 @@ paths:
         null, cancelled bookings included. NOTE the field names differ from the public
         booking confirmation DTO (`start_time`/`end_time` here vs `start`/`end` there).
         A deleted link answers 404 to every caller, owner included (PAC-40 AC-6,
-        D-9); its owner reads its bookings through `getArchivedSchedulingLink`. A
-        live or paused link never holds an erased booking (erasure applies only to
-        deleted links), so `booker_name` and `booker_email` here are always the
-        values the booker typed.
+        D-9); its owner reads its bookings through `getArchivedSchedulingLink`.
+
+
+        PAC-134: a live or paused link CAN hold an erased booking. The automatic
+        erasure (PAC-40) still touches deleted links only, but an operator's
+        erasure of one person's address (`paceday-operator erase-address`, GDPR
+        Art. 17) erases that person's bookings on any link, live, paused or
+        deleted. An erased booking is shown as erased, the way the archive shows
+        one: `booker_erased_at` is present and `booker_name` and `booker_email`
+        are null (never the empty strings the database keeps), and `notes` is the
+        empty string. Every other field is unchanged by the erasure, so the
+        booking still occupies its time and still counts in `uses_count`. A
+        booking that was not erased has the same keys and values as before
+        PAC-134 (JSON-equal; key order is not part of the contract): both
+        strings are the values the booker typed and `booker_erased_at` is absent
+        (not null), so a client that predates PAC-134 parses every answer that
+        holds no erased booking. Such a client fails to parse an answer that holds
+        one; the operator runbook therefore makes "the web release that reads
+        erased live bookings is deployed" a precondition of running the erasure
+        (contracts/features/PAC-134.md section 5).
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -3930,9 +3946,16 @@ components:
     SchedulingLinkBookingRecord:
       type: object
       description: >-
-        Raw backend/storage/scheduling_links.go Booking row, returned by
+        One booking of a live or paused link, returned by
         GET /api/scheduling-links/{id}/bookings. Field names differ from
-        PublicBookingConfirmation.
+        PublicBookingConfirmation. Two shapes (PAC-134): a booking whose booker
+        was not erased carries `booker_name` and `booker_email` as typed and no
+        `booker_erased_at`; an ERASED booking (an operator erased its booker's
+        address, contracts/features/PAC-134.md) carries `booker_erased_at` and
+        null `booker_name` and `booker_email`, with `notes` blanked. Erased is
+        explicit and cannot be confused with a value, as in
+        `ArchivedSchedulingLinkBooking` (a booker cannot submit a missing name or
+        email, so null is never a typed value).
       required: [id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at]
       additionalProperties: false
       properties:
@@ -3944,8 +3967,24 @@ components:
           format: uuid
         booker_name:
           type: string
+          nullable: true
+          description: >-
+            As typed by the booker; null if and only if `booker_erased_at` is
+            present.
         booker_email:
           type: string
+          nullable: true
+          description: >-
+            As stored at booking time (trimmed, letter case kept; SF-005: not
+            validated); null if and only if `booker_erased_at` is present.
+        booker_erased_at:
+          type: string
+          format: date-time
+          description: >-
+            Present only on an erased booking (PAC-134): when the operator's
+            erasure removed this booker's name, email and notes, UTC. Absent,
+            never null, on every other booking, so an answer with no erased
+            booking is JSON-equal to what it was before PAC-134.
         start_time:
           type: string
           format: date-time
@@ -3961,7 +4000,10 @@ components:
           examples: [confirmed, cancelled]
         notes:
           type: string
-          description: No omitempty - always present, possibly the empty string.
+          description: >-
+            No omitempty - always present, possibly the empty string. The empty
+            string on an erased booking (PAC-134 blanks the notes with the name and
+            email: they are the erased person's own words).
         created_at:
           type: string
           format: date-time
@@ -3987,7 +4029,10 @@ components:
           type: boolean
           description: >-
             True when the erasure job (spec §3.5) runs in this build. While false,
-            no archived link has an `erasure_due_at` and no booking is ever erased.
+            no archived link has an `erasure_due_at` and the job erases no booking.
+            It describes the automatic job only: an operator's erasure of one
+            person's address (PAC-134) erases that person's bookings whatever
+            `enabled` is.
         retention_days:
           type: integer
           minimum: 90
@@ -4066,7 +4111,9 @@ components:
             When this link's bookings were last erased (the latest
             `booker_erased_at` among its bookings). Null when none has been erased.
             Always set with `erasure_state: erased`; also set alongside `awaiting_erasure`
-            when a booking arrived after an earlier erasure.
+            when a booking arrived after an earlier erasure, or when an operator's
+            erasure of one person's address (PAC-134) erased some but not all of the
+            link's bookers.
 
     ArchivedSchedulingLinkListResponse:
       type: object
@@ -4129,9 +4176,11 @@ components:
         notes:
           type: string
           description: >-
-            Kept at erasure (spec D-11; if the owner answers OQ-8 "yes", notes become
-            erasable too, which is a contract change). Always present, possibly the
-            empty string.
+            Kept by the automatic erasure (spec D-11; if the owner answers OQ-8
+            "yes", notes become erasable too, which is a contract change). Blanked
+            to the empty string by an operator's erasure of the booker's address
+            (PAC-134 OQ-2): an erased booking whose notes are empty may have had
+            notes. Always present, possibly the empty string.
         created_at:
           type: string
           format: date-time

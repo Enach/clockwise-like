@@ -655,3 +655,46 @@ func (r *recordingQuerier) QueryRowContext(ctx context.Context, q string, args .
 	recordStatement(q, args)
 	return r.q.QueryRowContext(ctx, q, args...)
 }
+
+// PAC-134 seams (contract md §10). eraseStatementHook sees every statement of
+// an erase-address run, in order, with its name from md §3.3 (and "budget",
+// the lock-phase re-arm of stage-4 amendment N-1), its SQL and its bind
+// arguments, before it is sent. eraseAfterStatementHook runs after the named
+// statement inside the transaction, on the run's context; a non-nil error
+// rolls the run back. While it is installed the transaction's
+// idle_in_transaction_session_timeout is disabled instead of 1 s, so a test
+// can hold the run open between statements (md §10).
+var (
+	eraseStatementHook      seam[func(name, sql string, args []any)]
+	eraseAfterStatementHook seam[func(ctx context.Context, name string) error]
+)
+
+// InstallEraseStatement installs the erase-address statement recorder.
+func InstallEraseStatement(tb TB, fn func(name, sql string, args []any)) (uninstall func()) {
+	tb.Helper()
+	return eraseStatementHook.install(tb, fn)
+}
+
+// InstallEraseAfterStatement installs the erase-address after-statement seam.
+func InstallEraseAfterStatement(tb TB, fn func(ctx context.Context, name string) error) (uninstall func()) {
+	tb.Helper()
+	return eraseAfterStatementHook.install(tb, fn)
+}
+
+func fireEraseStatement(name, sql string, args []any) {
+	if fn, ok := eraseStatementHook.get(); ok {
+		fn(name, sql, args)
+	}
+}
+
+func fireEraseAfterStatement(ctx context.Context, name string) error {
+	if fn, ok := eraseAfterStatementHook.get(); ok {
+		return fn(ctx, name)
+	}
+	return nil
+}
+
+func eraseAfterStatementInstalled() bool {
+	_, ok := eraseAfterStatementHook.get()
+	return ok
+}

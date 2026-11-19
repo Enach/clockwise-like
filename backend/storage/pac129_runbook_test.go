@@ -57,9 +57,13 @@ func TestPAC129_AC27_DocsCheckFailsWithoutTheSection(t *testing.T) {
 	}
 	doc := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	for name, broken := range map[string]string{
-		"no heading":   strings.Replace(doc, "## Erasing an address", "## Erasing", 1),
-		"no table":     strings.Replace(doc, "DELETE FROM team_analytics_cache", "DELETE FROM x", 1),
-		"no ticket":    strings.Replace(doc, "is tracked in PAC-134", "is tracked elsewhere", 1),
+		"no heading": strings.Replace(doc, "## Erasing an address", "## Erasing", 1),
+		// PAC-134 (contract md §9, D-10): the section no longer holds the
+		// hand-written DELETEs; the first "team_analytics_cache" of the
+		// document is in it, and it names PAC-134 several times, so every
+		// occurrence goes.
+		"no table":     strings.Replace(doc, "team_analytics_cache", "x", 1),
+		"no ticket":    strings.ReplaceAll(doc, "PAC-134", "PAC-0"),
 		"no preflight": strings.Replace(doc, "PAC-129 (migration 041)", "PAC-129", 1),
 	} {
 		if checkErasingAnAddress(broken) == "" {

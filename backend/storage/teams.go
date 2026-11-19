@@ -280,7 +280,12 @@ func ExpireOldInvites(db DBTX) error {
 			return err
 		}
 	}
-	_, err := db.Exec(`UPDATE team_invites SET status = 'expired' WHERE status = 'pending' AND expires_at < NOW()`)
+	// PAC-134 L-1 (contract md §6.2): the rows are locked in id order, the
+	// erase-address tool's order on team_invites, so the sweep and an
+	// erasure that both hold several invitations can never wait on each
+	// other in a cycle. Which rows it expires is unchanged.
+	_, err := db.Exec(`UPDATE team_invites SET status = 'expired'
+		WHERE id IN (SELECT id FROM team_invites WHERE status = 'pending' AND expires_at < NOW() ORDER BY id FOR UPDATE)`)
 	return err
 }
 

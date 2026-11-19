@@ -10,6 +10,8 @@
 //	paceday-operator advance-all  -operator <name> -reason <text>
 //	paceday-operator encryption status|convert|rotate-data-key|decrypt-all|reset-lost-key|downgrade-schema [flags]
 //	paceday-operator booker-erasure status [--check]
+//	paceday-operator erase-address -operator <name> -reason <text> [-dry-run]
+//	                              [-account-held-acknowledged] [-max-duration 5s] < address
 //
 // (encryption: PAC-84, contracts/features/PAC-84.md section 8; booker-erasure:
 // PAC-40, contracts/features/PAC-40.md section 5. Both open the database
@@ -28,7 +30,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Enach/paceday/backend/storage"
@@ -43,6 +47,15 @@ func main() {
 	// which applies pending migrations.
 	if len(os.Args) > 1 && os.Args[1] == "booker-erasure" {
 		os.Exit(runBookerErasure(os.Args[2:], os.Getenv, os.Stdout, os.Stderr, time.Now))
+	}
+	// PAC-134: dispatched before the PAC-71 path, which prints a command's
+	// error as is; erase-address prints classes only, reads the address from
+	// standard input, and a Ctrl-C or SIGTERM cancels its run (rolled back).
+	if len(os.Args) > 1 && os.Args[1] == "erase-address" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := runEraseAddress(ctx, os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
 	}
 	os.Exit(runPAC71(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
@@ -131,7 +144,7 @@ func fromVersion(res storage.MigrateResult) string {
 	return fmt.Sprint(res.From)
 }
 
-const usage = "usage: paceday-operator free-address|reassign|advance-all|encryption|booker-erasure [flags] (see -h on each; encryption: docs/runbook.md, \"Encryption key\"; booker-erasure: \"Booker erasure (PAC-40)\")"
+const usage = "usage: paceday-operator free-address|reassign|advance-all|encryption|booker-erasure|erase-address [flags] (see -h on each; encryption: docs/runbook.md, \"Encryption key\"; booker-erasure: \"Booker erasure (PAC-40)\")"
 
 // run executes one operator command against db and reports on out.
 func run(ctx context.Context, db *sql.DB, args []string, out io.Writer) error {
