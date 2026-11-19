@@ -561,7 +561,14 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 			r.fail(ctx, "encryption: refresher: flush sealed_count: %v", err)
 		}
 	}
-	if _, kek, sealed, err := ActiveDataKey(ctx, r.DB); err == nil && sealed >= SealBound && kek == r.Cfg.Active.ID {
+	// PAC-142: a failed read of the active data key (sql.ErrNoRows included:
+	// the one-active index and RotateStep1's single transaction mean a
+	// running refresher always has one) is reported, not read as "no
+	// rotation due"; the tick carries on and the next one retries.
+	_, kek, sealed, err := ActiveDataKey(ctx, r.DB)
+	if err != nil {
+		r.fail(ctx, "encryption: refresher: read the active data key: %v", err)
+	} else if sealed >= SealBound && kek == r.Cfg.Active.ID {
 		old := cur.ActiveDEK()
 		if id, err := RotateStep1(ctx, r.DB, r.Cfg, old, true); err != nil {
 			r.fail(ctx, "encryption: automatic data key rotation: %v", err)

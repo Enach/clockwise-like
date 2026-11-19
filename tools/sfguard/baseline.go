@@ -130,6 +130,6 @@ func Render(w io.Writer, findings []Finding, old *Baseline) {
 			c = cs[used[k]]
 		}
 		used[k]++
-		fmt.Fprintf(w, "%s  %s  %s  # %s\n", f.File, f.Func, f.Callee, c)
+		fmt.Fprintf(w, "%s  %s  %s  # %s\n", f.File, f.Func, f.calleeField(), c)
 	}
 }

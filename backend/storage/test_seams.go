@@ -427,10 +427,22 @@ func InstallTeamRead(tb TB, fn func(teamID uuid.UUID) error) (uninstall func()) 
 	return teamRead.install(tb, fn)
 }
 
-// InstallUserRead installs the seam that runs at the start of GetUserByID.
+// InstallUserRead installs the seam that runs at the start of the users-row
+// read of GetUserByID and GetUserByIDNoOrg.
 func InstallUserRead(tb TB, fn func(userID uuid.UUID) error) (uninstall func()) {
 	tb.Helper()
 	return userRead.install(tb, fn)
+}
+
+// orgRead fires at the start of GetOrgByID, so of the organisation read of
+// GetUserByID (PAC-142); a non-nil error is that read's error, without
+// querying. A test filters on the organisation id it owns.
+var orgRead seam[func(orgID uuid.UUID) error]
+
+// InstallOrgRead installs the seam that runs at the start of GetOrgByID.
+func InstallOrgRead(tb TB, fn func(orgID uuid.UUID) error) (uninstall func()) {
+	tb.Helper()
+	return orgRead.install(tb, fn)
 }
 
 // InstallUserProfileUpsert installs the seam that runs at the start of

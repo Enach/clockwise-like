@@ -335,7 +335,7 @@ func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.
 		return dto, err
 	}
 	for _, host := range hosts {
-		user, err := storage.GetUserByID(db, host.UserID)
+		user, err := storage.GetUserByIDNoOrg(db, host.UserID)
 		if err != nil {
 			return dto, err
 		}
@@ -504,7 +504,7 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, msg, http.StatusUnprocessableEntity)
 		return
 	}
-	owner, err := storage.GetUserByID(h.db, userID)
+	owner, err := storage.GetUserByIDNoOrg(h.db, userID)
 	if err != nil || owner == nil {
 		writeError(w, "user not found", http.StatusInternalServerError)
 		return
@@ -1054,7 +1054,7 @@ func (h *schedulingLinkHandlers) listHostInvites(w http.ResponseWriter, r *http.
 		if link == nil {
 			continue
 		}
-		owner, e := storage.GetUserByID(h.db, link.OwnerUserID)
+		owner, e := storage.GetUserByIDNoOrg(h.db, link.OwnerUserID)
 		if errors.Is(e, sql.ErrNoRows) || (e == nil && owner == nil) {
 			continue
 		}

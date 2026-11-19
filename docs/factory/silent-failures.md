@@ -58,9 +58,9 @@ Contract is `yes`, and `light` otherwise.
 
 ## 2. Summary
 
-112 register rows from about 90 candidates (101, plus SF-102 and SF-103 added by the PAC-133 contract, SF-104 added by PAC-125, SF-105 added by the PAC-122 batch 3 review, SF-106 and SF-107 added by the PAC-122 batch 4 review, SF-108 added by PAC-140, and SF-109 to SF-112 added by PAC-141). Duplicates across reports were merged
+113 register rows from about 90 candidates (101, plus SF-102 and SF-103 added by the PAC-133 contract, SF-104 added by PAC-125, SF-105 added by the PAC-122 batch 3 review, SF-106 and SF-107 added by the PAC-122 batch 4 review, SF-108 added by PAC-140, SF-109 to SF-112 added by PAC-141, and SF-113 added by PAC-142). Duplicates across reports were merged
 (see §9); F3, F6, F14, F24 and L-k were split because their parts differ in
-severity or domain. In total, 101 rows are confirmed and 11 are likely. Four candidates
+severity or domain. In total, 102 rows are confirmed and 11 are likely. Four candidates
 or parts were rejected (§4), and seven finder claims were corrected in place.
 SF-100 was added after review (PR #288) and keeps its number; it sits in its
 sorted position in the register. SF-101 was added by the PAC-120 contract (from
@@ -88,12 +88,16 @@ invite preview's team and inviter reads, and the focus-block reads of
 after SF-103 and SF-112 after SF-041 (medium rows), SF-110 after SF-107 and
 SF-109 after SF-083 (low rows). All four are in the domain counts below and in
 the "Discarded error becomes a default" pattern.
+SF-113 was added by PAC-142 (`storage.GetUserByID` read a failed organisation
+read as "no organisation"; the `err == nil` swallow shape the guardrail now
+refuses, §8). It sits after SF-105, at the end of the low auth rows; it is in
+the domain counts below and in the "Discarded error becomes a default" pattern.
 
 | Domain | critical | high | medium | low | total |
 |---|---:|---:|---:|---:|---:|
 | scheduling-links/booking | · | 1 | 4 | 4 | 9 |
 | calendar | · | 1 | 9 | 3 | 13 |
-| auth | · | 1 | 1 | 4 | 6 |
+| auth | · | 1 | 1 | 5 | 7 |
 | teams/manager | 2 | 6 | 4 | 7 | 19 |
 | habits/analytics | · | 5 | · | 2 | 7 |
 | focus | · | 2 | · | · | 2 |
@@ -103,20 +107,20 @@ the "Discarded error becomes a default" pattern.
 | web-only | 1 | 1 | 14 | 10 | 26 |
 | mcp | · | 2 | 6 | 2 | 10 |
 | observability | · | · | 2 | 4 | 6 |
-| **total** | **4** | **23** | **45** | **40** | **112** |
+| **total** | **4** | **23** | **45** | **41** | **113** |
 
 | | count |
 |---|---:|
-| confirmed | 101 |
+| confirmed | 102 |
 | likely | 11 |
 | contract change (`full` process) | 19 |
-| no contract change (`light` process) | 93 |
+| no contract change (`light` process) | 94 |
 
 By shape of failure:
 
 | Pattern | Rows | What it looks like |
 |---|---:|---|
-| Discarded error becomes a default | 46 | `_ = storage.X(...)`, `v, _ := storage.Y(...)`, `err != nil \|\| ok` read as "absent", answered with 2xx, `[]`, `false` or 0 |
+| Discarded error becomes a default | 47 | `_ = storage.X(...)`, `v, _ := storage.Y(...)`, `if v, err := storage.Z(...); err == nil` with no else, `err != nil \|\| ok` read as "absent", answered with 2xx, `[]`, `false` or 0 |
 | Optimistic or invented UI claim | 29 | a success toast before or regardless of the answer, a field the request never carries, a count the client makes up, an error state never rendered |
 | Validation gap or silent coercion | 16 | input accepted that later fails or is replaced (priority 0 → 50, any booker email, any personal-calendar provider) |
 | Background failure logged only | 9 | a job or detached unit that logs (or says nothing) and never reaches Sentry |
@@ -171,7 +175,7 @@ web `web H*`, `web M*` and `web L*`; MCP `M1`..`M11` (no hyphen) and `X1`.
 | SF-037 | medium | calendar | confirmed | no | light | — | **NLP parse swallows scheduler and LLM errors** | `nlp/parser.go:235-238`, `:245-256`, `:289-294` | A `Suggest` error leaves `suggested_slots` empty (the web then says "No available slots found", `Dashboard.tsx:181-182`); an attendee-extraction error leaves attendees nil; a bad range date becomes the zero time. All 200 with no `error`. `ParseResult.error` already exists. **Clause 1 by PAC-133; clauses 2-3 by PAC-122 batch 2.** Clause 1 (spec §3.5 item 7, AC-28, AC-43; contract `contracts/features/PAC-133.md` §5.4): a failed suggestion step sets `error` to a fixed sentence unless an error is already set (backend half, AC-28), and the web Dashboard shows `error` instead of "No available slots found…" (web half, AC-43). **Backend half done (PAC-133 server PR, pinned by `TestPAC133_AC28_NLPParseSaysAFailedSuggestionStep`, `api/pac133_test.go`); web half in the paired PR (smart-calendar-flow `factory/pac-133`, AC-43); clause 1 is fixed once that merges.** Clause 2: a failed attendee extraction (a provider failure, or an answer that is not JSON) no longer leaves the attendees out silently: the parse goes on and answers 200 with `intent` as parsed and `error` set to the fixed sentence `Paceday could not identify the attendees in this request. Check the attendees before booking.`, unless an error is already set (PAC-133's precedence: an error already set is never replaced); the redacted failure is logged with the user id only. Clause 3: a `range_start`/`range_end` that is not `YYYY-MM-DD` is `intent: unknown` with the model's own error, else `LLM returned an invalid date range`. Pinned by `TestPAC122_SF037_AttendeeExtractionFailureIsReported`, `TestPAC122_SF037_ModelErrorWinsOverAttendeeFailure`, `TestPAC122_SF037_SuccessfulExtractionSetsNoError` and `TestPAC122_SF037_UnparseableRangeIsAnError` (`backend/nlp/pac122_b2_test.go`). The `parseNaturalLanguage` description and `NLPParseResult.error` are extended in PAC-133's wording (prose only, `contracts/openapi/paths/scheduling.yaml`). Precedence across the clauses: an error already set is never replaced, so the model's own error wins, then the attendee sentence (set first), then the suggestion-failure sentence. | MCP M10 |
 | SF-103 | medium | calendar | confirmed | no | light | — | **Compression apply's "attendee conflict" re-check never checks an attendee** | `engine/compression.go:172-176` | Apply re-checks each move with a nil calendar list, so the answer is about nobody and the conflict branch is unreachable; a failed re-check is ignored (`err == nil && …`). Every posted proposal is moved unchecked. No test reaches the branch. *(Added by the PAC-133 contract, from PAC-133 spec §0 item 2.)* **Fixed (PAC-133)** (spec §3.6 items 2-4, D-7, OQ-8, AC-30..AC-35; contract `contracts/features/PAC-133.md` §5.3): apply reads the event, checks its non-self, non-declined attendees over the proposed time minus the meeting's own current time, refuses a conflict (`attendee conflict at proposed time`) and refuses what it cannot verify (`attendee availability unverified`). Pinned by `TestPAC133_AC30_AC32_ApplyUnverified`, `TestPAC133_AC31_ApplyConflict`, `TestPAC133_AC33_ApplyChecksTheRealAttendees`, `TestPAC133_AC34_ApplyExcludesTheMeetingsOwnTime` and `TestPAC133_AC35_CallBounds` (`engine/pac133_test.go`). | PAC-133 spec §0 item 2 |
 | SF-111 | medium | calendar | confirmed | no | light | — | **Meeting suggestions read a failed focus-block read as "no focus blocks"** | `engine/smart_schedule.go` (`(*SmartScheduler).Suggest`: `focusBlocks, _ := storage.ListFocusBlocksForUserWeek`) | A failed read of the caller's focus blocks left the list empty, so `POST /api/schedule/suggest` (and NLP parse, which copies its slots) offered slots over the caller's focus time with no sign anything failed (the SF-013 shape). Found by the PAC-122 guardrail sweep (baseline line tagged PAC-141). **Fixed (PAC-141)**: the failed read is `Suggest`'s error, the operation's documented 500 `internal error` (NLP parse says its fixed "could not suggest" sentence, PAC-133 §2.6); no slot is offered. Contract prose (the 500's description) updated. Pinned by `TestPAC141_SuggestFocusReadErrorIsAnError` (`backend/engine/pac141_test.go`) and, at the handler, `TestPAC141_SuggestHandlerFocusReadErrorIs500` (`backend/api/pac141_test.go`), through the storage seam `InstallFocusBlocksRead`. | — |
-| SF-038 | medium | auth | confirmed | yes | full | — | **Calendar status reports "not connected" on storage errors** | `api/handlers_auth.go:79-83`, `:93-94`, `:108-113` | Settings, token and credential-loss read errors all become 200 `{connected:false}`; the web and MCP prompt a reconnect. The contract documents this fallback, and `TestAuthStatus_NotConnected` (`handlers_auth_test.go:14`) reaches it through a no-user request, so the fix edits both. Keep the PAC-84 undecryptable case. | M-b / MCP M9 |
+| SF-038 | medium | auth | confirmed | yes | full | — | **Calendar status reports "not connected" on storage errors** | `api/handlers_auth.go:79-83`, `:93-94`, `:108-113` | Settings, token and credential-loss read errors all become 200 `{connected:false}`; the web and MCP prompt a reconnect. The contract documents this fallback, and `TestAuthStatus_NotConnected` (`handlers_auth_test.go:14`) reaches it through a no-user request, so the fix edits both. Keep the PAC-84 undecryptable case. Also (found by PAC-142's guardrail extension, baselined under this row): a failed user read for the connected Google account's email answers `{connected:true, email:""}` (`if u, err := storage.GetUserByIDNoOrg(...); err == nil && u != nil`). | M-b / MCP M9 |
 | SF-039 | medium | teams/manager | confirmed | no | light | — | **A team's member list comes back empty on error** | `api/handlers_teams.go:113` | `members, _ :=` gives 200 with `members: []`. Only the null→`[]` encoding is pinned (`TestTeamDetailBody_NoMembers_EncodesEmptyArray`, `empty_arrays_test.go:77`), not the swallow. **Fixed (PAC-129)** (contract §3.7; spec AC-6): a failed member read is the 500. Pinned by `TestPAC129_AC6_FailedMemberReadIs500` (`api/pac129_test.go`). | M-a |
 | SF-040 | medium | teams/manager | confirmed | no | light | API-022 (related) | **Manager engine errors produce false gaps and cached "no data"** | `engine/manager.go:410-419`, `:466-482`, `:486-501`, `:504-513`; `api/handlers_manager.go:262-263`, `:594` | `hasFutureEvent` ignores its `Scan` error (a false "no upcoming 1:1" gap); a DB or freebusy error sets `DataAvailable=false`, which is then cached; the cache upsert error is ignored; the handlers drop `GetMemberWeek` errors. **Fixed (PAC-122)** (batch 4): `hasFutureEvent` returns its read error and `GetGaps` returns it (the documented 500), never a false gap. `GetMemberWeek` returns every failed read as the error: the PAC-60 owner check (still fail-closed: nothing is shown), the cache read (only `sql.ErrNoRows` means "not cached"), the consent read and the `analytics_weeks` read (only `sql.ErrNoRows` means "no data"), the free/busy query, and the cache write. Nothing computed from a failed read is cached, and an external member whose free/busy coverage is not `known` (a provider failure degrades to unknown, PAC-67 D-6) is shown as "no data" but not cached. `GET /api/manager/team` and `GET /api/manager/analytics` answer a failed member week with the 500 (steps `getTeam: member week`, `getAnalytics: member week`). Pinned by `TestPAC122_SF040_GapCheckReadErrorIsAnError`, `TestPAC122_SF040_MemberWeekStepErrorsAreErrors`, `TestPAC122_SF040_MemberWeekStillCachesARealAnswer`, `TestPAC122_SF040_ExternalUnknownCoverageIsNotCached` (`backend/engine/pac122_b4_test.go`, through the engine seam `InstallManagerStep`) and `TestPAC122_SF040_FailedMemberWeekIs500` (`backend/api/pac122_b4_test.go`). | F14 |
 | SF-041 | medium | teams/manager | confirmed | no | light | — | **Team analytics averages missing members as zero** | `engine/team_availability.go:194-209` | `row, _ := GetAnalyticsWeek`; a member with no row or a read error contributes 0 and still counts in `n`. Distinct from the pinned FindSlots behaviour (`TestPAC81_TeamAvailabilityUnreadableMemberTreatedFree`). **Fixed (PAC-129)** (contract §3.6; spec AC-17): `people[].figures` is `no_data`, never zero, and averages divide by the measured Paceday members only. `member_breakdown` keeps today's zeroes for old clients. Pinned by `TestPAC129_AC16_AC17_AnalyticsRows` (`api/pac129_test.go`): `people[].figures` is `no_data`, averages divide by the measured Paceday members. | F23 |
@@ -214,6 +218,7 @@ web `web H*`, `web M*` and `web L*`; MCP `M1`..`M11` (no hyphen) and `X1`.
 | SF-072 | low | auth | confirmed | no | light | — | **/api/auth/me and SSO lookups answer 404 on a storage error** | `api/handlers_me.go:22-25`; `api/handlers_sso.go:58-61`, `:128-131` | Any error reads as "user not found" / "SSO not configured for this domain". **Fixed (PAC-122)** (batch 3): `/api/auth/me` answers 404 `user not found` only for `sql.ErrNoRows`; `startSsoLogin` and `ssoOidcCallback` answer 404 `SSO not configured for this domain` only when no active row exists. Any other lookup error is the documented 500 `{"error":"internal error"}` (steps `current user`, `SSO provider lookup`). Pinned by `TestPAC122_SF072_LookupFailureIs500` (`backend/api/pac122_b3_test.go`); the 404s stay pinned by the PAC-35 tests. The `getCurrentUser`, `startSsoLogin` and `ssoOidcCallback` descriptions, which said a lookup error was the 404 (or answered as before), are corrected (prose only, `contracts/openapi/paths/auth.yaml`). | L-k (part) |
 | SF-073 | low | auth | confirmed | no | light | — | **A failed save of a renewed token is logged only** | `auth/credential_lifecycle.go:206-213` | For a provider that rotates refresh tokens the stored one is now dead, so the user is later asked to reconnect with no trace in Sentry. **Fixed (PAC-122)** (batch O): the failed save is reported through the lifecycle hook as `credential-renewal/<owner id>`; the action still gets the renewed token. Pinned by `TestPAC122_RenewedTokenSaveFailureReported` (`backend/auth/pac122_test.go`). | F21 |
 | SF-105 | low | auth | confirmed | yes | full | — | **Attaching a Teams meeting reads a failed Outlook token read as "not connected"** | `api/handlers_conferencing.go:67-71` | The Teams branch of the conference provider factory turns any `LoadMicrosoftTokenCtx` error other than the PAC-84 decrypt failure into `errTeamsNotConnected`, so `createConferenceLink` and `addEventConference` answer 400 "teams: not connected — connect Outlook in Settings …" when the stored credential exists but could not be read, and the user is told to reconnect. Since SF-007 (PAC-122 batch 3) the load returns read errors instead of nil, so the error now reaches this site and is still discarded here. Both 400 descriptions (`contracts/openapi/paths/booking.yaml`) document the sentence as also covering a failed read, so the fix (the documented 500) is a contract edit. Fix: only no credential is the 400; any other read error is the 500. | PAC-122 b3 review (#299) |
+| SF-113 | low | auth | confirmed | no | light | — | **The current user reads a failed organisation read as "no organisation"** | `storage/users.go` (`GetUserByID`: `if org, err := GetOrgByID(...); err == nil { u.Org = org }`) | A failed read of the user's organisation left `User.Org` nil with no error, so `GET /api/auth/me` answered 200 with `org` left out (it is `omitempty`): the user read as belonging to no organisation. Found by the PAC-142 review of the `err == nil` swallow shape. **Fixed (PAC-142)**: `GetUserByID` returns a failed organisation read as its error, and `GET /api/auth/me` answers its documented 500 `internal error` (reported); an organisation that no longer exists (`sql.ErrNoRows`) is still no organisation. Every other caller of `GetUserByID` reads only the name, email, picture or `OrgID`, never `Org`, so it moved to the new `GetUserByIDNoOrg` (the users row only, no organisation query): an organisation failure cannot fail sign-in, the org members list, the SSO and organisation-AI gates, booking hosts, invites or the recap. `getCurrentUser` 500 prose updated (no status or shape change). The guardrail now refuses the shape (§8). Pinned by `TestPAC142_GetUserByIDOrgReadErrorIsAnError`, `TestPAC142_GetUserByIDDeletedOrgIsNoOrg`, `TestPAC142_GetUserByIDNoOrgNeverReadsTheOrg` (`backend/storage/pac142_test.go`), `TestPAC142_GetUserByIDCallersArePinned` (`backend/storage/pac142_callers_test.go`: `api/handlers_me.go` is the only non-test caller of `GetUserByID`), `TestPAC142_MeOrgReadErrorIs500` and `TestPAC142_OrgMembersUnaffectedByOrgReadError` (`backend/api/pac142_test.go`), through the new storage seam `InstallOrgRead`. | — |
 | SF-074 | low | teams/manager | confirmed | no | light | API-090 (note) | **Owner checks answer 403 on a storage error** | `api/handlers_manager.go:644-647`; `api/handlers_teams.go:190-193` (requireOwner) | `err != nil \|\| role != owner` → 403, so an outage reads as "forbidden". **Partly fixed (PAC-129), for its new operations only** (`addTeamPerson`, `removeTeamPerson`: a storage error in the owner or membership check is the 500; spec OQ-12). The existing owner checks are unchanged. Pinned by `TestPAC129_AC5_TBOM1_OwnAndMemberAddressesAreRefused` and the storage-error branch of `generatedServer.AddTeamPerson` (500, never 403). **Fixed (PAC-122)** (batch 4) for the remaining owner checks: `requireOwner` (team PATCH and DELETE, member removal by another member, zone create, update and delete) and the manager `team_id` scope (`managerTeamScope`, which also holds the membership check of the manager read routes), and the in-transaction owner check of the invitation (`InviteTeamPersonCtx`) and of the manager's scoped removal (`RemoveManagerTeamPersonCtx`), left open by PAC-129 (OQ-12), answer 403 only for no membership row or a non-owner role; a failed membership read is the 500 (`writeOwnerRefusal`; step `manager team scope: membership`). Pinned by `TestPAC122_SF074_OwnerCheckReadErrorIs500`, `TestPAC122_SF074_InTransactionOwnerCheckReadErrorIs500` and `TestPAC122_SF074_NonOwnerStillForbidden` (`backend/api/pac122_b4_test.go`). The formal-team *membership* check `requireMember` (team detail, zone list, availability, analytics), the same pattern but not an owner check, was left open by batch 4 as SF-107 and is now **Fixed (PAC-122)** there (batch 4 follow-up). | L-k (part) |
 | SF-075 | low | teams/manager | confirmed | yes | full | API-047 | **GET /api/org/members answers 200 [] when the caller cannot be read** | `api/handlers_org.go:24-28` | Documented in the contract as current behaviour; no web consumer (API-091). | API-047 |
 | SF-076 | low | teams/manager | confirmed | no | light | API-086 | **A failed count reads as team_member_count 0** | `api/handlers_manager.go:69-70` | `_ = ...Scan(&count)`. Nothing reads the field. **Fixed (PAC-122)** (batch 4): the count moves to `storage.CountManagerTeamMembers`; a failed count is the documented 500 (step `getProfile: roster count`), never `team_member_count: 0`. Pinned by `TestPAC122_SF076_FailedRosterCountIs500` (`backend/api/pac122_b4_test.go`). | L-a |
@@ -419,7 +424,8 @@ it was not used.
 **The backend guardrail exists: `tools/sfguard`, run by `make lint`** (so by
 `make verify` and by the `lint + openapi-check` job in `ci.yml`). It refuses a
 new blank-assigned error from the targeted calls in non-test, non-generated
-code under `backend/` and `mcp/`.
+code under `backend/` and `mcp/`, and (since PAC-142) a new `err == nil`
+swallow of one, below.
 
 - **How it matches.** A `go/analysis`-style check on the type-checked syntax
   (`go/packages` + `go/types`), not grep, so line breaks, parentheses,
@@ -440,6 +446,31 @@ code under `backend/` and `mcp/`.
   - a `database/sql` handle method on `*sql.DB`, `*sql.Tx`, `*sql.Conn`,
     `*sql.Stmt`, `*sql.Row` or `*sql.Rows` (the
     `_ = h.db.QueryRow(...).Scan(...)` shape).
+
+  Since PAC-142 it also flags the **`err == nil` swallow** of the same
+  targeted calls (SF-113's shape):
+
+  ```go
+  if org, err := storage.GetOrgByID(db, id); err == nil {
+      u.Org = org
+  }
+  ```
+
+  An `if` whose init assigns one targeted call's results (`:=` or `=`), whose
+  condition is `err == nil` or `nil == err` (alone, or as the leftmost operand
+  of an `&&` chain, as in `err == nil && v != nil`), with **no `else` that
+  reads** that error variable and **no later read** of it after the `if`. A
+  failure then takes the "absent" path and nothing is said. An `else`, or an
+  `else if` chain, that never reads the error (`} else if name == "" {`)
+  exempts nothing; one that does (`} else if !errors.Is(err, sql.ErrNoRows) {`,
+  as in `handlers_manager.go`) handles it. A later write (`err = storage.Save(...)`)
+  is not a read. Not matched: `err != nil` and `||` conditions, an error read
+  after the `if` (possible with `=`), an untargeted call (`strconv`,
+  `time.Parse`, `r.Cookie`), and a separate `v, err := f()` line followed by
+  `if err == nil` (the variable outlives the `if`; review catches that one). Its baseline entries carry the
+  callee prefixed `errnil:` (`storage.GetOrgByID` becomes
+  `errnil:storage.GetOrgByID`), so the two shapes of one call are counted
+  apart and one never accepts the other.
 
   Methods named `Rollback` or `Close` are never targeted. Anything else
   (`json.Encode`, `w.Write`, `strconv`, `os`) is out of scope. A file is
@@ -487,6 +518,11 @@ code under `backend/` and `mcp/`.
   - each of these new discards fails: storage, `auth.Load*`, calendar-ops,
     store-seam, generic, `h.db`, and a file carrying the generated phrase
     mid-file;
+  - a new `err == nil` swallow fails (alone, reversed `nil == err`, leftmost of
+    `&&`, assigned with `=`, followed only by a write of `err`, or with an
+    `else if` that never reads `err`), a blank-shape entry does not accept it,
+    and the shapes that handle or see the error are never reported
+    (`testdata/fixture/api/errnil.go`);
   - a baselined discard passes;
   - a second identical discard in one function fails;
   - a stale, unnamed or `PAC-0` entry fails;
@@ -503,7 +539,12 @@ code under `backend/` and `mcp/`.
     storage and returns its error is not a target, so `_ = helper()` passes.
     Only the seams listed above are followed;
   - **an `err` that is named and then ignored:** `v, err := storage.Get(...)`
-    followed by no check (`ineffassign` or `staticcheck` catch some of these);
+    followed by no check (`ineffassign` or `staticcheck` catch some of these),
+    or followed by `if err == nil { ... }` on its own line (only the if-init
+    form is the `err == nil` swallow above);
+  - **`err == nil` that is not the leftmost operand of `&&`:**
+    `if v, err := storage.Get(...); v != nil && err == nil { ... }`;
+  - **a `switch` init:** `switch v, err := storage.Get(...); { case err == nil: ... }`;
   - **anonymous-interface calls:** `interface{ Get() (T, error) }` declared
     inline;
   - **`sql.Result.RowsAffected`:** excluded on purpose, since the drivers in
@@ -542,6 +583,40 @@ code under `backend/` and `mcp/`.
   - `SmartScheduler.Suggest`: a failed focus-block read is the 500 (SF-111);
   - `TeamAvailabilityEngine.memberBusy`: a failed focus-block read counts the
     member unknown, never free (SF-112).
+- **The `err == nil` shape at landing (PAC-142): 7 occurrences**, each read
+  against this register. Totals now: **19 entries** = 14 blank (5 known,
+  9 fine) + 5 `errnil:` (1 known, 4 fine).
+  - **Fixed in PAC-142 (1):** `storage.GetUserByID`'s organisation read
+    (SF-113). Its callers were audited: only `GET /api/auth/me` reads `Org`
+    (now its documented 500 on a failed read); the other 19 call sites read
+    the name, email, picture or `OrgID` and moved to `GetUserByIDNoOrg`, which
+    never reads the organisation, so an organisation failure cannot turn a
+    working path (sign-in, org members, the SSO and organisation-AI gates,
+    booking hosts, invites, the recap) into a spurious failure.
+  - **1 known row:** SF-038, `authHandlers.status`: a failed user read for
+    the connected Google account's email answers `connected:true` with
+    `email: ""` (same handler, same full-process fix; noted on the row).
+  - **Also fixed in PAC-142 (1):** `Refresher.Tick`'s read of the active data
+    key (`storage.ActiveDataKey`). A failed read, `sql.ErrNoRows` included
+    (no active row, which the one-active index and `RotateStep1`'s single
+    transaction rule out while the refresher runs), skipped the automatic
+    rotation check with nothing said; it is now reported through the
+    lifecycle hook (`read the active data key`) and the tick carries on.
+    Pinned by `TestPAC142_RefresherReportsActiveDataKeyReadFailure`.
+  - **4 fine:**
+    - `bookingHandlers.publicLink`, `auth.LoadUserToken`: a failed token load
+      only leaves the host out of `coverage.checked`, the cautious side;
+      `total` is strict (SF-027). It is not reported: a decrypt failure or a
+      transient DB error shows that host as "not checked" with nothing
+      logged;
+    - `conferencingHandlers.providers` and `SaveZoomCredential`,
+      `storage.DecodeZoomCredential`: a stored Zoom credential that does not
+      decode cannot be used ("not connected" invites the reconnect that
+      replaces it, as PAC-84 does for an undecryptable one), and keeps no old
+      refresh token by design (AC-16c b);
+    - `Refresher.Tick`, `storage.LoadDataKeys` (after a rotation): a failed
+      reload keeps the current keyring this tick; the next tick reloads it,
+      and its own `LoadDataKeys` read reports a failure (`r.fail`).
 
 The web counterpart is the **optimistic UI claim** (29 rows). It matches
 `@typescript-eslint/no-floating-promises` (which catches `void

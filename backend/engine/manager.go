@@ -205,7 +205,7 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		return nil, fmt.Errorf("list events: %w", err)
 	}
 
-	manager, err := storage.GetUserByID(e.DB, managerID)
+	manager, err := storage.GetUserByIDNoOrg(e.DB, managerID)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("load manager: %w", err)
 	}

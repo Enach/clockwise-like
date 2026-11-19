@@ -113,7 +113,7 @@ func rawBodyFrom(ctx context.Context) []byte {
 // orgCaller is membership (gate step 1): the caller's organisation, or the
 // 403 error value.
 func orgCaller(db *sql.DB, ctx context.Context) (*storage.User, *storage.Org, gen.SsoWriteMembershipRequiredError) {
-	user, err := storage.GetUserByID(db, auth.UserIDFromContext(ctx))
+	user, err := storage.GetUserByIDNoOrg(db, auth.UserIDFromContext(ctx))
 	if err != nil || user == nil || user.OrgID == nil {
 		return nil, nil, gen.OrgMembershipRequired
 	}

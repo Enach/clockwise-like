@@ -678,7 +678,7 @@ func (e *BookingEngine) completeBooking(ctx context.Context, link *storage.Sched
 	var hostEmails, hostNames []string
 	var events []hostEvent
 	for _, h := range hosts {
-		u, err := storage.GetUserByID(db, h.UserID)
+		u, err := storage.GetUserByIDNoOrg(db, h.UserID)
 		if err != nil || u == nil {
 			continue
 		}
