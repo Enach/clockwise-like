@@ -322,6 +322,23 @@ free/busy call:
   header is ignored, so pressing Create link again after a lost answer can
   create a second link and invite its co-hosts a second time. Revert the web
   first.
+- **Going back past PAC-130** (Manager account links, migration
+  `042_manager_member_link_erase`): this section applies unchanged — fix
+  forward, or restore the pre-deploy backup and start the previous image. An
+  image-only rollback does not work: the previous image cannot start on a
+  database at 042. The down step changes nothing and is for development,
+  tests and staging (stop the backend, `migrate ... down 1` only while 042 is
+  the newest applied migration, start the previous image). The up step
+  **erased** every Manager roster account link except one whose account still
+  carries the roster address and shares a team or the organisation with the
+  manager (so a link to an account whose address has since changed is erased
+  too); no down step or image brings them back, only the backup does. For
+  rollback fidelity without a full restore, snapshot the table before
+  deploying: `pg_dump -t manager_team_members`. Release note for PAC-130:
+  Manager mode shows "On Paceday" only for Paceday members of the manager's
+  teams and organisation; erasing links may make some unbound legacy
+  accounts empty, so they bind on authoritative evidence at their next
+  sign-in (PAC-71 rule (b)) — expected, not a support incident.
 
 ### Rollback on the same host
 

@@ -121,10 +121,18 @@ func TestPAC71_AC28_AC40_GrantingSitesResolveOnlyDomainConfirmedHolders(t *testi
 				if rec.Code != http.StatusCreated {
 					t.Fatalf("= %d %s", rec.Code, rec.Body.String())
 				}
+				// PAC-130 (spec D-2, AC-1): the add is no longer a granting
+				// site; it looks no address up and stores no link, holder or
+				// not. The rule held until PAC-130.
 				var mu *uuid.UUID
-				_ = openTestDB(t).QueryRow(`SELECT member_user_id FROM manager_team_members WHERE manager_user_id = $1 AND lower(member_email) = lower($2)`, owner, asked).Scan(&mu)
-				if (mu != nil && *mu == holder) != resolves {
-					t.Fatalf("member_user_id = %v", mu)
+				if err := openTestDB(t).QueryRow(`SELECT member_user_id FROM manager_team_members WHERE manager_user_id = $1 AND lower(member_email) = lower($2)`, owner, asked).Scan(&mu); err != nil {
+					t.Fatal(err)
+				}
+				if mu != nil {
+					t.Fatalf("member_user_id = %v, want NULL", mu)
+				}
+				if !strings.Contains(rec.Body.String(), `"member_user_id":null`) {
+					t.Fatalf("answer = %s, want member_user_id null", rec.Body.String())
 				}
 			})
 			t.Run("roster entry for a formal member", func(t *testing.T) {

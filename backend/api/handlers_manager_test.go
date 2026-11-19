@@ -33,8 +33,12 @@ func (f *fakeManagerWorkflow) GetGaps(_ context.Context, _ uuid.UUID, members []
 	return f.gaps, nil
 }
 
-func (*fakeManagerWorkflow) GetMemberWeek(context.Context, uuid.UUID, *storage.ManagerTeamMember, time.Time) (*engine.MemberWeekStats, error) {
-	return &engine.MemberWeekStats{DataAvailable: true}, nil
+func (*fakeManagerWorkflow) MemberWeeks(_ context.Context, _ uuid.UUID, _ *storage.ManagerTeamMember, weekStarts []time.Time) (*engine.MemberWeeks, error) {
+	out := &engine.MemberWeeks{}
+	for range weekStarts {
+		out.Weeks = append(out.Weeks, &engine.MemberWeekStats{DataAvailable: true})
+	}
+	return out, nil
 }
 
 func setupManagerRoutes(t *testing.T, workflow ManagerWorkflow) *chi.Mux {

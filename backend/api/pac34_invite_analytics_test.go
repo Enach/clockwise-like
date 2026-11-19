@@ -179,7 +179,9 @@ func TestPAC34ManagerAnalyticsMemberFlags(t *testing.T) {
 	db := openTestDB(t)
 	h := newManagerHandlers(db, nil)
 	managerID := createTestUser(t, "pac34-manager@example.com")
-	ownedID := createTestUser(t, "pac34-owned@example.com")
+	// PAC-130: the owned row is a manual entry resolved from its address (a
+	// PAC-71 granting site), so its account holds it domain-confirmed.
+	ownedID := createConfirmedUser(t, "pac34-owned@example.com")
 	unownedID := createTestUser(t, "pac34-unowned@example.com")
 
 	team, err := storage.CreateTeam(db, "PAC-34 Analytics", managerID)
@@ -243,7 +245,11 @@ func TestPAC34ManagerAnalyticsMemberFlags(t *testing.T) {
 	}{
 		{"pac34-external@gmail.com", false, false, 0},
 		{"pac34-owned@example.com", true, true, 1},
-		{"pac34-unowned@example.com", true, false, 0},
+		// PAC-130 (spec §2.5, AC-4): the unowned member shares no team and no
+		// organisation with the manager, so the stored link is not read and
+		// the row is the external one (flag false, estimate; no credential
+		// here, so no data). Amended by PAC-130; was true, false, 0.
+		{"pac34-unowned@example.com", false, false, 0},
 	} {
 		m, ok := byEmail[tc.email]
 		if !ok {

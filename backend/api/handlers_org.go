@@ -28,7 +28,9 @@ func (h *orgHandlers) members(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	members, err := storage.GetOrgMembers(h.db, *user.OrgID)
+	// PAC-130 (contract md §2.5): the set is keyed by the viewer, through the
+	// one definition the Manager visibility rule (b) reads too.
+	members, err := storage.GetOrgMembers(h.db, userID)
 	if err != nil {
 		logServerError(r, "org members", err, http.StatusInternalServerError)
 		writeError(w, "internal", http.StatusInternalServerError)
