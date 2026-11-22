@@ -18,16 +18,20 @@ WEB ?= $(ROOT)/../smart-calendar-flow
 VERIFY_DIR := $(ROOT)/.verify
 
 # The floors are what the suites actually hold today, measured, not the target.
-# CLAUDE.md claimed 75–80% for both: mcp does hold it (84.0%), the backend does
-# not (38.0% once generated code is excluded, 19.6% with it). A gate set to an
-# aspiration fails every run and gets bypassed, which is worse than a gate set
-# to the truth and raised deliberately.
+# A gate set to an aspiration fails every run and gets bypassed, which is worse
+# than a gate set to the truth and raised deliberately.
 #
 # These are RATCHETS. Raise one when coverage rises; never lower one to turn a
-# red run green. Closing the backend's gap to 75% is tracked as work, not as a
-# number in this file.
-BACKEND_COVERAGE_MIN ?= 64
-MCP_COVERAGE_MIN ?= 75
+# red run green.
+#
+# Measured 2026-11-22, full suites, generated files excluded: backend 80.6%
+# (was 38.0% when these floors were first written and 66.7% when CLAUDE.md was
+# last updated), mcp 87.9%. Both now hold the 75–80% target CLAUDE.md asks
+# for, so the floors move up to the measured numbers less the ~2-point margin
+# the earlier entries kept for integration-test variance. The backend's "gap
+# to 75%" is closed.
+BACKEND_COVERAGE_MIN ?= 78
+MCP_COVERAGE_MIN ?= 85
 
 # Versions are pinned in one place so an agent that hits a missing tool is told
 # exactly what to install, and so two machines generate identical bytes.
