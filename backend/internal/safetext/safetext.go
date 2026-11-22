@@ -35,9 +35,14 @@ import (
 // octets in a line and RFC 5545 §3.1 folds at 75 octets: a team name, a
 // person's name or a meeting title longer than this is not a legitimate
 // value, and leaving it uncapped lets unbounded input produce a line no
-// relay will accept. It is the same number the request path uses as an entry
-// limit, at the other boundary: an entry gate for new data, a render guard
-// for data already stored.
+// relay will accept.
+//
+// It is a render guard, not an entry gate: it shortens the outgoing header or
+// content line and never the stored value, which keeps whatever was written.
+// The entry limit on these fields is the contract's per-field maxLength,
+// enforced separately (docs/specs/NEW-request-field-length-limits.md, whose
+// rule for a request value is refuse, never truncate — this cap is at the
+// other boundary, on data already stored).
 const MaxLen = 200
 
 // MaxAddressLen is the longest address a forward path may hold (RFC 5321

@@ -322,8 +322,10 @@ paths:
             "name, email, and start are required"; "name must not contain line
             breaks" (`name` holds CR, LF or NUL); "email must be a valid email
             address" (`email` is not exactly one address: a display name, a
-            second address, a line break, surrounding space or over 254
-            characters are all refused) — both from the 2026-11-22 security
+            second address, a line break, surrounding space or over 254 octets
+            are all refused; RFC 5321 §4.5.3.1.3 counts octets, and an address
+            is never shortened to fit — a shortened address is somebody
+            else's) — both from the 2026-11-22 security
             audit, finding 1, checked right after the required check and before
             `start` is parsed, because the booker's name and address reach the
             To header and Subject of the confirmation email and the ATTENDEE

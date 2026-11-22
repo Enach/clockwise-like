@@ -102,6 +102,13 @@ screen is the opposite.
 - `GenerateSlug` indexes `strings.Fields(ownerName)[0]` (`booking.go:40`) and
   panics on an empty owner name. This is reachable today; it is not introduced
   here but an instant-create button makes it one click away (§8 OQ-5).
+  **Fixed 2026-11-22** (read-only security audit, a rider of finding 2): the
+  stem falls back to `meet` when the owner's name holds nothing usable — no
+  fields, or nothing that survives slug normalisation.
+- **Both bullets above changed on 2026-11-22**: a generated slug is now
+  `{first-name}-{duration}min-{8 hex}`, the tail unconditional rather than a
+  collision tie-breaker, so the drawer's title-derived preview is wrong for a
+  second reason — the server's slug is not derivable by the client at all.
 
 ### 2.6 Tests that exist
 - Web: client mapping and validation in `src/api/schedulingLinks.test.ts`

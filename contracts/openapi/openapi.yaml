@@ -3503,23 +3503,24 @@ paths:
             into a 409). Messages: "invalid request body"; "name, email, and start are required"; "name
             must not contain line breaks" (`name` holds CR, LF or NUL); "email must be a valid email address"
             (`email` is not exactly one address: a display name, a second address, a line break, surrounding
-            space or over 254 characters are all refused) — both from the 2026-11-22 security audit, finding
-            1, checked right after the required check and before `start` is parsed, because the booker''s
-            name and address reach the To header and Subject of the confirmation email and the ATTENDEE
-            property of the iCalendar invitation it carries; "invalid start time, use RFC3339"; "invalid
-            end time, use RFC3339"; "duration does not match end time" (`end` sent together with `duration`
-            or `duration_minutes`, and end - start is not exactly that many minutes, seconds and fractions
-            included); "invalid duration" (the resolved length is not exactly a whole number of minutes
-            that is one of the link''s durations, or 30 when the link has none; never rounded or truncated
-            to an accepted duration); "end must be after start" (reachable only when the end computed
-            from `duration_minutes` overflows, which needs a link duration option above about 153,722,867
-            minutes; an ordinary end at or before start answers "duration does not match end time" or
-            "invalid duration" instead). PAC-82: "invalid Idempotency-Key header" when the header is present,
-            not empty, and not 16 to 255 characters from `A-Z a-z 0-9 - _`, or when it is sent more than
-            once (two or more field lines, even identical); checked after the 404 and before the body
-            is read, nothing written. With a valid key, "invalid duration" for a duration that is not
-            one of the link''s is checked after the replay decision and the 410 (a replay is never turned
-            into this 400); every other message keeps its place.'
+            space or over 254 octets are all refused; RFC 5321 §4.5.3.1.3 counts octets, and an address
+            is never shortened to fit — a shortened address is somebody else''s) — both from the 2026-11-22
+            security audit, finding 1, checked right after the required check and before `start` is parsed,
+            because the booker''s name and address reach the To header and Subject of the confirmation
+            email and the ATTENDEE property of the iCalendar invitation it carries; "invalid start time,
+            use RFC3339"; "invalid end time, use RFC3339"; "duration does not match end time" (`end` sent
+            together with `duration` or `duration_minutes`, and end - start is not exactly that many minutes,
+            seconds and fractions included); "invalid duration" (the resolved length is not exactly a
+            whole number of minutes that is one of the link''s durations, or 30 when the link has none;
+            never rounded or truncated to an accepted duration); "end must be after start" (reachable
+            only when the end computed from `duration_minutes` overflows, which needs a link duration
+            option above about 153,722,867 minutes; an ordinary end at or before start answers "duration
+            does not match end time" or "invalid duration" instead). PAC-82: "invalid Idempotency-Key
+            header" when the header is present, not empty, and not 16 to 255 characters from `A-Z a-z
+            0-9 - _`, or when it is sent more than once (two or more field lines, even identical); checked
+            after the 404 and before the body is read, nothing written. With a valid key, "invalid duration"
+            for a duration that is not one of the link''s is checked after the replay decision and the
+            410 (a replay is never turned into this 400); every other message keeps its place.'
           content:
             application/json:
               schema:

@@ -73,9 +73,14 @@ func TestTeamInviteEmailHeadersCannotBeInjected(t *testing.T) {
 			t.Errorf("header %d = %q, want %q", i, got[i], want[i])
 		}
 	}
+	// What the attacker wrote survives as prose inside the Subject — that is
+	// harmless and is what "fitted to one line" means — but no line of the
+	// message begins with a header they chose, which is what would make it a
+	// header. The exact match above is the primary assertion; this is the
+	// property stated directly, over the whole message.
 	for _, forbidden := range []string{"Bcc:", "X-Injected:", "Content-Type:"} {
-		if strings.Contains(block, forbidden) {
-			t.Errorf("the header block holds an injected %q:\n%s", forbidden, block)
+		if strings.Contains(raw, "\r\n"+forbidden) {
+			t.Errorf("a line of the message begins with an injected %q:\n%s", forbidden, raw)
 		}
 	}
 	// The body still carries the invitation's own link, and the hostile value
