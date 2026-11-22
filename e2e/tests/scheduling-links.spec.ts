@@ -7,11 +7,13 @@
  * the calendar stand-in (seed/ids.ts BOOKING_HOSTS.author); the slots and the
  * booking read its (empty) stand-in calendar:
  *   POST /api/scheduling-links  — handlers_scheduling_links.go createLink():
- *       validates, generates a slug from the owner's name via
- *       engine.BookingEngine.GenerateSlug, writes the link, adds the owner as
- *       an ACCEPTED host. Pure database.
+ *       validates, generates a slug via engine.BookingEngine.GenerateSlug
+ *       (the owner's first name, the first duration and 8 random hex
+ *       characters), writes the link, adds the owner as an ACCEPTED host.
+ *       Pure database.
  *   GET  /api/book/{slug}       — the anonymous visitor sees the link that was
- *       just created, by a slug the server chose.
+ *       just created, by a slug the server chose. Its random tail is why the
+ *       tests read the slug out of the answer rather than predicting it.
  *   POST /api/book/{slug}       — the booking lands, and the owner sees it on
  *       GET /api/scheduling-links/{id}/bookings.
  *
