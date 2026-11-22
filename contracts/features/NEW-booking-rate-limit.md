@@ -69,10 +69,16 @@ both, letting the slot listing claim a 10-minute wait.
 bound. Inlining the header in each response costs six lines and keeps each
 bound truthful.
 
-The header is not exposed to cross-origin pages (no
-`Access-Control-Expose-Headers`, `middleware.go:61-85`). The spec keeps CORS
-unchanged (§5); the response descriptions say so, so a future consumer that
-wants the value knows it must also change CORS.
+The header was not exposed to cross-origin pages (no
+`Access-Control-Expose-Headers`, `middleware.go:61-85`): the spec kept CORS
+unchanged (§5), and the response descriptions said so, so a future consumer
+that wanted the value would know it must also change CORS.
+
+**Updated 2026-11-22 (PAC-163).** That consumer arrived: `corsMiddleware` now
+sends `Access-Control-Expose-Headers: Retry-After`, and both response
+descriptions say the header is readable cross-origin. Nothing else about these
+responses moved — same bounds (1..600 and 1..60), same `required: true`, same
+bodies, same statuses.
 
 ## 4. Ordering: the limit is the first thing the handler does
 

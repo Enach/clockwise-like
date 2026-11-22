@@ -2715,8 +2715,8 @@ components:
         application/json, the same envelope and message as the detect limiter's
         429. `Retry-After` is the whole number of seconds until the client's
         window ends, rounded up, never less than 1 and never more than 600. The
-        header is not listed in `Access-Control-Expose-Headers`, so a page on
-        another origin cannot read it; the web booking page does not need it.
+        header is listed in `Access-Control-Expose-Headers` (PAC-163), so a page
+        on another origin can read it.
       headers:
         Retry-After:
           required: true
@@ -2740,8 +2740,8 @@ components:
         the 2026-11-22 security audit, finding 2). Nothing was looked up.
         Body: `{"error":"rate limit exceeded"}`, Content-Type application/json.
         `Retry-After` is the whole number of seconds until the client's window
-        ends, rounded up, never less than 1 and never more than 60. Not exposed
-        to cross-origin pages, as for `BookingCreateRateLimited`.
+        ends, rounded up, never less than 1 and never more than 60. Exposed to
+        cross-origin pages, as for `BookingCreateRateLimited`.
       headers:
         Retry-After:
           required: true
