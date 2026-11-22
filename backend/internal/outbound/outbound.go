@@ -81,13 +81,18 @@ func Client(limit time.Duration) *http.Client {
 	return &http.Client{Timeout: limit, Transport: transport}
 }
 
-// LLMClient, ProviderClient, IdentityClient, TokenExchangeClient and
-// ICSClient return clients bounded by the current limits.
+// LLMClient, ProviderClient, IdentityClient and TokenExchangeClient return
+// clients bounded by the current limits.
+//
+// There is deliberately no ICS client here. An ICS feed URL is supplied by a
+// user, so its fetch needs an egress guard and no redirect, which the shared
+// transport above has neither of; the one client that may fetch a feed is
+// calendar.feedClient, built on Current().ICS (security audit of 2026-11-22,
+// SSRF via the stored webcal feed URL).
 func LLMClient() *http.Client           { return Client(Current().LLM) }
 func ProviderClient() *http.Client      { return Client(Current().Provider) }
 func IdentityClient() *http.Client      { return Client(Current().Identity) }
 func TokenExchangeClient() *http.Client { return Client(Current().TokenExchange) }
-func ICSClient() *http.Client           { return Client(Current().ICS) }
 
 // WithIdentityClient makes golang.org/x/oauth2 (exchange, renewal) and
 // go-oidc (discovery, JWKS) use the identity-bounded client. A client the

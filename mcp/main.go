@@ -139,19 +139,24 @@ func routes(sse http.Handler, token string) http.Handler {
 }
 
 // healthMode is the container health check: GET /health on the local MCP
-// port, success only on a 200 within 2 s.
+// port, success only on a 200 within 2 s. The bound is on the client as well
+// as on the context, so it holds however the call is made (hygiene, security
+// audit of 2026-11-22: the library's default client has no overall timeout,
+// which is what TestNoUnboundedHTTPClientInMCP refuses).
+const healthCheckTimeout = 2 * time.Second
+
 func healthMode(getenv func(string) string) int {
 	port := getenv("MCP_PORT")
 	if port == "" {
 		port = "3001"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), healthCheckTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+port+"/health", nil)
 	if err != nil {
 		return 1
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: healthCheckTimeout}).Do(req)
 	if err != nil {
 		return 1
 	}

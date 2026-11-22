@@ -593,7 +593,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/PersonalCalendar"
         "400":
-          description: "`invalid body` (unparseable JSON) or `provider required`."
+          description: >-
+            `invalid body` (unparseable JSON), `provider required`, or one of
+            the two feed-URL refusals the security audit of 2026-11-22 adds -
+            `url must be a webcal, webcals, http or https URL with no
+            credentials` and `url must not point at a loopback, link-local or
+            private address`. A non-empty `url` is judged whatever the
+            provider, because the backend fetches it (preview, and the
+            personal-blocker cron every 30 minutes); `""` is accepted, and so
+            is any ordinary name, which the egress guard judges again at
+            connection time. The same rule and messages apply to
+            `settings.webcalUrl` - see SettingsValidationError for the full
+            statement of it.
           content:
             application/json:
               schema:
@@ -645,7 +656,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/PersonalCalendar"
         "400":
-          description: "`invalid id` or `invalid body`."
+          description: >-
+            `invalid id`, `invalid body`, or either feed-URL refusal of POST
+            (a PATCH that re-points `url` is the same sink); the stored row is
+            then unchanged.
           content:
             application/json:
               schema:

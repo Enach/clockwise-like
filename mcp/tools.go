@@ -60,7 +60,7 @@ func buildServer(c *backendClient) *server.MCPServer {
 			// PAC-122 SF-094: an update that changes nothing is not a success.
 			return mcp.NewToolResultError("Error: nothing to update: give at least one of title, description, location, start, end or attendees"), nil
 		}
-		res, err := c.patch(ctx, "/api/events/"+id, payload)
+		res, err := c.patch(ctx, "/api/events/"+pathSegment(id), payload)
 		return jsonResult(res, err)
 	})
 
@@ -69,7 +69,7 @@ func buildServer(c *backendClient) *server.MCPServer {
 		mcp.WithString("id", mcp.Required(), mcp.Description("Google Calendar event ID")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := strArg(req, "id")
-		if _, err := c.delete(ctx, "/api/events/"+id); err != nil {
+		if _, err := c.delete(ctx, "/api/events/"+pathSegment(id)); err != nil {
 			return toolError(err), nil
 		}
 		return mcp.NewToolResultText("Event deleted"), nil
