@@ -1,8 +1,10 @@
 # Spec — NEW-public-booking-host-address: the public booking page's two unauthenticated answers carry every accepted host's email address
 
 - **Linear**: none yet. The highest issue in the PAC team on 2026-11-22 is **PAC-162** (`list_issues`, team PAC, ordered by creation, archived included), so the next free number is **PAC-163** — and it is **not claimed here**. `NEW-request-field-length-limits.md` (branch `codeden/spec-enforce-contract-validation-on-aea8`, revision 2 the same day) names the same PAC-163 as next free and also declines to claim it, so two sessions would file the same number. The factory ticket id is `NEW-public-booking-host-address`, following the existing `NEW-*` specs in this directory (`NEW-booking-rate-limit.md` §Linear is the precedent for the convention). **A PAC issue must be opened at intake and this file renamed or linked from it.** Because there is no issue, nothing was posted to Linear.
-- **Status**: draft, **revision 2** (awaiting spec-challenger). **The work it describes is blocked until the owner approves it.** No handler, contract, generated file or test was changed by the session that wrote it.
+- **Status**: draft, **revision 3** (awaiting spec-challenger). **The work it describes is blocked until the owner approves it.** No handler, contract, generated file or test was changed by the session that wrote it.
   - **Revision 2 (2026-11-22)** corrects revision 1's central conclusion against a cross-repo check this session could not run. **W-1 is settled and splits in two:** #207 stopped the booking *page* rendering host addresses — confirmed, and the premise held — but nothing stopped the API sending them, so the enumeration still yields addresses from the response body today. **And there is a consumer after all**: smart-calendar-flow's ICS builder reads `PublicBookingConfirmation.hosts[].email` into the `ORGANIZER`/`ATTENDEE` lines of the `.ics` a booker downloads after confirming. So "remove, no replacement" **does not hold for the confirmation half**. Three changes: the change splits by operation (D-1 revised, D-12, §3.1–§3.2), the confirmation half gets a named replacement (new §3.10, D-13), and §3.9's shape enumeration is rewritten for a split `PublicHost` component. Revision 1's conclusion on `PublicLinkInfo` is unchanged and is now the half that can land alone.
+  - **Revision 3 (2026-11-22)** is driven by a web-side read of the actual call sites, and **retracts revision 2's split**. Three consumers exist, not one; **both DTOs must move together** because the web's booking mapper has a *second source* for `hosts` — a cached `PublicLinkInfo` — so removing the field from the 201 alone would leave the downloaded ICS still carrying addresses while a response-body inspection showed the field gone (D-12, rewritten; §3.1b). Two of the three consumers are incidental and are being fixed on the web side, which collapses this spec's blocker to **one contract question**: what the ICS organiser becomes (§3.10, OQ-5). **And §2.4a is new and unflattering**: the enumeration was **short, not merely unverified** — two of the three consumers were named by file in this repository's own `docs/specs/`, and the sweep that produced revision 1's claims could not have found them. The method is now stated so a reader can judge the sweep's shape instead of trusting its result.
+  - Revision 2 corrected revision 1's central conclusion for the confirmation half and proposed splitting the change. The correction stands; the split does not.
   - Revision 1 was the original draft.
 - **Author**: spec-author (factory), in a CodeDen session on branch `codeden/spec-stop-returning-host-addresses-48d4`.
 - **Verified against**: clockwise-like `origin/main` `308ac21` ("fix(security): guard the webcal feed fetch against SSRF, on write and at egress (#331)"), which is the tip after both halves of the 2026-11-22 audit (#331, #332) merged. Every backend, contract, test, e2e, docs-site and MCP citation below was read at that SHA.
@@ -105,20 +107,29 @@ Referenced from exactly two places: `PublicLinkInfo.hosts` (`booking.yaml:3055`,
 | **Backend tests** — survive unchanged | `pac67_surfaces_test.go:334, :363` compare the whole link-info body before and after a credential loss and never name an address. `security_audit_test.go:271-308` (the new rate-limit tests) assert status codes. Grepping `Hosts` across `backend/api/*_test.go` returns no other assertion on a public host address. | **yes** |
 | **The docs site** (`docs/src/content`) | **No.** No page mentions a host address on the booking page. `what-are-scheduling-links.mdx:8` describes the page as "showing only the times you've made available"; `creating-a-link.mdx:35` describes what the *booker* types. `collective-scheduling.mdx:14` is about typing a co-host's address into the editor, which is unchanged. **No docs-site change is needed**, which is itself a useful fact: nothing was ever promised. | **yes** |
 | **Operator tooling, nginx, compose tests** | **No.** `/api/book` appears in `nginx/test/partc_test.go:38-39` (publication-surface assertions), `nginx/nginx.conf:69` (a comment naming the web app), and `compose-test/compose_test.go:281, :322` (a GET of an unknown slug, held behind a table lock). None reads a response body's hosts. `scripts/` and `tools/` contain no reference to the route. | **yes** |
-| **C-1. The web's ICS builder** (`smart-calendar-flow`) | **YES — `PublicBookingConfirmation.hosts[].email`, confirmed.** It populates the `ORGANIZER` / `ATTENDEE` lines of the `.ics` a booker downloads after confirming. | Cross-repo check reported to this session on 2026-11-22, after revision 1 was written. **This is the one consumer revision 1 got wrong**, and it is why the confirmation half cannot be a plain deletion: removing the field does not shrink a response, it **degrades the calendar file a booker gets** — no organiser, no attendee, or a file the client rejects. It reads the **201 only**; nothing reads `PublicLinkInfo.hosts[].email`. | **yes (cross-repo)** |
-| **The web's booking page** (`src/pages/PublicBooking.tsx`) | **No, since #207** | #207 stopped the page rendering host addresses. Settles the render half of W-1. It did **not** stop the API sending them, and it is not the same code as C-1. | **yes (cross-repo)** |
+| **C-1. The ICS builder** — `src/components/booking/ics.ts:57, :60` | **YES, and it genuinely needs a real address.** The `ORGANIZER` (`:57`) and `ATTENDEE` (`:60`) `mailto:` URIs of the `.ics` a booker downloads. | **This is the consumer §3.10 exists for**, and the only one of the three that needs an address rather than a discriminator. Their own present-day bug, theirs to fix: `:57` is guarded, `:60` calls `icsAddress(h.email)` **unguarded**, so an absent key throws rather than degrading — which is revision 1's §2.2 "`undefined` is harsher than empty" prediction landing on a real line. | **yes (web read)** |
+| **C-2. Host avatars** — `src/components/links/HostAvatars.tsx:66, :71` | **YES, but incidentally.** `key={h.email + i}` and `paletteFor(h.email)`. | It wants a **stable per-host discriminator**, not an address: a React list key and a colour seed. Both reads sit **outside** the `audience` gate #207 added, so they run on the public path. **Being fixed on the web side now**, which is the right fix — the address was never the thing it needed. This is what §3.4's deterministic order and §3.3's always-present `name` are for. | **yes (web read)** |
+| **C-3. The link-info cache** — `src/api/schedulingLinks.ts:219, :641, :707` | **YES, but incidentally, and it needs nothing.** A module-level cache that happens to hold whole link-info objects. | It stops holding addresses when the field goes. No change needed on the web side at all. | **yes (web read)** |
+| **The booking page** (`src/pages/PublicBooking.tsx`) | **No, since #207** | #207 stopped the *page* rendering host addresses. It did **not** stop the API sending them, and it is not the code of C-1, C-2 or C-3. | **yes (web read)** |
 | **A webhook, a published API, a third-party integration** | **None exists.** There is no webhook anywhere in `backend/`, `mcp/` or `contracts/` (grep for `webhook`: no match in any Go or YAML file). The bundle is not published by the docs site — `docs/astro.config.mjs` and `docs/package.json` reference no OpenAPI or Swagger integration, and `docs/src/content/docs/reference` holds no API page. The only programmatic bearer-token client of the backend is the MCP server, which ships from this same repository (`docker-compose.mcp.yml`) and is covered above. | **yes, to the limit of this repository** |
 
 **Can consumers be enumerated?** **Yes, and the enumeration is now complete** — for this repository by reading it, and for smart-calendar-flow by the cross-repo check of revision 2. There is no mechanism by which a third party could hold a client: no API key issuance, no OAuth app registration, no published contract. So the population is two repositories plus the MCP server, all deployed together, and it has been fully walked.
 
 **The enumeration found one consumer, and it falsifies revision 1's central claim for one of the two operations.** The result is asymmetric and the asymmetry is the whole of this spec's shape:
 
-| Operation | Consumer of its `hosts[].email` | Can the field be deleted outright? |
-|---|---|---|
-| `getPublicLinkInfo` 200 | **none**, in either repo | **Yes.** Nothing reads it; the page stopped rendering it at #207. |
-| `createPublicBooking` 201 | **C-1, the web's ICS builder** | **No.** Deletion degrades a file a booker downloads (§3.10). |
+| Consumer | Reads which answer? | Needs an address? | Blocks the removal? |
+|---|---|---|---|
+| **C-1** ICS builder | the 201 | **yes** — `mailto:` URIs | **yes**, until §3.10 lands |
+| **C-2** host avatars | **the 200**, outside #207's gate | no — wants a discriminator | no; being fixed on the web side |
+| **C-3** link-info cache | the 200 | no | no; needs nothing |
 
-**That is still what makes this a removal rather than a deprecation** (D-6): a deprecation window protects clients you cannot deploy alongside the server, and there are none. What C-1 changes is not the *mechanism* but the *scope* — one half needs a replacement before its field can go, which is a sequencing problem, not a compatibility one.
+**Two corrections to revision 2 follow from this table.**
+
+First, **`getPublicLinkInfo` is not consumer-free after all** — C-2 reads its `hosts[].email` on the public path. Revision 2 called that half "consumer-free, lands alone". It was wrong, and the error came from the same place as revision 1's: a claim scoped to `PublicBooking.tsx` rather than to "every reader of this field" (§2.4a).
+
+Second, **once C-2 and C-3 land there is exactly one blocker left, and it is a product question**: what the downloaded ICS's organiser becomes — whether a booker can reply to their host (§3.10, OQ-5). That is the decision worth this spec's weight. Everything else here is plumbing with a gate behind it.
+
+**That is still what makes this a removal rather than a deprecation** (D-6): a deprecation window protects clients you cannot deploy alongside the server, and there are none. The three consumers change the *sequencing*, not the *mechanism*.
 
 ### 2.4 The web app — what a reader must open `[unverified-web]`
 
@@ -136,6 +147,42 @@ smart-calendar-flow was not reachable from this worktree. Revision 2's cross-rep
 | **W-6** | The page still has **no mapped behaviour for the 429** that PR #332 added to `getPublicLinkInfo`, so a rate-limited visitor gets the generic branch's raw server string and a failure toast. Reported here because it is the live example of the failure this spec's §3.9 exists to prevent, and because it is on the same page and the same operation. | `src/pages/PublicBooking.tsx` — the status mapping around `:165-183` as cited by `NEW-booking-rate-limit.md:638, :646-650`. **Not this spec's to fix** (§5, FU-3), but it must be filed. |
 
 **W-1 did turn out false in part, and D-7 held.** Revision 1 wrote the merge order so that the web stops reading before the server stops sending, explicitly so that an unverified consumer could not be broken by the merge order. C-1 is that consumer. The order is now **mandatory, not prudent** — and for the confirmation half the web cannot simply "stop reading", because it needs the address for a real purpose; it must first switch to the replacement of §3.10. That is the only structural change C-1 forces.
+
+### 2.4a How revision 1's claims were derived, and why they were short
+
+**The claims were short, not complete-but-unverified. Stating the method is the point of this section**, so a reader can judge the sweep's shape rather than trust its result.
+
+**The method actually used.** smart-calendar-flow was unreachable, so the web claims were not derived from a sweep of that repository. They were derived from **a citation index of *this* repository** — every `src/**.ts(x)` path named anywhere in `docs/`, `contracts/`, `nginx/` and `e2e/` — plus reasoning about what a booking page does. That method has a precise blind spot: **it can only name a file this repo has already mentioned, and it ranks by what the mention was about.** Every mention of the public booking page that revision 1 followed (`NEW-booking-rate-limit.md:146`, `:617`, `:638`, `:646`; `docs/plans/PAC-81-part-c.md:30`) was about the *page*, so the claims came out page-shaped and transport-shaped.
+
+**Two of the three consumers were named by file in this repository, in `docs/specs/`, and the sweep did not reach them:**
+
+- `src/components/links/HostAvatars.tsx` is cited **six times** here — and `NEW-deploy-hardening.md:237` says, in so many words, "`HostAvatars.tsx:58`, **public booking page included**". A spec in this very directory names the component that renders hosts on the public page. Revision 1 did not open it.
+- `src/components/booking/ics.ts` is named at `PAC-91.md:254` ("moves the ICS helper to `src/components/booking/ics.ts`") and grepped at `:240`.
+
+So the honest verdict is not "unverified". It is **short, with the pointer to the gap sitting in the directory this spec was written into.**
+
+**One-to-one against revision 1's six claims:**
+
+| Consumer | Which claim covered it | Verdict |
+|---|---|---|
+| **C-1** `booking/ics.ts` (`mailto:`) | **W-1 partially.** W-1 listed the right *read kind* — "not for a `mailto:`" — but scoped it to `PublicBooking.tsx`. The file was never named. | **missed as a file**; read kind anticipated |
+| **C-2** `HostAvatars.tsx` (`key=`, `paletteFor`) | **W-1 partially** ("not for a `key`"); **W-3** adjacent (a derivation from the address, though `paletteFor` is a colour seed, not a label). Scoped to the wrong file again. | **missed as a file**; read kind anticipated |
+| **C-3** `schedulingLinks.ts` (cache) | **W-2, fully.** It named the file *and* named caching: "does not read, log or cache a host address." | **anticipated correctly** |
+| — | **W-4** (every importer of the generated `PublicHost` type) | **the only file-independent claim, and the one that would have been complete.** Any importer is a compile-time site regardless of what it does with the field; W-4 would have enumerated all three. Revision 1 ranked it fourth and treated it as a types-hygiene check. **It should have led.** |
+| — | **W-5** (nameless-host render fallback) | display-shaped; covered none of the three, though it names the same hazard class as C-2 |
+| — | **W-6** (the 429 mapping) | unrelated to the field |
+
+**The re-derived question, and the taxonomy to sweep.** Not *"what does the web display?"* but **"what reads this field?"** — and a field is read in places that never reach rendered HTML. Their own #207 missed C-1 and C-2 despite a test that drives a real booking and asserts on `innerHTML`, because an attribute value, a colour seed and a cache's contents do not appear in it. The sweep a reader should run, and which this spec's W-7 now asks for:
+
+1. **rendered text** — what a display sweep finds, and the only thing #207 and revision 1 both looked for;
+2. **attribute and prop values** — `key=`, `id=`, `href`, `title`, `alt`, `data-*`, anything passed into a child's props (C-2's `key=`);
+3. **keys, hashes and seeds** — a value used because it is unique, not because it is meaningful: map keys, dedupe sets, colour and avatar seeds (C-2's `paletteFor`);
+4. **serialisation into another artefact** — ICS, CSV, clipboard, `mailto:`, query strings, a download (C-1). **This is the category revision 1 had no entry for at all**, and it is where the one genuine consumer lived;
+5. **caches and stores** — anything holding a whole response object, including React Query caches and module-level maps (C-3; W-2 did cover this);
+6. **logging and analytics** — breadcrumbs, Sentry context, event properties;
+7. **types** — every importer of the generated type, which subsumes 1–6 and is the check to run **first** (W-4).
+
+**W-7 (new, and the only one that matters going forward).** A reader must run categories 2–7 above over smart-calendar-flow, not category 1 alone, and report the result. Categories 1–5 are now settled by the web read that produced C-1 to C-3; **6 and 7 are not** — nothing has yet confirmed that no logger, breadcrumb or analytics property carries a host address, and that is exactly the kind of read the first two sweeps would have missed twice.
 
 ### 2.5 Does anything legitimately need the address? No *server* flow does; one client flow does
 
@@ -200,45 +247,41 @@ Four assertions encode the address into a passing test today. None of them is *a
 
 Written from the point of view of a person who accepted a co-host invitation, and of the visitor who opens the page.
 
-### 3.1 The link-info answer carries no host email address [F, D-1, part A]
+### 3.1 Neither public answer carries a host email address, and they move together [F, D-1]
 
-`getPublicLinkInfo`'s 200 carries no host email address, in any field, under any name, in any encoding. Not as `email`; not hashed; not as a local part; not as an initial; not inside a label. This holds for every host, every link, and every status that reaches the array (only `accepted` does, unchanged).
+The host entry of `getPublicLinkInfo`'s 200 and of `createPublicBooking`'s 201 carries no email address, in any field, under any name, in any encoding. Not as `email`; not hashed; not as a local part; not as an initial; not inside a label. This holds for every host, every link, every status that reaches the array (only `accepted` does, unchanged), and on the replay 201 of an idempotent retry as well as on a fresh save.
 
-**This is the half the enumeration finding actually exploits, and it has no consumer** (§2.3). A dictionary sweep of slugs hits this operation: one unauthenticated GET, inside every rate limit, no trace beyond a log line. **It can and should land on its own.**
+**One change to one shared component. The two responses are not separable** — see §3.1b, which retracts revision 2's split and is the most important correction in this spec.
 
-### 3.1a The confirmation answer loses it too, but only behind a replacement [F, D-1, part B; D-13]
-
-`createPublicBooking`'s 201 — fresh save and idempotent replay alike — loses the same field, under the same rule, **once §3.10's replacement is in place and C-1 has switched to it.** Not before. Deleting it first degrades a file a booker downloads (§2.5), and this spec will not trade a user-visible regression for a narrowing of a path that already costs a completed booking to reach.
-
-The two halves differ in what they are worth, which is why they are allowed to differ in when they land:
+### 3.1a What the two answers are worth, which is no longer a sequencing argument
 
 | | `getPublicLinkInfo` 200 | `createPublicBooking` 201 |
 |---|---|---|
 | cost to reach | one anonymous GET | **completing a booking**: an offered slot, a valid address, a calendar write on every host |
 | rate limit | 120 / client / min | 20 / client / 10 min |
 | what it leaves behind | a log line | a stored `bookings` row, an event on every host's calendar, a confirmation email |
-| consumer | none | **C-1** |
-| blocked on | nothing | §3.10 |
+| consumers | **C-2** (`key=`, colour seed), **C-3** (cache) — both incidental | **C-1** (ICS `mailto:`) — genuine |
+| blocked on | nothing, once C-2 and C-3 land | §3.10 |
 
-The second row is not a side note: harvesting through the 201 means creating a real meeting on a real person's calendar for every address obtained. It is self-limiting, loud, and attributable. **Shipping part A alone closes the cheap attack completely**, which is why coupling it to a product decision about calendar files would be the wrong trade.
+The asymmetry is real and worth recording — harvesting through the 201 means creating a real meeting on a real person's calendar for every address obtained, so it is self-limiting, loud and attributable, where the 200 is cheap and silent. **But it no longer buys a separate release**, because §3.1b shows the two cannot be separated without the leak surviving the change. The one blocker is §3.10, and once C-2 and C-3 land it is the only one.
 
-### 3.1b The shared component splits, and yes the split is worth paying for [F, D-12]
+### 3.1b The split is retracted: both DTOs move together [F, D-12]
 
-The field lives on one `PublicHost` component referenced by both operations (`booking.yaml:3055`, `:3259`), so a partial removal means splitting it: a link-info host type without `email`, and a confirmation host type that keeps it until §3.10 is settled. That is a new component and a changed `$ref` on one operation — enumerated in §3.9.
+**Revision 2 proposed splitting the shared `PublicHost` component so the link-info half could land first. That is withdrawn, and the reason deserves recording as its own finding, because the split would have looked like it worked and leaked anyway.**
 
-**My view, asked for plainly: split — and it is cleaner, not two risks instead of one.** Three reasons, in order of weight:
+The web's booking mapper resolves the confirmation's hosts as roughly `hosts: raw.hosts ?? link?.hosts ?? []`, where `link` is a **cached `PublicLinkInfo`** (C-3's cache) and `raw` is a **cast, not a strictly-parsed value** — there is no `zod` `strictObject` at that boundary. So the mapper has **two sources** for the host roster, and the second is the link-info response.
 
-1. **The risks are of different kinds, and the split trades a runtime risk for a compile-time one.** What the split can get wrong is a `$ref` pointing at the wrong type — caught by `make openapi`'s drift check, by the bundle assertion (AC-4), and by two generated type systems that will not compile against a mismatch. What *not* splitting gets wrong is either leaving the exploited path open (if both wait) or shipping a degraded calendar file to every booker (if both go). A mistake that fails a gate is not the same class of thing as a mistake that reaches a user.
-2. **The shared component was a convenience, never a claim.** Nothing says a host shown on a link page and a host listed on a confirmation must carry identical fields; they were identical because one struct was easy. This codebase has already decided the opposite at finer grain: PAC-149 made what a host entry shows depend on its **status**, so that a `pending` entry carries `email` and `status` and nothing else while an `accepted` one carries `user_id`, `name` and `avatar_url` (`booking.yaml:3274-3290`). Context-dependent host shapes are the house pattern. Splitting by operation is the same idea one level up.
-3. **The alternative couples a security fix to a product decision it has nothing to do with.** Part A is consumer-free and closes the cheap attack. §3.10 is a question about calendar files, organisers and reply affordances, with a user-visible trade the owner has to rule on. Holding the first behind the second is how a two-week decision becomes a two-week exposure.
+The consequence, concretely: remove `email` from the 201 alone and C-1's ICS builder can still be handed host entries that carry an address, because they came from the cached link lookup rather than from the 201. **A response-body inspection of `POST /api/book/{slug}` would show the field gone, every assertion in §4 keyed on that body would pass, and the downloaded `.ics` would still carry host addresses.** Removing the field from the *other* DTO is what actually drains the second source.
 
-**The honest cost, stated.** Two components mean a future change to "what a host looks like publicly" must be made twice or deliberately in one place, and two similarly-named types are exactly the sort of thing that drifts. And a reader will see the same person's address absent from one public answer and present in another, which looks like an inconsistency unless the contract says why — so the contract must say why, on both components, naming the other.
+**Why this is the useful lesson and not just a bug.** Every criterion revision 2 wrote asserted on a **response body**, because that is where the field is. The leak would have lived in an **artefact built from a cache of a different response** — one join away from everything being measured. It is the same failure shape as §2.4a's: an enumeration that is complete for the thing it looked at and silent about the path that actually carries the value. **A field removal is only verified when every consumer's output is checked, not every response body** — which is why AC-15 asserts on the downloaded file and not only on the JSON.
 
-**The one condition that reverses this.** The split is a **schedule hedge**, and it is only worth its cost if the two halves ship in different releases. **If §3.10 is approved and both halves ship in one release, do not split**: make one change to `PublicHost`, remove the field from both, and skip the new component entirely. Stage 2 should decide this once the owner has ruled on §3.10, and this spec is written so that either answer is a smaller edit than re-deciding. AC-4a covers the split form; AC-4b covers the unsplit form; exactly one applies.
+**The decision, therefore:** one edit to `PublicHost`, both referents lose the field at the same instant, one release. No new component, no `$ref` move, no two-step. That is also strictly less contract surface than the split — revision 2's argument that the split was "cleaner" was reasoning about *risk kinds* while missing that the split's premise, two independently-removable halves, was false.
 
-### 3.2 Nothing is added in place of the link-info address [F, D-2]
+**What revision 2 got right and is kept:** the merge order (D-7), because C-1 still must switch to §3.10's field before the server stops sending; and the refusal to delete the 201's field without a replacement (D-13).
 
-For the `getPublicLinkInfo` half, the page already has everything it needs to say something true about the hosts:
+### 3.2 Nothing is added in place of the address, except the ICS [F, D-2]
+
+The page already has everything it needs to say something true about the hosts:
 
 - **who** — `name`, already present;
 - **what they look like** — `avatar_url`, already present;
@@ -246,7 +289,7 @@ For the `getPublicLinkInfo` half, the page already has everything it needs to sa
 
 So: **no count field, no opaque per-link host identifier, no placeholder address.** The three alternatives the brief named were weighed and are recorded in D-2 with the reason each was declined. The shortest defensible change is the one that cannot leak, and adding a new field to an unauthenticated response in a spec whose purpose is to narrow one is the wrong direction.
 
-**This section does not apply to the 201.** There the field has a use, so something must take it over; that is §3.10, and it is the one place this spec adds a field rather than removing one.
+**Two riders.** C-2 wants a **stable per-host discriminator** for a React key and a colour seed, and the address was only ever standing in for one — §3.4's deterministic order and §3.3's always-present `name` are what it should use, and the web is fixing it to. And on the 201 the field has a genuine use, so something must take it over: that is §3.10, **the one place this spec adds a field rather than removing one.**
 
 ### 3.3 A host with no display name is answered honestly, and the key is always there [F, D-3]
 
@@ -307,67 +350,56 @@ The sequence is therefore:
 
 Removing a property from a response is a **shape change**, so the prose above is not the whole of it. This section is the enumeration the implementing session **must reproduce in its PR description**, item by item. Reasoning about where values live is how the two mistakes of 2026-11-22 happened: #331 was described as "two doc comments" and was five hunks across three files, and #332 was described as not reaching the generated types while it added a status code that did. **The honest way to confirm this list is to run `make openapi` and diff the bundle, and to regenerate both repos' types and diff those — not to reason about it.**
 
-**This is a two-step change and the enumeration is per step.** Step A is §3.1 (`getPublicLinkInfo`), step B is §3.1a + §3.10 (`createPublicBooking`). If both ship in one release, D-12's condition applies and the split collapses — see the last paragraph.
+**One change, one release, one shared component** (D-12). Revision 2's two-step enumeration is withdrawn with the split.
 
-**Schemas touched — step A**
-
-| Schema | Change | `required` before → after |
-|---|---|---|
-| `PublicLinkHost` (**new component**) | created, as `PublicHost` minus `email`: `name` (required here from the start), `avatar_url` | — → `[name]` |
-| `PublicHost` (`paths/booking.yaml:2992-3007`, bundle `openapi.yaml:15033-15047`) | **kept, unchanged in shape**, and re-described as the confirmation host only | `[email]` → `[email]` |
-| `PublicLinkInfo.hosts.items` | `$ref` changes `PublicHost` → `PublicLinkHost` | unchanged (`hosts` stays required) |
-
-**Schemas touched — step B**
+**Schemas touched**
 
 | Schema | Change | `required` before → after |
 |---|---|---|
-| `PublicHost` | `email` **removed**; `name` becomes required; re-described | `[email]` → `[name]` |
+| `PublicHost` (`paths/booking.yaml:2992-3007`, bundle `openapi.yaml:15033-15047`) | `email` property **removed** (`type: string`, `format: email`); `name` loses its "Omitted when…" description and becomes required; the schema's own `description` rewritten | `[email]` → `[name]`. An empty `required` list is illegal, which is one reason `name` becomes required (§3.3). |
 | `PublicBookingConfirmation` (`booking.yaml:3228-3265`) | **gains** the ICS string property of §3.10, optional (omitted when it cannot be built for a pre-2026-11-22 replay) | unchanged |
+| No other schema | — | — |
 
-After both steps the two components are identical in shape, which is D-12's own argument for skipping the split when both land together.
-
-**Reference graph.** `PublicHost` is referenced from exactly two places today — `PublicLinkInfo.hosts` (`booking.yaml:3055`, bundle `:15002`) and `PublicBookingConfirmation.hosts` (`booking.yaml:3259`, bundle `:15100`). **Step A moves one of those two references and adds no third.** Afterwards `PublicHost` has one referent and `PublicLinkHost` has one. Neither parent schema's own `required` list changes; `hosts` stays required on both. **A bundle diff showing three referents, or `PublicHost` with none, means the `$ref` edit went to the wrong place** — the one mistake the split makes possible, and what AC-4a exists to catch.
+**No component is added and none is removed.** `PublicHost` keeps **exactly** its two referents — `PublicLinkInfo.hosts` (`booking.yaml:3055`, bundle `:15002`) and `PublicBookingConfirmation.hosts` (`booking.yaml:3259`, bundle `:15100`) — and **both lose the field in the same commit**, which is the whole of D-12. Neither parent schema's own `required` list changes; `hosts` stays required on both. **A bundle diff showing a new host component, or `PublicHost` with one referent instead of two, means the retracted split has crept back in** and the PR must stop.
 
 **Operations whose response shape changes**
 
-| Step | Operation | Response | Change |
-|---|---|---|---|
-| A | `getPublicLinkInfo` `GET /api/book/{slug}` | 200 | each `hosts[]` entry loses `email` and always carries `name`; the item type is renamed in both repos' generated code |
-| B | `createPublicBooking` `POST /api/book/{slug}` | 201 (fresh **and** replay) | each `hosts[]` entry loses `email` and always carries `name`; the body **gains** the ICS field |
+| Operation | Response | Change |
+|---|---|---|
+| `getPublicLinkInfo` `GET /api/book/{slug}` | 200 | each `hosts[]` entry loses `email` and always carries `name` |
+| `createPublicBooking` `POST /api/book/{slug}` | 201 (fresh **and** replay) | the same, **plus** the body gains the ICS field |
 
-**No other operation's response shape changes in either step.** In particular the authenticated scheduling-link family keeps `schedulingHostDTO.email` (§3.5), and its contract prose about host addresses **must not be touched**: `booking.yaml:962`, `:1071`, `:1430`, `:1434`, `:1456`, `:1603`, `:1652` all describe `SchedulingLink.hosts`, not `PublicHost`. A blanket find-and-replace over "host's email" would silently rewrite seven true statements; this list exists so that it does not.
+**No other operation's response shape changes.** In particular the authenticated scheduling-link family keeps `schedulingHostDTO.email` (§3.5), and its contract prose about host addresses **must not be touched**: `booking.yaml:962`, `:1071`, `:1430`, `:1434`, `:1456`, `:1603`, `:1652` all describe `SchedulingLink.hosts`, not `PublicHost`. A blanket find-and-replace over "host's email" would silently rewrite seven true statements; this list exists so that it does not.
 
 **Status codes, response headers, referenced components**
 
-- **Status codes: none added, none removed, in either step.** `getPublicLinkInfo` keeps exactly 200 / 404 / 410 / 429 / 500; `createPublicBooking` keeps its current set. The 429's `Retry-After` and the `BookingSlotsRateLimited` / `BookingError` references are untouched. **§3.10 uses a response field rather than a new endpoint partly for this reason**: an endpoint would have added an operation with its own 404, 410, 429 and rate-limit decision — a far larger shape change than the one it replaces.
+- **Status codes: none added, none removed.** `getPublicLinkInfo` keeps exactly 200 / 404 / 410 / 429 / 500; `createPublicBooking` keeps its current set. The 429's `Retry-After` and the `BookingSlotsRateLimited` / `BookingError` references are untouched. **§3.10 uses a response field rather than a new endpoint partly for this reason**: an endpoint would have added an operation with its own 404, 410, 429 and rate-limit decision — a far larger shape change than the one it replaces.
 - **Response headers: none added or removed.** The ICS travels as a JSON string, so there is no new `Content-Type`, no `Content-Disposition` and no non-JSON response anywhere.
-- **Referenced components: one added** (`PublicLinkHost`, step A); none removed in either step. No request shape, parameter, header or `security` block changes.
-- If a bundle diff shows a status code or a response header appearing or disappearing, the change has gone wrong and the PR must stop.
+- **Referenced components: none added, none removed.** No request shape, parameter, header or `security` block changes.
+- If a bundle diff shows a status code, a response header or a component appearing or disappearing, the change has gone wrong and the PR must stop.
+
+**Field ordering.** `publicHostDTO`'s JSON keys are emitted in Go struct declaration order, so each host entry today begins `{"email":…,"name":…,"avatar_url":…}` and afterwards begins `{"name":…,"avatar_url":…}`. **The first key of every host entry changes, in both responses.** Anything comparing a public answer byte-for-byte, hashing it or snapshotting it changes — which is why AC-8's byte-identity claim is scoped to the fields *outside* `hosts`, and why the four assertions of §2.7 are rewritten rather than adjusted. On the 201 the new ICS field is appended, so no existing field's position moves relative to another.
 
 **Prose hunks in the contract, enumerated**
 
-Step A:
 1. `paths/booking.yaml:38-42` — `getPublicLinkInfo`'s description currently states "This operation answers with every accepted host's address". **Must change**; it becomes the record of what it used to answer and what it answers now.
-2. `PublicLinkHost`'s new description, which must name `PublicHost` as the confirmation's type and say **why** the two differ — D-12's honest-cost point: left unsaid, the asymmetry reads as an inconsistency.
-3. `paths/booking.yaml:826` (bundle `openapi.yaml:8115`) — `createSchedulingLink`'s description, recording that the pre-audit sweep "harvested every host's address". Historically true and should stay, **amended** to say the address is no longer in that answer.
-
-Step B:
-4. `paths/booking.yaml:2994` — `PublicHost`'s description.
-5. `paths/booking.yaml:3001-3003` — `name`'s "Omitted when the user record has no name (json `name,omitempty`)", which stops being true.
-6. The ICS field's description: what it contains, that it is byte-identical to the emailed attachment, its iTIP method, and when it is omitted (§3.10).
-7. `PublicBookingConfirmation`'s own description, which points at `bookingConfirmationDTO` and must name the new field.
+2. `paths/booking.yaml:2994` — `PublicHost`'s description.
+3. `paths/booking.yaml:3001-3003` — `name`'s "Omitted when the user record has no name (json `name,omitempty`)", which stops being true.
+4. `paths/booking.yaml:826` (bundle `openapi.yaml:8115`) — `createSchedulingLink`'s description, recording that the pre-audit sweep "harvested every host's address". Historically true and should stay, **amended** to say the address is no longer in that answer.
+5. The ICS field's description: what it contains, that it is byte-identical to the emailed attachment, its iTIP method, and when it is omitted (§3.10).
+6. `PublicBookingConfirmation`'s own description, which points at `bookingConfirmationDTO` and must name the new field.
 
 Every edited fragment regenerates its bundle counterpart via `make openapi`, so **the bundle diff is larger than the fragment diff** and both must be in the PR.
 
-**Checked and deliberately not changed** (they would look like candidates to a reader sweeping for the word): `paths/auth.yaml:1237` and `:2705` (bundle `openapi.yaml:2485`, `:12352`) say the current-user picture is also `avatar_url` in `SchedulingLinkHost` and `PublicHost` — still true, because `avatar_url` is kept on both components. The `getPublicLinkInfo` 500 description's "never a 200 with `hosts` emptied, a host left out or `coverage.total` undercounted" names no address and stays verbatim.
+**Checked and deliberately not changed** (they would look like candidates to a reader sweeping for the word): `paths/auth.yaml:1237` and `:2705` (bundle `openapi.yaml:2485`, `:12352`) say the current-user picture is also `avatar_url` in `SchedulingLinkHost` and `PublicHost` — still true, because `avatar_url` is kept. The `getPublicLinkInfo` 500 description's "never a 200 with `hosts` emptied, a host left out or `coverage.total` undercounted" names no address and stays verbatim.
 
-**If the split is skipped** (D-12's condition — both halves in one release): delete the `PublicLinkHost` rows above and step A's prose hunk 2. What remains is one schema changed (`PublicHost`: `email` removed, `name` required), two operations' response shapes changed, one component gaining a property, **zero** components added, and zero status codes or headers touched. AC-4b is the assertion for that form.
+**What the enumeration does not cover, and §3.1b is the reason.** Every line above describes a **response body**. The leak the retracted split would have left behind lived in a **downloaded file built from a cache of a different response** — outside everything this section can assert. So the shape enumeration is necessary and **not sufficient**: it must be read alongside AC-15, which checks each consumer's *output*. Reproducing this list in a PR description proves the contract changed as intended; it does not prove the value stopped flowing.
 
 **Generated code**
 
-- **Go** (`backend/api/gen/paceday.gen.go:3184-3191`): step A adds a `PublicLinkHost` type; step B drops `PublicHost.Email openapi_types.Email` and turns `Name *string` into `Name string`. **No behaviour follows from either**, because nothing in `backend/` uses `gen.PublicHost` (§2.2) — grep `gen.PublicHost` returns nothing. `format: email` appears 31 times in the bundle and `openapi_types.Email` 26 times in the generated file, so the import survives both steps; a diff showing it dropped means something else was removed too.
-- **Hand-written Go.** `publicHostDTO` (`handlers_booking.go:45-49`) splits into two structs, one per response, because the point of the split is that one of them cannot carry the field. Both builders change (`publicLink:112`, `confirmation:149`). If the split is skipped, one struct loses one field and both builders change anyway.
-- **Web** (`smart-calendar-flow/src/api/generated`): step A gives the link-info host its own type without `email`; step B removes it from the confirmation type and adds the ICS field. Every importer of `PublicHost` is a compile-time site and must be assigned to one type or the other — that is the revised **W-4**, and **C-1 is the importer that must move to §3.10 before step B**.
+- **Go** (`backend/api/gen/paceday.gen.go:3184-3191`): `PublicHost.Email openapi_types.Email` disappears and `Name *string` becomes `Name string`; `AvatarUrl *string` is unchanged. **No behaviour follows**, because nothing in `backend/` uses `gen.PublicHost` (§2.2) — grep `gen.PublicHost` returns nothing. `format: email` appears 31 times in the bundle and `openapi_types.Email` 26 times in the generated file, so the import survives; a diff showing it dropped means something else was removed too.
+- **Hand-written Go.** `publicHostDTO` (`handlers_booking.go:45-49`) loses one field; both builders change (`publicLink:112`, `confirmation:149`). It stays **one** struct serving both responses, mirroring the one shared component (D-12).
+- **Web** (`smart-calendar-flow/src/api/generated`): `PublicHost` loses `email`, `name` stops being optional, and the confirmation type gains the ICS field. **Every importer is a compile-time site, which is the check that would have found all three consumers** (§2.4a, W-4) — C-1 must move to §3.10's field, C-2 to a discriminator, C-3 needs nothing.
 - **No generated file may be hand-edited** (`docs/factory/README.md` §Paired branches, rule 3).
 
 **Field ordering, and the honest byte-level answer**
@@ -424,25 +456,17 @@ Layers: `[contract]` a Go test against the HTTP handler and the bundle's shapes;
 
 **The address is gone, from both answers**
 
-**Step A — the link-info answer** (lands alone; §3.1)
-
 AC-1. Given P, when B requests `GET /api/book/{slug}` without credentials, then the response is 200 and **no byte of the body matches H1's or H2's address, that address's local part, or that local part with the `@` percent- or unicode-escaped** — asserted over the raw body, not over a decoded struct. *Fails today: `handlers_booking.go:112` sends both addresses.* [contract]
-
-AC-1a. Step A changes **nothing** about the 201: with step A deployed and step B not, booking an offered slot still answers a 201 whose `hosts[]` entries carry `email` exactly as today, and C-1's downloaded `.ics` is unchanged. *Passes today and must keep passing — this is the criterion that makes the split safe to ship alone, and it fails if an implementer edits the shared component instead of re-pointing one `$ref`.* [contract]
-
-**Step B — the confirmation answer** (blocked on §3.10; §3.1a)
 
 AC-2. Given P and an offered slot, when B books it, then the 201 body satisfies AC-1's assertion; and given the same request replayed with the same `Idempotency-Key`, the replay 201 satisfies it too. *Fails today: `handlers_booking.go:149`, on the fresh save and on the replay path through `writeBooked`.* [contract]
 
-AC-2a. **The replacement precedes the removal.** Step B's PR may not merge while any read of the confirmation's `hosts[].email` remains in smart-calendar-flow. Asserted procedurally, on the web side: no such read exists, and C-1 builds its download from the §3.10 field. *Fails today: C-1 reads it (§2.3).* [web] **[unverified-web]**
+AC-2a. **Both answers lose it in the same commit** (D-12). A test asserts that `PublicHost` has one definition, that `getPublicLinkInfo`'s 200 and `createPublicBooking`'s 201 produce host entries with **identical key sets**, and that neither carries an address. *Fails today, and would also fail revision 2's retracted split — which is the point: it makes the retraction enforceable rather than a note.* [contract]
 
-AC-3. Given P, the 200 body's `hosts` entries have exactly the keys the contract declares and no other — asserted by decoding into a map and comparing key sets, so a field renamed rather than removed fails. The same for the 201 after step B. *Fails today.* [contract]
+AC-2b. **The replacement precedes the removal.** The api PR may not merge while any read of either answer's `hosts[].email` remains in smart-calendar-flow: C-1 builds its download from §3.10's field, C-2 keys on a discriminator, C-3 needs nothing. *Fails today: all three read it (§2.3).* [web]
 
-AC-4a. **The split form** (D-12 default). The assembled bundle declares `PublicLinkHost` with no `email`, a non-empty `required` list and `additionalProperties: false`; `PublicLinkInfo.hosts.items` `$ref`s it; `PublicBookingConfirmation.hosts.items` still `$ref`s `PublicHost`; **each component has exactly one referent**; and no other schema in the bundle gains or loses a property. *Fails today.* [contract]
+AC-3. Given P, the 200 body's `hosts` entries have exactly the keys the contract declares and no other — asserted by decoding into a map and comparing key sets, so a field renamed rather than removed fails. The same for the 201 — whose entries must have the **same** key set, AC-2a. *Fails today.* [contract]
 
-AC-4b. **The unsplit form** (D-12's condition met — both halves in one release). `PublicHost` has no `email`, a non-empty `required` list, `additionalProperties: false`, and its two referents unchanged; **no component is added**. *Fails today.* [contract]
-
-**Exactly one of AC-4a and AC-4b applies**, decided at stage 2 after the owner rules on §3.10. The other must not be written as a passing test, because a suite that accepts both shapes asserts nothing about which one shipped.
+AC-4. The assembled bundle's `PublicHost` has no `email` property, declares a non-empty `required` list, keeps `additionalProperties: false`, and is referenced by **exactly** `PublicLinkInfo.hosts` and `PublicBookingConfirmation.hosts` — **two referents, one definition, no added component.** Apart from `PublicBookingConfirmation` gaining the ICS property, no other schema in the bundle gains or loses one. *Fails today.* [contract]
 
 **What replaces it, and the nameless host**
 
@@ -472,7 +496,7 @@ AC-10. Given P and a hidden `scheduling_link_hosts` table, the 200 becomes the d
 
 AC-11. `MIGRATION.md`'s `generated` count is unchanged, and `getPublicLinkInfo` and `createPublicBooking` are still `handwritten`, each with a note naming this work. *Fails today only in the note.* [doc]
 
-AC-11a. **The shape enumeration is reproduced and is true, per step.** Each implementation PR's description carries §3.9's enumeration **for its own step**, and every line is checkable against the diff in that same PR: the fragment diff, the regenerated bundle diff, and both repos' regenerated types. Step A: one component added, one `$ref` moved, each component left with exactly one referent, three prose hunks, **zero** status codes and **zero** response headers touched, and the 201's shape provably unchanged (AC-1a). Step B: `email` removed, `name` required, one property added to `PublicBookingConfirmation`, four prose hunks, **zero** status codes and **zero** response headers touched. Both: the seven authenticated-roster statements (`booking.yaml:962`, `:1071`, `:1430`, `:1434`, `:1456`, `:1603`, `:1652`) untouched, and the `openapi_types` import still present in the regenerated Go. **A claim in either description that its own diff does not support fails this criterion** — and "I reasoned about where the values live" is not support; the bundle and the regenerated types are. *Fails today: no such description exists.* [doc]
+AC-11a. **The shape enumeration is reproduced and is true.** The implementation PR's description carries §3.9's enumeration, and every line is checkable against the diff in that same PR: the fragment diff, the regenerated bundle diff, and both repos' regenerated types. Specifically: **one** schema loses a property and **one** gains one; `PublicHost` keeps **two referents and one definition**; **zero** components, status codes and response headers added or removed; six prose hunks present and the seven authenticated-roster statements (`booking.yaml:962`, `:1071`, `:1430`, `:1434`, `:1456`, `:1603`, `:1652`) untouched; the `openapi_types` import still present in the regenerated Go. **A claim the diff does not support fails this criterion** — and "I reasoned about where the values live" is not support; the bundle and the regenerated types are. **Reproducing this list is necessary and not sufficient** — §3.1b's leak lived outside every response body, so AC-15 and AC-16 are the other half. *Fails today: no such description exists.* [doc]
 
 AC-11b. No status code's behaviour or documentation on either operation is altered as a side effect: `getPublicLinkInfo` still declares exactly 200, 404, 410, 429 and 500, the 429 still `$ref`s `BookingSlotsRateLimited` with its `Retry-After`, and `createPublicBooking`'s set is unchanged. Asserted against the assembled bundle, so a stray `$ref` edit fails it. *Regression guard; the reason it exists is PR #332's unannounced 429 (§3.8, W-6).* [contract]
 
@@ -487,6 +511,12 @@ AC-13a. **The web renders correctly against both contracts, before the api half 
 **The record**
 
 AC-14. `docs/security.md` carries this disclosure as **its own entry**, not as a clause of the struck-through rate-limit entry at `:92`, stating what was returned, what is returned now, and the two residuals of §2.8 (name and avatar stay public; a completed booking still puts hosts on a calendar event with the booker). `docs/factory/api-audit.md` carries the row D-9 opens, marked Fixed by this work. The B7 row of the threat table (`docs/security.md:61`) is corrected where it describes the public booking surface. [doc]
+
+**The leak is checked at each consumer's output, not only in the response body** (§3.1b)
+
+AC-15. **The criterion the retracted split would have passed while leaking.** Given a booker who completes a booking through the real UI on the compose stack, when the downloaded `.ics` is read from disk, then **its bytes contain no accepted host's address** — and this holds when the booking page was loaded first, so the link-info cache is warm and the mapper's fallback source is populated. *Fails today. It would also fail under revision 2's split, with every response-body assertion in this section green, which is why it exists.* [e2e]
+
+AC-16. The same for the other two consumers' outputs: the rendered host list carries no address in any **attribute** value (`key`, `id`, `title`, `alt`, `data-*`) or colour seed (C-2), and the link-info cache's stored objects contain none (C-3). Asserted over the DOM and over the cache, not over rendered text — **rendered text is what both earlier sweeps checked, and it is what missed C-1 and C-2** (§2.4a). [web]
 
 ## 5. Explicitly out of scope
 
@@ -515,15 +545,15 @@ AC-14. `docs/security.md` carries this disclosure as **its own entry**, not as a
 - **`users.name`'s single write path** and its `safetext.Label` (`storage/signin.go:108`).
 - **`GenerateSlug`'s 32-bit suffix** and the rule that no stored slug is rewritten (`engine/booking.go:85-109`).
 - **`MIGRATION.md`'s `generated` count** (AC-11).
-- **The 201, for the whole of step A.** Until step B merges, `createPublicBooking`'s response is byte-for-byte what it is today, `hosts[].email` included, and C-1's downloaded `.ics` is unchanged. This is AC-1a, and it is the single most important thing the split must not get wrong: the temptation is to edit the shared component rather than re-point one `$ref`.
+- **The one shared `PublicHost` definition** (D-12). It must not be split, duplicated or shadowed by a second host component, and its two referents must both lose the field in the same commit. AC-2a and AC-4 make the retraction enforceable; a diff that reintroduces a per-operation host type has reintroduced §3.1b's leak path.
 - **The emailed confirmation ICS, and the mail path that carries it.** `generateICS` and `sendConfirmationEmail` keep their current output, `ORGANIZER` and `UID` scheme included (D-14, FU-4, FU-5). §3.10 **reuses** that builder for a new delivery; it does not redefine it. If the emailed attachment's bytes change, something has been fixed that this spec said it would not fix.
 - **The docs site.** No page promises a host address on the booking page (§2.3), so no page needs editing. A change there would be a sign the removal was mis-scoped.
 
 ## 7. Rollback
 
-**Two independent rollbacks, which is a further argument for the split.** Reverting step A's paired PRs restores `getPublicLinkInfo`'s field and removes `PublicLinkHost`; reverting step B's restores the confirmation's field and the ICS property. Neither revert depends on the other, and reverting step B does not reopen the harvesting path step A closed. In each case the web regenerates its types from the reverted bundle. **There is no migration and no stored data is touched**, so rollback loses nothing and needs no restore.
+Revert the paired PRs. Both answers carry the field again, exactly as at `308ac21`, and the ICS property goes with them; the web regenerates its types from the reverted bundle. **There is no migration and no stored data is touched**, so rollback loses nothing and needs no restore.
 
-One ordering constraint on the way back: **step B must not be reverted while C-1 relies on the §3.10 field**, or the download loses its source. The safe revert of step B is therefore the contract and handler change *plus* restoring C-1's own builder — which is the mirror image of AC-2a, and worth writing into step B's PR body rather than discovering under pressure.
+One ordering constraint on the way back: **the api half must not be reverted while C-1 relies on the §3.10 field**, or the download loses its source. A safe revert is therefore the contract and handler change *plus* restoring C-1's own builder — the mirror image of AC-2b, and worth writing into the PR body rather than discovering under pressure. C-2 and C-3 need nothing on the way back: neither wanted an address.
 
 The step-1 web PR need not be reverted and should not be: a page that does not read a field it is sent is correct under both contracts. That asymmetry is deliberate — it means the rollback is a single revert of a paired pair, with no cross-repo ordering to get right under pressure.
 
@@ -534,8 +564,8 @@ The one thing a rollback does **not** undo: any address disclosed before the rem
 - **OQ-1 (owner).** `name` and `avatar_url` stay on the public answer, so an unauthenticated reader with a slug still gets every accepted host's display name and a `*.googleusercontent.com` avatar URL carrying a stable per-account identifier. Is that acceptable, or should the public entry narrow further — names only, or a count? **Default this spec is written to: both stay.** Showing who you are about to meet is the page's purpose, and a face is the ordinary way to do it. If the answer is "narrow further", the change is in the same loop and should be folded into this work rather than filed behind it.
 - **OQ-2 (owner).** §2.8 item 3: a booker who completes a booking is added as an attendee to each host's calendar event, which carries the other attendees. Should that change — for example, one event per host with only that host and the booker? It is a real narrowing and it changes what the hosts see of each other, which is a product decision. Not decided here.
 - **OQ-3 (reader of smart-calendar-flow).** W-1 and W-3: is `host.email` genuinely unread after #207, and is `hostsLabel`'s local-part fallback gone? This decides only whether step 1 of §3.8 is work or a confirmation; it does not change anything else in the spec.
-- **OQ-5 (owner) — the product question §3.10 raises, and the one that gates step B.** In the server-built downloadable ICS, should `ORGANIZER` be (a) the host's **name only**, `METHOD:PUBLISH`, no `mailto:` — **the spec's recommendation**: no reply affordance is offered, so none is falsely promised, and the host address is not in the file at all; or (b) a **real host address**, `METHOD:REQUEST` — the booker's calendar client offers "respond to organiser" and a reply reaches the host's mailbox as mail, which Paceday does not process and will not record, and the host address is readable in the file by anyone who completed a booking (§3.10's residual)? **Default this spec is written to: (a).** The booker loses nothing they have today, because the affordance they are offered today already goes nowhere. If the answer is that a booker should be able to reach a host, that deserves a deliberate reply path rather than a host address leaking in as a by-product of how a file is built.
-- **OQ-6 (owner, for stage 2).** Does step B ship in the same release as step A? If yes, D-12's condition is met and the component split should be **skipped** — AC-4b instead of AC-4a. If no, the split is what lets step A land while OQ-5 is decided.
+- **OQ-5 (owner) — the product question §3.10 raises, and now the *only* thing gating this work.** Once C-2 and C-3 land on the web side, this is the single open contract question. In the server-built downloadable ICS, should `ORGANIZER` be (a) the host's **name only**, `METHOD:PUBLISH`, no `mailto:` — **the spec's recommendation**: no reply affordance is offered, so none is falsely promised, and the host address is not in the file at all; or (b) a **real host address**, `METHOD:REQUEST` — the booker's calendar client offers "respond to organiser" and a reply reaches the host's mailbox as mail, which Paceday does not process and will not record, and the host address is readable in the file by anyone who completed a booking (§3.10's residual)? **Default this spec is written to: (a).** The booker loses nothing they have today, because the affordance they are offered today already goes nowhere. If the answer is that a booker should be able to reach a host, that deserves a deliberate reply path rather than a host address leaking in as a by-product of how a file is built.
+- **OQ-6 — withdrawn with the split** (D-12). There is no sequencing question left: both answers lose the field in one commit, and the only thing gating the release is OQ-5.
 - **OQ-4 (contract stage).** §3.4 requires a deterministic order but does not say which. The candidates are the host row's creation time (which puts the owner first on a link they created, and reads naturally) and the host's user id (stable but arbitrary). The contract should state one and document it, so a client may rely on it.
 
 ## 9. Decisions
@@ -548,11 +578,12 @@ The one thing a rollback does **not** undo: any address disclosed before the rem
 | D-4 | **The host array gains a deterministic order.** `GetAcceptedHosts` has no `ORDER BY` today (`storage/scheduling_links.go:402-406`); removing the address removes the only per-entry key a client had, so order becomes load-bearing. Inherited scope in the strict sense: this work is what makes it matter. Which order, OQ-4. | [F] |
 | D-5 | **The owner-facing roster keeps its addresses.** `schedulingHostDTO.email` is unchanged. The problem is publication to people with no entitlement, not the existence of the information. | [F] |
 | D-6 | **Straight removal. No `deprecated: true`, no two-release window, no empty-string interim.** Three reasons, in order of weight: (a) every consumer is inside the two repositories plus the MCP server, all deployed together, and there is no mechanism by which a third party could hold a client — no API keys, no OAuth app registration, no published contract (§2.3), so there is nothing a deprecation window would protect; (b) PAC-130 D-4's precedent applies only when the deprecated value is already valid under the existing type, and `""` is not valid under `format: email`, so an interim needs a type change of its own; (c) an interim empty string would keep the field's place while leaving a consumer that renders it rendering a blank — ceremony, not protection. PAC-24's outright removal of `PUT /api/settings` is the applicable precedent. | [F] |
-| D-7 | **The merge order is web-first, then paired** (§3.8), which inverts the factory's usual stage-4 order. **Revision 2: this held, and C-1 is why it was written.** Revision 1 chose the order so that an unverified consumer could not be broken by it; the cross-repo check then found exactly such a consumer. For part B the web cannot merely "stop reading" — it needs the address for a real purpose — so it must first switch to D-13's field, which is AC-2a. A response-field *removal* reverses the dependency direction: the client must stop reading before the server stops sending. Step 1 is an unpaired web PR with **no `pac-N` token** (so it pairs against api `main` and its `openapi-check-web` passes against the unchanged bundle); step 2 is one `factory/pac-N-…` branch in each repo. Both halves of step 2 **must** carry the token or the two repos deadlock against each other's `main`. | [F] |
+| D-7 | **The merge order is web-first, then paired** (§3.8), which inverts the factory's usual stage-4 order. **Revisions 2 and 3: this held, and all three consumers are why it was written.** Revision 1 chose the order so that an unverified consumer could not be broken by it, and three were then found. C-2 and C-3 can simply stop reading (and C-2's fix — a discriminator rather than an address — is better code regardless); **C-1 cannot**, because it needs an address for a real purpose, so it must first switch to D-13's field. That is AC-2b. A response-field *removal* reverses the dependency direction: the client must stop reading before the server stops sending. Step 1 is an unpaired web PR with **no `pac-N` token** (so it pairs against api `main` and its `openapi-check-web` passes against the unchanged bundle); step 2 is one `factory/pac-N-…` branch in each repo. Both halves of step 2 **must** carry the token or the two repos deadlock against each other's `main`. | [F] |
 | D-8 | **No sanitisation on the response path.** `users.name` is already `safetext.Label`'d at its single write (`storage/signin.go:108`), `encoding/json` escapes control characters so a JSON body cannot be line-injected, and the line-oriented composers that genuinely need the guard already have it. A name stored before 2026-11-22 is returned unfitted; in JSON that is harmless, and what a consumer does with it is the consumer's boundary. | [F] |
 | D-9 | **A register row is opened at intake.** The disclosure has no row in `api-audit.md` or `silent-failures.md` today — its only written trace is one clause inside the struck-through rate-limit entry at `docs/security.md:92`. A finding recorded as a subordinate clause of a closed finding is a finding nobody will find again. AC-14 makes the record its own. | [F] |
 | D-10 | **The local-part derivations in `handlers_manager.go` are out of scope, with the reason recorded** (§2.6). All five derive a label from an address the caller supplied, on an authenticated route, and return it only to that caller. The web's `hostsLabel` differed in exactly one respect — its reader had not supplied the address — and that is the property this work removes. Passing it over deliberately, rather than silently, is the point. | [F] |
 | D-11 | **The change is specified as a shape, enumerated in §3.9, and the implementing session must reproduce that enumeration in its PR description and have the diff support it** (AC-11a, AC-11b). Removing a required property from a public response is a shape change, and a shape change described only in prose has been under-reported twice on 2026-11-22: #331 as "two doc comments" against five hunks in three files, and #332 as "not reaching the generated types" while it added a 429 with a `Retry-After` to this very operation — a status code the web still does not map (W-6). The enumeration is confirmed by diffing the regenerated bundle and both repos' regenerated types, never by reasoning about where values live. Its direct consequence is D-7's merge order plus a web behaviour that is correct under **both** contracts before the api half merges (AC-13a), because api merges first by design and real visitors are in the window. | [F] |
-| D-12 | **The shared `PublicHost` component splits, by operation, and the split is cleaner than one bigger change — conditionally.** Asked for a plain view: **split.** What the split can get wrong is a `$ref` pointing at the wrong type, which fails `make openapi`'s drift check, the bundle assertion (AC-4a) and two compilers; what coupling gets wrong reaches a user — either the harvesting path stays open or every booker's `.ics` degrades. Trading a gated compile-time risk for an ungated runtime one is the right direction, not merely a smaller number of risks. The shared component was a convenience and never a claim that the two responses must match; PAC-149 already made host-entry contents depend on context at finer grain (`booking.yaml:3274-3290`). **The honest cost**: two similarly-named components that a future change must touch twice, and an asymmetry that reads as an inconsistency unless the contract says why — so it must. **The condition that reverses it (OQ-6): if both halves ship in one release, skip the split** — it is a schedule hedge, and an unhedged schedule should not pay for one. | [F] |
+| D-12 | **Both DTOs move together; the component is not split. Revision 2's split is retracted.** The web's booking mapper resolves the confirmation's hosts with a **second source** — roughly `raw.hosts ?? link?.hosts ?? []`, where `link` is a cached `PublicLinkInfo` and `raw` is a cast, not a strictly-parsed value. So removing `email` from the 201 alone leaves C-1's ICS able to receive host entries sourced from the cached link lookup: **a response-body inspection would show the field gone while the downloaded file still carried addresses**, with every response-keyed criterion green. The split's premise — two independently-removable halves — was false, so revision 2's "cleaner" argument was reasoning carefully about risk *kinds* on top of a wrong assumption. One edit, both referents, one release. **This is the spec's best example of a change that would have looked successful and leaked anyway**, and the lesson generalises: a field removal is verified at each consumer's *output* (AC-15, AC-16), never at the response body alone. | [F], revised |
 | D-13 | **The server builds the ICS and the 201 carries it as a string field; the web stops building one.** The two candidates were not independent and checking settled it: the server's ICS **already** uses a no-reply `ORGANIZER` (`engine/booking.go:975`), so "no-reply organiser" is what the server option already does, and choosing it without moving the build keeps the duplicated builder *and* loses the reply path — strictly worse on both axes. The duplication is not theoretical: the emailed and downloaded files already disagree on `ORGANIZER`, on the attendee list and probably on `UID` (§2.5), so one source of truth is a bug fix. **A field, not an endpoint**, because an endpoint adds an operation with its own 404/410/429 and rate-limit decision — a larger shape change than the one it replaces — while a field is delivered in a response only a completed booking receives and makes the two artifacts byte-identical by construction. The structural gain, and the real reason to prefer the server: it **decouples "the file names a host" from "the API hands a client an address"**, which the web builder cannot do because its file can only contain what the response gave it. That turns OQ-5 from a constraint into a choice. | [F] |
 | D-14 | **The emailed ICS's RSVP affordance is dishonest today, and this spec records it without fixing it.** `METHOD:REQUEST` plus `ORGANIZER: noreply@paceday.app` means every calendar client shows Accept / Decline, every reply reaches a no-reply mailbox, and the booker is told nothing. No register row exists. §3.10 removes the false affordance from the **downloadable** file, which is this spec's to define; the emailed invitation is not, and FU-4 carries it. Recording a defect found while checking a premise, and declining to widen scope for it, is the point. | [F] |
+| D-15 | **The enumeration was short, and the method is recorded rather than the result** (§2.4a). Revision 1's web claims were derived from a citation index of *this* repository plus reasoning about what a booking page displays, so they came out page-shaped and transport-shaped. Two of three consumers were named by file in this repo's own `docs/specs/` — `HostAvatars.tsx` six times, including `NEW-deploy-hardening.md:237`'s "public booking page included", and `booking/ics.ts` at `PAC-91.md:254` — and the sweep still missed them. W-4 (every importer of the generated type) was the only file-independent claim and would have been complete; it was ranked fourth. The re-derived question is **"what reads this field"** across seven categories, of which revision 1 had **no entry at all** for serialisation into another artefact — where the one genuine consumer lived. Categories 6 and 7 (logging/analytics, types) remain unswept: **W-7**. | [F] |
