@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/storage"
@@ -359,6 +360,14 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 	// least one of them (with its gateway prefix, owner decision O-10).
 	if msg := nlp.LLMBaseURLWriteProblem(s.LLMBaseURL); msg != "" {
 		add(msg, "llmBaseUrl")
+	}
+	// The feed URL, under the same changed-and-non-empty rule: it is fetched
+	// by the backend, so a URL inside the deployment's own network is refused
+	// here and at connection time (security audit of 2026-11-22: SSRF via the
+	// stored webcal feed URL). Under PAC-24's changed-only rule a value stored
+	// before this check existed never stops the user saving something else.
+	if msg := calendar.WebcalURLProblem("webcalUrl", s.WebcalURL); msg != "" {
+		add(msg, "webcalUrl")
 	}
 	if !validCalendarProviders[s.CalendarProvider] {
 		add("calendarProvider must be one of: google, outlook, webcal", "calendarProvider")

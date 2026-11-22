@@ -83,6 +83,15 @@ func (h *personalHandlers) create(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		req.Name = "Personal"
 	}
+	// The feed URL is fetched by the preview endpoint and then by the
+	// personal-blocker cron, so it is judged before it is stored, whatever
+	// the provider (security audit of 2026-11-22: SSRF via the stored webcal
+	// feed URL). The control is the egress guard; this is the refusal the
+	// user can still act on.
+	if msg := calendar.WebcalURLProblem("url", req.URL); msg != "" {
+		writeError(w, msg, http.StatusBadRequest)
+		return
+	}
 	pc := &storage.PersonalCalendar{
 		UserID: userIDFromCtx(r.Context()), Provider: req.Provider, Name: req.Name,
 		URL: req.URL, Enabled: req.Enabled,
@@ -112,6 +121,13 @@ func (h *personalHandlers) patch(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, "invalid body", http.StatusBadRequest)
 		return
+	}
+	// Same sink as create: PATCH re-points an existing row's url.
+	if req.URL != nil {
+		if msg := calendar.WebcalURLProblem("url", *req.URL); msg != "" {
+			writeError(w, msg, http.StatusBadRequest)
+			return
+		}
 	}
 	cal, err := storage.UpdatePersonalCalendarCtx(r.Context(), h.db, id, userIDFromCtx(r.Context()), req.Name, req.URL, req.Enabled)
 	if err != nil {

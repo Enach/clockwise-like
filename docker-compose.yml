@@ -1,3 +1,16 @@
+# LOCAL DEVELOPMENT ONLY — never deploy this file.
+#
+# Production is docker-compose.prod.yml (`docker compose -f
+# docker-compose.prod.yml up -d`), which requires every secret: its
+# POSTGRES_PASSWORD is a bare ${POSTGRES_PASSWORD} with no default, so a
+# deployment that forgot it does not start. This file keeps weak defaults on
+# purpose, because `docker compose up --build` with nothing configured is the
+# documented first step of local development (README §Setup) and
+# `make db-shell` expects them. The database here is not published outside the
+# compose network and holds throwaway data.
+#
+# Reviewed as a rider of the security audit of 2026-11-22: the default
+# password stays, and this header is how the file says what it is for.
 version: '3.9'
 
 services:
@@ -6,6 +19,7 @@ services:
     environment:
       POSTGRES_DB: clockwise
       POSTGRES_USER: clockwise
+      # Dev-only default (see the header). Production has no default.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clockwise}
     volumes:
       - postgres_data:/var/lib/postgresql/data

@@ -71,8 +71,12 @@ func (c *WebcalClient) fetch(ctx context.Context) ([]icsEvent, error) {
 	// PAC-81 AC-A17: the fetch is bounded in time and size. Over either
 	// limit the feed is not parsed at all (no blocker from a partial feed),
 	// and the error names the limit that was hit.
+	//
+	// The client is feedClient (feed_guard.go), not a plain one: the URL is
+	// user-supplied, so every connection's peer address is judged and no
+	// redirect is followed.
 	limits := outbound.Current()
-	resp, err := outbound.ICSClient().Do(req)
+	resp, err := feedClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("webcal: fetch: %w", nameTimeLimit(err, limits.ICS))
 	}

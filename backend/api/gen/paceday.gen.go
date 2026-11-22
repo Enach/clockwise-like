@@ -3895,7 +3895,9 @@ type Settings struct {
 
 	// VertexModel The Vertex AI model requests use, in express mode (NEW-llm-bring-your-own, spec D-4). DB default `gemini-2.0-flash-001`. `awsProfile`, `gcpProject`, `gcpLocation`, `ollamaBaseUrl` and `ollamaModel` are removed from this document: they only meant something in the removed modes. Their stored values are left untouched, are no longer read, and come back on a rollback (spec D-10); writing one is a 400 `unknown property: <name>`.
 	VertexModel string `json:"vertexModel"`
-	WebcalUrl   string `json:"webcalUrl"`
+
+	// WebcalUrl The iCalendar feed this user's `webcal` calendar provider reads. Stored encrypted (PAC-84) and served back to its own owner. The backend fetches it, so since the security audit of 2026-11-22 a value is refused unless it is a webcal/webcals/http/https URL without credentials whose host is not, and cannot only be, an address inside the deployment's own network - see SettingsValidationError for the two messages.
+	WebcalUrl string `json:"webcalUrl"`
 
 	// WorkEnd `HH:MM` or `""`, as `workStart`. DB default `18:00`. PAC-24 adds the cross-property check that workEnd > workStart, which OpenAPI cannot express; it is a 400 (`workEnd must be after workStart`). That check applies only when BOTH values are non-empty, which is the existing handler behaviour and keeps `""` a clear rather than a 400. Before PAC-24 an inverted working day was accepted and produced a zero-length day at use (API-082).
 	WorkEnd string `json:"workEnd"`
@@ -4074,7 +4076,9 @@ type SettingsUpdate struct {
 
 	// VertexModel The Vertex AI model requests use, in express mode (NEW-llm-bring-your-own, spec D-4). DB default `gemini-2.0-flash-001`. `awsProfile`, `gcpProject`, `gcpLocation`, `ollamaBaseUrl` and `ollamaModel` are removed from this document: they only meant something in the removed modes. Their stored values are left untouched, are no longer read, and come back on a rollback (spec D-10); writing one is a 400 `unknown property: <name>`.
 	VertexModel *string `json:"vertexModel,omitempty"`
-	WebcalUrl   *string `json:"webcalUrl,omitempty"`
+
+	// WebcalUrl The iCalendar feed this user's `webcal` calendar provider reads. Stored encrypted (PAC-84) and served back to its own owner. The backend fetches it, so since the security audit of 2026-11-22 a value is refused unless it is a webcal/webcals/http/https URL without credentials whose host is not, and cannot only be, an address inside the deployment's own network - see SettingsValidationError for the two messages.
+	WebcalUrl *string `json:"webcalUrl,omitempty"`
 
 	// WorkEnd `HH:MM` or `""`, as `workStart`. DB default `18:00`. PAC-24 adds the cross-property check that workEnd > workStart, which OpenAPI cannot express; it is a 400 (`workEnd must be after workStart`). That check applies only when BOTH values are non-empty, which is the existing handler behaviour and keeps `""` a clear rather than a 400. Before PAC-24 an inverted working day was accepted and produced a zero-length day at use (API-082).
 	WorkEnd *string `json:"workEnd,omitempty"`

@@ -2222,6 +2222,34 @@ components:
         `ollamaBaseUrl`, `ollamaModel`) is the existing
         `unknown property: <name>`.
 
+        Messages the security audit of 2026-11-22 adds, under the same
+        changed-and-non-empty rule (`""` is always accepted, and clears the
+        feed). `webcalUrl` was the one user-supplied URL the backend fetches
+        that nothing validated, so any address reachable from the deployment
+        network could be stored and then fetched - on demand through
+        `/api/personal-calendars/{id}/preview` and every 30 minutes by the
+        personal-blocker cron (SSRF):
+        `webcalUrl must be a webcal, webcals, http or https URL with no credentials`
+        (a value that does not parse, an opaque URL, userinfo, no host, or any
+        other scheme - `file:`, `gopher:`, `ftp:`);
+        `webcalUrl must not point at a loopback, link-local or private
+        address` (a host that is an address literal outside the public set -
+        loopback, RFC 1918, IPv6 unique-local, link-local including
+        169.254.169.254, unspecified, multicast, RFC 6598, NAT64/6to4/Teredo -
+        or a name that can only be local: `localhost` and anything under it, a
+        single-label intranet name, or a final label with no letter such as an
+        address written as a decimal integer).
+        The same two messages, with `url` in place of `webcalUrl`, are the
+        400s of POST and PATCH `/api/personal-calendars`.
+        A name is otherwise accepted whatever it resolves to: the control is
+        the egress guard, which judges the literal address of every feed
+        connection at the moment it is made, so a name that resolves publicly
+        at write time and privately at fetch time is still refused
+        (`backend/calendar/feed_guard.go`). A deployment that declares test
+        mode (`PACEDAY_ALLOW_STANDINS=true`, the e2e stack) accepts private
+        addresses and single-label names at both layers, and says so at
+        startup; production fails closed.
+
         `""` is NOT in this catalogue for `workStart`, `workEnd`, `lunchStart`
         or `lunchEnd`. It is a valid value for all four, on read and on write
         (spec AC-7); the handler already skips the format check for it
@@ -3898,6 +3926,14 @@ components:
             `calendar_provider = 'outlook' WHERE id = 1`).
         webcalUrl:
           type: string
+          description: >
+            The iCalendar feed this user's `webcal` calendar provider reads.
+            Stored encrypted (PAC-84) and served back to its own owner. The
+            backend fetches it, so since the security audit of 2026-11-22 a
+            value is refused unless it is a webcal/webcals/http/https URL
+            without credentials whose host is not, and cannot only be, an
+            address inside the deployment's own network - see
+            SettingsValidationError for the two messages.
         calendarEmail:
           type: string
           description: >

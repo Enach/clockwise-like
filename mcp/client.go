@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type backendClient struct {
@@ -15,9 +16,22 @@ type backendClient struct {
 	http    *http.Client
 }
 
+// backendCallTimeout bounds every call to the backend. Without it a backend
+// that accepts a connection and never answers hangs the tool call for as long
+// as the MCP client waits, whatever context it passed (hygiene, security
+// audit of 2026-11-22; the same rule as backend/internal/outbound).
+const backendCallTimeout = 30 * time.Second
+
 func newClient(baseURL string) *backendClient {
-	return &backendClient{baseURL: baseURL, http: &http.Client{}}
+	return &backendClient{baseURL: baseURL, http: &http.Client{Timeout: backendCallTimeout}}
 }
+
+// pathSegment escapes one path segment of a backend route. An id is taken
+// from the tool call, so unescaped interpolation let an id like
+// "../book/slug" steer the request to another backend path (hygiene,
+// security audit of 2026-11-22: every tool targets a requireAuth route, so
+// such a request answers 401 today).
+func pathSegment(s string) string { return url.PathEscape(s) }
 
 func (c *backendClient) get(ctx context.Context, path string, query url.Values) (json.RawMessage, error) {
 	u := c.baseURL + path

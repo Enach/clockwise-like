@@ -248,6 +248,16 @@ func run() int {
 	}
 	calendar.Configure(calDecision)
 
+	// Calendar-feed egress (security audit of 2026-11-22: SSRF via the stored
+	// webcal feed URL). Never fatal: without the test-mode declaration a feed
+	// may be fetched only from a public address (fail closed), so a production
+	// deployment configures nothing and gets no notice.
+	feedEgress := config.DecideFeedEgress(os.Getenv(config.EnvAllowStandins))
+	if feedEgress.Notice != "" {
+		log.Printf("WARNING: %s", feedEgress.Notice)
+	}
+	calendar.ConfigureFeeds(feedEgress)
+
 	// SSO admin step-up identity providers (PAC-50 §4.1): the same test-mode
 	// declaration governs any redirection, and an unsafe one refuses to start.
 	googleIdP, err := config.DecideGoogleIdP(os.Getenv(config.EnvGoogleIdPBaseURL), os.Getenv(config.EnvAllowStandins))

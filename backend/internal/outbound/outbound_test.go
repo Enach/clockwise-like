@@ -21,7 +21,7 @@ func TestDefaultLimitsAreTheSpecTable(t *testing.T) {
 	}
 	if ProviderClient().Timeout != 15*time.Second || LLMClient().Timeout != 30*time.Second ||
 		IdentityClient().Timeout != 10*time.Second || TokenExchangeClient().Timeout != 10*time.Second ||
-		ICSClient().Timeout != 15*time.Second {
+		Client(Current().ICS).Timeout != 15*time.Second {
 		t.Fatal("client timeouts differ from the limits")
 	}
 }
