@@ -406,7 +406,7 @@ lint, sfguard, e2e) stay in CI.
   `codeden/...` branch):
   ```bash
   git push origin HEAD:refs/heads/factory/pac-N-<slug>
-  gh pr create --head factory/pac-N-<slug> --base main     --title "[PAC-N] …" --body-file pr-body.md
+  gh pr create --head factory/pac-N-<slug> --base main --title "[PAC-N] …" --body-file pr-body.md
   ```
   Use the same `<slug>` in both repos. The body file carries the checks you
   actually ran and their output (§3 rule 1); `gh` needs a body when it is not
