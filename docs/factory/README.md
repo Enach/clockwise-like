@@ -68,6 +68,40 @@ the same, and what the rollback looks like. It does **not** name files, packages
 or function signatures — that is the plan's job, and putting it here anchors the
 implementation before anyone has argued about the interface.
 
+**Naming the issue.** A spec names an id it **owns**, or no id at all. "Owns"
+means the Linear issue exists: filed in team `PAC`, with the spec linked from it.
+There is no third option, and in particular a spec must never write *"the next
+free number is PAC-NN"*. That phrasing carries the staleness cost of claiming an
+id without the exclusivity benefit of having claimed one, which makes it strictly
+worse than either real option: a reader treats it as a reservation, and it
+reserves nothing.
+
+So a spec whose work has no issue yet does one of exactly two things:
+
+1. **File the issue first, then write against it** (preferred). Stage 0's gate
+   applies - title it for the problem, not for the spec document and not for the
+   solution. Filing **does not commit anyone to the work**: the issue sits in
+   `Backlog` until the owner decides, and that is precisely what makes this rule
+   cheap. The artifact is then `docs/specs/PAC-NN.md` as usual.
+2. **Claim nothing.** The artifact is `docs/specs/NEW-<slug>.md`, the ticket id is
+   `NEW-<slug>`, and the header says no issue exists, what was searched for, and
+   that one must be opened at intake with the file renamed. The `NEW-*` specs in
+   `docs/specs/` are this form.
+
+**Why this is a rule rather than a nicety.** Concurrent sessions are routine now,
+so anything resolved by "read the current state and take the next value" races by
+construction: two authors reading the same highest issue compute the same next
+number, and whichever files second silently takes it out from under the other's
+document - which keeps reading as though it still holds. The filing is the only
+serialisation point there is. PAC-164 is the worked example: its spec reasoned
+"PAC-163 is next free, but another session may file first", and one did, inside
+the hour, for unrelated work. That spec's header keeps the account.
+
+The same reasoning applies to anything else numbered by convention rather than by
+a registry - audit finding ids (`API-NNN`, `SF-NNN`) and migration file numbers
+are the other two. Take the number by writing the row or the file, in one commit;
+do not announce an intention to take it.
+
 ### Stage 2 — Contract
 
 **Owner**: `contract-author`. **Challenged by**: `contract-challenger`.
