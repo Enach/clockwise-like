@@ -12,9 +12,10 @@ import (
 // rest of the value to the recipient's mail or calendar client as a line of
 // its own. Those values are refused here, at the point of entry, because that
 // is the user-facing contract: a team name with a line break is a 400, not a
-// name silently rewritten on its way out. The composers sanitise what they
-// interpolate as well (internal/safetext), so a caller added later cannot
-// reintroduce the injection by skipping this check.
+// name silently rewritten on its way out. The composers guard what they
+// interpolate as well (internal/safetext: a label is fitted to one line, an
+// address that cannot be rendered fails the send), so a caller added later
+// cannot reintroduce the injection by skipping this check.
 //
 // Deliberately narrow: control characters on the named fields, plus an
 // address shape and a length ceiling where an unbounded value reaches a
@@ -49,6 +50,9 @@ const maxAddressLen = safetext.MaxAddressLen
 // sent rather than as it would look trimmed and lower-cased — which is why
 // this is not storage.ValidAddress alone, though the shape it accepts is the
 // same one every team address goes through.
+//
+// The shape is net/mail's, so a non-ASCII local part ("josé@example.com") is
+// accepted: this refuses what cannot go in a header, not what looks unusual.
 func validBookerAddress(s string) bool {
 	if s == "" || len(s) > maxAddressLen || safetext.HasControl(s) || s != storage.TrimAddressSpace(s) {
 		return false
