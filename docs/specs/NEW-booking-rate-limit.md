@@ -311,6 +311,11 @@ propose a way to prove AC-1 end to end without poisoning the suite.
 
 - **The link-info read** (public link metadata). The ticket names only booking
   and slot listing. It is cheap (one lookup) and does not write. See §8 Q3.
+  **Resolved after this spec, 2026-11-22:** the read-only security audit
+  answered Q3 as "yes" and the route now counts against the slot-listing
+  budget. Q3's reasoning was wrong on a fact — default slugs were
+  `{first-name}-{duration}min`, not random — and the read answers with every
+  accepted host's address, so an unlimited sweep harvested them.
 - **Cross-replica limits.** Like the detect limiter (API-062 residue), counts
   are per process: N per replica. A shared store is a separate decision.
 - **Adding `Retry-After` to the detect limiter's 429.** Same family, different
@@ -392,6 +397,14 @@ Q3. **Should the link-info read be limited too?** It enables slug probing
 (404 vs 200) at no cost. Slugs are random (`docs/security.md:58`), so this is
 low risk. Owner: product owner / security. Resolve in a follow-up ticket if
 wanted.
+**Answered yes, 2026-11-22** (read-only security audit, finding 2). "Slugs are
+random" was false for every default slug: `GenerateSlug` produced exactly
+`{first-name}-{duration}min` and only added a suffix on collision, so a
+first-name dictionary sweep of this read — which answers with each accepted
+host's email, name, avatar and calendar coverage — enumerated hosts at
+whatever rate the attacker liked. The route now counts against the
+slot-listing budget as its handler's first statement, and generated slugs
+carry 32 bits of entropy.
 
 Q4. **Does nginx see the real client address in production?** The prod
 compose already trusts the bundled nginx (`TRUSTED_PROXIES` defaults to the

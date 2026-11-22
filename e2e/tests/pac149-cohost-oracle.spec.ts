@@ -90,8 +90,8 @@ async function inviteThroughTheEditor(page: Page, api: ApiClient, title: string,
   await expect(again.getByText('Invite pending')).toBeVisible();
   const text = await again.innerText();
   expect(text).not.toContain("couldn't be added");
-  // The generated slug (owner name + duration + a suffix when taken) is the
-  // server's, not the address's.
+  // The generated slug (owner's first name, duration, and 8 random hex
+  // characters) is the server's, not the address's.
   return text.split(addr).join('<ADDR>').split(title).join('<TITLE>').split(slug).join('<SLUG>');
 }
 

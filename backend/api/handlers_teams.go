@@ -9,6 +9,7 @@ import (
 	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/outbound"
+	"github.com/Enach/paceday/backend/internal/safetext"
 	"log"
 	"net/http"
 	"net/smtp"
@@ -52,6 +53,13 @@ func (h *teamHandlers) createTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 		writeError(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	// The team's name reaches the Subject of every invitation this team
+	// sends: a line break in it would write headers and a body of the
+	// sender's choosing (2026-11-22 security audit, finding 1).
+	if safetext.HasControl(body.Name) {
+		writeError(w, msgNoLineBreaks, http.StatusBadRequest)
 		return
 	}
 	// The creator is the owner, in the same transaction as the team row
@@ -172,6 +180,11 @@ func (h *teamHandlers) patchTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 		writeError(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	// As on create: the name reaches a mail header, so no line breaks in it.
+	if safetext.HasControl(body.Name) {
+		writeError(w, msgNoLineBreaks, http.StatusBadRequest)
 		return
 	}
 	if err := storage.RenameTeamCtx(r.Context(), h.db, teamID, strings.TrimSpace(body.Name)); err != nil {
@@ -801,6 +814,28 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) error {
 	}
 	if baseURL == "" {
 		baseURL = "https://paceday.app"
+	}
+
+	// Every value interpolated into a header line is fitted to one line first
+	// (2026-11-22 security audit, finding 1). createTeam and patchTeam refuse
+	// a team name with CR/LF, and the invitee's address went through the
+	// address normaliser, but the inviter's name comes from their identity
+	// provider and the next caller of this function may check nothing: without
+	// this, a line break in any of the three closes its header and writes the
+	// rest of the message — a Bcc, a text/html part — over the deployment's
+	// relay, SPF/DKIM-aligned as the deployment's own domain.
+	//
+	// The names are repaired and capped; the recipient is not
+	// (docs/specs/NEW-request-field-length-limits.md §3.2 refuse-never-truncate,
+	// reason 2, recorded for addresses as D-15). An address that cannot
+	// go in a header as it stands fails the send, which the caller logs with
+	// the invite id and reports: a repaired or cut address is somebody else's
+	// valid address, and inviting a stranger to a team is worse than an
+	// invitation that has to be sent again.
+	inviterName, teamName = safetext.Label(inviterName), safetext.Label(teamName)
+	to, err := safetext.Address(to)
+	if err != nil {
+		return fmt.Errorf("team invite recipient: %w", err)
 	}
 
 	subject := fmt.Sprintf("%s invited you to join the \"%s\" team on Paceday", inviterName, teamName)

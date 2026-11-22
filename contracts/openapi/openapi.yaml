@@ -3277,6 +3277,18 @@ paths:
       tags:
       - booking
       summary: Public metadata for a bookable scheduling link.
+      description: 'Rate limited per client on the slot-listing budget, which it shares with `getPublicBookingSlots`:
+        at most 120 requests per client per fixed 1-minute window across both operations and all links.
+        The limit is checked and the request counted atomically as the handler''s first statement, before
+        the link lookup, so every request counts whatever it would otherwise have answered (200, 404,
+        410 or 500) and a refused request answers 429 even for an unknown slug — it cannot tell a slug
+        that exists from one that does not. Client identification, the per-process caveat and the sweep
+        are exactly as described on `createPublicBooking`. This operation answers with every accepted
+        host''s address, and until the 2026-11-22 security audit it had no limiter at all: with default
+        slugs of the shape "{first-name}-{duration}min" an unauthenticated first-name dictionary sweep
+        harvested each host''s email, name, avatar and calendar-connection coverage at any rate. Generated
+        slugs now carry 32 bits of entropy as well (see `createSchedulingLink`); slugs issued before that
+        keep resolving unchanged.'
       security: []
       responses:
         '200':
@@ -3301,6 +3313,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '429':
+          $ref: '#/components/responses/BookingSlotsRateLimited'
         '500':
           description: 'Storage failure. Body: {"error":"internal error"}. Includes a failed read of the
             link owner''s settings, needed for `time_zone` (PAC-72 revision 3.1): never answered with
@@ -3486,20 +3500,27 @@ paths:
                 $ref: '#/components/schemas/PublicBookingConfirmation'
         '400':
           description: 'Validation failure, checked before the offerable-start rule (a 400 is never turned
-            into a 409). Messages: "invalid request body"; "name, email, and start are required"; "invalid
-            start time, use RFC3339"; "invalid end time, use RFC3339"; "duration does not match end time"
-            (`end` sent together with `duration` or `duration_minutes`, and end - start is not exactly
-            that many minutes, seconds and fractions included); "invalid duration" (the resolved length
-            is not exactly a whole number of minutes that is one of the link''s durations, or 30 when
-            the link has none; never rounded or truncated to an accepted duration); "end must be after
-            start" (reachable only when the end computed from `duration_minutes` overflows, which needs
-            a link duration option above about 153,722,867 minutes; an ordinary end at or before start
-            answers "duration does not match end time" or "invalid duration" instead). PAC-82: "invalid
-            Idempotency-Key header" when the header is present, not empty, and not 16 to 255 characters
-            from `A-Z a-z 0-9 - _`, or when it is sent more than once (two or more field lines, even identical);
-            checked after the 404 and before the body is read, nothing written. With a valid key, "invalid
-            duration" for a duration that is not one of the link''s is checked after the replay decision
-            and the 410 (a replay is never turned into this 400); every other message keeps its place.'
+            into a 409). Messages: "invalid request body"; "name, email, and start are required"; "name
+            must not contain line breaks" (`name` holds CR, LF or NUL); "email must be a valid email address"
+            (`email` is not exactly one address: a display name, a second address, a line break, surrounding
+            space or over 254 octets are all refused; RFC 5321 §4.5.3.1.3 counts octets, and an address
+            is never shortened to fit — a shortened address is somebody else''s) — both from the 2026-11-22
+            security audit, finding 1, checked right after the required check and before `start` is parsed,
+            because the booker''s name and address reach the To header and Subject of the confirmation
+            email and the ATTENDEE property of the iCalendar invitation it carries; "invalid start time,
+            use RFC3339"; "invalid end time, use RFC3339"; "duration does not match end time" (`end` sent
+            together with `duration` or `duration_minutes`, and end - start is not exactly that many minutes,
+            seconds and fractions included); "invalid duration" (the resolved length is not exactly a
+            whole number of minutes that is one of the link''s durations, or 30 when the link has none;
+            never rounded or truncated to an accepted duration); "end must be after start" (reachable
+            only when the end computed from `duration_minutes` overflows, which needs a link duration
+            option above about 153,722,867 minutes; an ordinary end at or before start answers "duration
+            does not match end time" or "invalid duration" instead). PAC-82: "invalid Idempotency-Key
+            header" when the header is present, not empty, and not 16 to 255 characters from `A-Z a-z
+            0-9 - _`, or when it is sent more than once (two or more field lines, even identical); checked
+            after the 404 and before the body is read, nothing written. With a valid key, "invalid duration"
+            for a duration that is not one of the link''s is checked after the replay decision and the
+            410 (a replay is never turned into this 400); every other message keeps its place.'
           content:
             application/json:
               schema:
@@ -8081,78 +8102,85 @@ paths:
       - scheduling-links
       summary: Create a scheduling link owned by the caller.
       description: "The caller is inserted as an `accepted` host. An empty/omitted `slug` is auto-generated\
-        \ from the owner's name.\nPAC-71 (spec §3 \"What standing allows\", AC-28, AC-29, AC-40, AC-43;\
-        \ D-5, D-17): an entry of `co_host_emails` resolves to an account only when exactly one account\
-        \ holds that address DOMAIN-CONFIRMED (compared case-insensitively); an address carried only unconfirmed,\
-        \ by several accounts (letter-case collision), or by none cannot be invited. Superseded by PAC-149\
-        \ (below): no entry is resolved to an account any more.\n\nPAC-112 (spec §3.4-§3.8, D-2, D-4,\
-        \ D-8; contract contracts/features/PAC-112.md §2-§4): the create is all or nothing. The link,\
-        \ the owner's `accepted` host row and every co-host invitation are written in one transaction,\
-        \ opened with or without a session guard (with one, the PAC-71 re-check stays its first statement),\
-        \ whose lock waits are bounded at 10 seconds each as on PATCH (PAC-101): the answer is either\
-        \ 201 with all of them or an error with none of them (no link, no host row). A failed owner-host\
-        \ write, a failed co-host lookup and a failed co-host write are each the 500 with nothing created\
-        \ (before PAC-112 the first left the link created and the other two were silently skipped). Each\
-        \ listed entry gets an outcome, reported in the 201's `co_host_changes` (present exactly when\
-        \ `co_host_emails` is carried, `[]` included): `invited`, `own_address` (the owner's host row\
-        \ stays `accepted`, never demoted to `pending`: API-048's create-path remnant, fixed) or `not_added`;\
-        \ how each is decided is PAC-149's rule below (before PAC-149: by the address's single domain-confirmed\
-        \ holder). `already_host` cannot occur on create. Two entries equal after the trim and `lower()`\
-        \ write one invitation and count once. A list with more than 5 entries is refused 422 unless every\
-        \ entry reaches the owner (on create the owner is the only current host; contract md §3). A blank\
-        \ entry is refused 422.\n\nPAC-119 (spec docs/specs/PAC-119.md §3; contract contracts/features/PAC-119.md\
-        \ §1-§4): a create is safe to retry when it carries the optional `Idempotency-Key` header (see\
-        \ the parameter). The key is scoped to the caller's account. A create without a key, or with an\
-        \ empty one, behaves exactly as before PAC-119, so saving it again creates a second link. For\
-        \ a keyed create the server stores the key with the link it created, in the same transaction.\
-        \ A later create by the same account with the same key is then answered by the first matching\
-        \ rule, and writes nothing:\n1. the link that key created was deleted: 409\n   `{\"error\":\"\
-        idempotency key already used by a deleted link\"}`, at any\n   age and for any body. It names\
-        \ no link;\n\n2. the original save is 24 hours old or more, by the database clock: 409\n   `{\"\
-        error\":\"idempotency key expired\",\"link_id\":\"<id>\"}`, for any body.\n   It is never a replay\
-        \ and never a create;\n\n3. the request is the same as the original's: the replay 201;\n4. the\
-        \ request differs: 409\n   `{\"error\":\"idempotency key already used\",\"link_id\":\"<id>\"}`.\n\
-        \n\"The same\" compares a SHA-256 digest of the request's normalised form (contract md §2.3):\
-        \ aliases resolved, defaults applied, title trimmed, and the co-host list trimmed, lowered, deduplicated\
-        \ and sorted. `null` and an absent list are the same; `[]` is different. Order of evaluation:\
-        \ requireAuth's 401, then the key's 400, then the body's 400, then the field and blank-entry 422s,\
-        \ then the owner and zone reads, then the key resolution (rules 1-4), then the slug check or generation,\
-        \ then the write. With a key, a slug conflict (the explicit slug's pre-check or the slug's unique\
-        \ constraint at insert) and a key conflict both resolve the key again. A stored key then decides\
-        \ by rules 1-4, so a keyed create is never answered \"slug already exists\" while its own key\
-        \ is stored. Refusals decided inside the write, the over-5 422 among them, come after key resolution:\
-        \ a retry whose list normalises to the original's is replayed. Every replay and every refusal\
-        \ is decided in a transaction whose PAC-71 re-check runs before the key read and again after it.\
-        \ A moved generation is therefore requireAuth's 401, with nothing of the link. When two requests\
-        \ with the same account and key run at once, exactly one link is created. The other waits for\
-        \ it, at most the 10 s lock bound, and is then answered by rules 1-4 in a new short guarded transaction.\
-        \ If the first rolls back, the other proceeds as a new create. A create that fails or is refused\
-        \ stores no key. The co-host outcomes and the request digest kept for a replay are removed within\
-        \ one hour after the 24-hour window. The key, the account, the link's id and the save's time are\
-        \ kept for ever, since links are never purged. Before PAC-119, nothing protected a retry after\
-        \ a lost 201 (API-095).\n\nPAC-149: a replay of a key stored before PAC-149 was deployed returns\
-        \ the outcomes recorded then (rule 3: never re-evaluated). It reveals nothing new, and such keys\
-        \ expire within 24 hours of the deploy.\n\nPAC-149 (spec docs/specs/PAC-149.md §3.1-§3.4, D-1,\
-        \ D-2, D-3, D-7, D-15, D-16, D-18; contract contracts/features/PAC-149.md §2-§3). This supersedes\
-        \ the PAC-71 granting rule and the account-based outcome rules stated above for co-host entries.\
-        \ The list never reads accounts by address, and nothing in the answer depends on whether an account\
-        \ carries an entry. Each entry is trimmed of leading and trailing ECMA-262 `\\s` (blank: the 422\
-        \ above) and decided in this order, every comparison ignoring case with the database's `lower()`:\
-        \ `own_address` when it equals the owner's stored address; `already_host` when it equals the address\
-        \ of a current non-owner entry of the link (a pending invitation's recorded address, or the stored\
-        \ address of an accepted or declined host's account), which keeps its status (PAC-61); `invited`\
-        \ when it is well-formed (lowercased, Go's `net/mail.ParseAddress` accepts it and returns exactly\
-        \ it: the team invitation's rule) and a pending invitation is recorded for it; otherwise `not_added`,\
-        \ whose only meaning is now \"not a well-formed address\". A pending invitation records the trimmed\
-        \ entry with its letter case kept, the time and the entry's position in the request, and points\
-        \ at no account; it is recorded the same way whether or not any account carries the address. Entries\
-        \ equal after the trim and `lower()` are one entry: one invitation, counted once. The over-5 rule\
-        \ treats an entry as reaching a current host when it equals the owner's address or a current entry's\
-        \ address under the same comparison. On PATCH, every non-owner entry whose address equals no listed\
-        \ entry is removed. The invitee sees and answers the invitation only while their account is the\
-        \ address's single domain-confirmed holder (`listSchedulingLinkHostInvites`). The server performs\
-        \ the same statements for a new address whatever accounts exist (contract md §2.6). Paceday sends\
-        \ no email to an invitee."
+        \ from the owner's name, their first duration and 8 random hexadecimal characters: \"{first-name}-{duration}min-{8\
+        \ hex}\", e.g. \"nicolas-30min-3f9a1c04\". The entropy is the slug's secret (2026-11-22 security\
+        \ audit, finding 2): before it a default slug was exactly \"{first-name}-{duration}min\", so an\
+        \ unauthenticated first-name dictionary sweep of `getPublicLinkInfo` harvested every host's address.\
+        \ Only generation changed: no stored slug was rewritten, every slug issued before keeps resolving,\
+        \ and an explicit `slug` is still taken exactly as sent. An owner whose name holds nothing usable\
+        \ (a provider that sent no `name` at all, or a name no character of which survives slug normalisation)\
+        \ gets the stem \"meet\" rather than the 500 that shape used to produce.\nPAC-71 (spec §3 \"What\
+        \ standing allows\", AC-28, AC-29, AC-40, AC-43; D-5, D-17): an entry of `co_host_emails` resolves\
+        \ to an account only when exactly one account holds that address DOMAIN-CONFIRMED (compared case-insensitively);\
+        \ an address carried only unconfirmed, by several accounts (letter-case collision), or by none\
+        \ cannot be invited. Superseded by PAC-149 (below): no entry is resolved to an account any more.\n\
+        \nPAC-112 (spec §3.4-§3.8, D-2, D-4, D-8; contract contracts/features/PAC-112.md §2-§4): the create\
+        \ is all or nothing. The link, the owner's `accepted` host row and every co-host invitation are\
+        \ written in one transaction, opened with or without a session guard (with one, the PAC-71 re-check\
+        \ stays its first statement), whose lock waits are bounded at 10 seconds each as on PATCH (PAC-101):\
+        \ the answer is either 201 with all of them or an error with none of them (no link, no host row).\
+        \ A failed owner-host write, a failed co-host lookup and a failed co-host write are each the 500\
+        \ with nothing created (before PAC-112 the first left the link created and the other two were\
+        \ silently skipped). Each listed entry gets an outcome, reported in the 201's `co_host_changes`\
+        \ (present exactly when `co_host_emails` is carried, `[]` included): `invited`, `own_address`\
+        \ (the owner's host row stays `accepted`, never demoted to `pending`: API-048's create-path remnant,\
+        \ fixed) or `not_added`; how each is decided is PAC-149's rule below (before PAC-149: by the address's\
+        \ single domain-confirmed holder). `already_host` cannot occur on create. Two entries equal after\
+        \ the trim and `lower()` write one invitation and count once. A list with more than 5 entries\
+        \ is refused 422 unless every entry reaches the owner (on create the owner is the only current\
+        \ host; contract md §3). A blank entry is refused 422.\n\nPAC-119 (spec docs/specs/PAC-119.md\
+        \ §3; contract contracts/features/PAC-119.md §1-§4): a create is safe to retry when it carries\
+        \ the optional `Idempotency-Key` header (see the parameter). The key is scoped to the caller's\
+        \ account. A create without a key, or with an empty one, behaves exactly as before PAC-119, so\
+        \ saving it again creates a second link. For a keyed create the server stores the key with the\
+        \ link it created, in the same transaction. A later create by the same account with the same key\
+        \ is then answered by the first matching rule, and writes nothing:\n1. the link that key created\
+        \ was deleted: 409\n   `{\"error\":\"idempotency key already used by a deleted link\"}`, at any\n\
+        \   age and for any body. It names no link;\n\n2. the original save is 24 hours old or more, by\
+        \ the database clock: 409\n   `{\"error\":\"idempotency key expired\",\"link_id\":\"<id>\"}`,\
+        \ for any body.\n   It is never a replay and never a create;\n\n3. the request is the same as\
+        \ the original's: the replay 201;\n4. the request differs: 409\n   `{\"error\":\"idempotency key\
+        \ already used\",\"link_id\":\"<id>\"}`.\n\n\"The same\" compares a SHA-256 digest of the request's\
+        \ normalised form (contract md §2.3): aliases resolved, defaults applied, title trimmed, and the\
+        \ co-host list trimmed, lowered, deduplicated and sorted. `null` and an absent list are the same;\
+        \ `[]` is different. Order of evaluation: requireAuth's 401, then the key's 400, then the body's\
+        \ 400, then the field and blank-entry 422s, then the owner and zone reads, then the key resolution\
+        \ (rules 1-4), then the slug check or generation, then the write. With a key, a slug conflict\
+        \ (the explicit slug's pre-check or the slug's unique constraint at insert) and a key conflict\
+        \ both resolve the key again. A stored key then decides by rules 1-4, so a keyed create is never\
+        \ answered \"slug already exists\" while its own key is stored. Refusals decided inside the write,\
+        \ the over-5 422 among them, come after key resolution: a retry whose list normalises to the original's\
+        \ is replayed. Every replay and every refusal is decided in a transaction whose PAC-71 re-check\
+        \ runs before the key read and again after it. A moved generation is therefore requireAuth's 401,\
+        \ with nothing of the link. When two requests with the same account and key run at once, exactly\
+        \ one link is created. The other waits for it, at most the 10 s lock bound, and is then answered\
+        \ by rules 1-4 in a new short guarded transaction. If the first rolls back, the other proceeds\
+        \ as a new create. A create that fails or is refused stores no key. The co-host outcomes and the\
+        \ request digest kept for a replay are removed within one hour after the 24-hour window. The key,\
+        \ the account, the link's id and the save's time are kept for ever, since links are never purged.\
+        \ Before PAC-119, nothing protected a retry after a lost 201 (API-095).\n\nPAC-149: a replay of\
+        \ a key stored before PAC-149 was deployed returns the outcomes recorded then (rule 3: never re-evaluated).\
+        \ It reveals nothing new, and such keys expire within 24 hours of the deploy.\n\nPAC-149 (spec\
+        \ docs/specs/PAC-149.md §3.1-§3.4, D-1, D-2, D-3, D-7, D-15, D-16, D-18; contract contracts/features/PAC-149.md\
+        \ §2-§3). This supersedes the PAC-71 granting rule and the account-based outcome rules stated\
+        \ above for co-host entries. The list never reads accounts by address, and nothing in the answer\
+        \ depends on whether an account carries an entry. Each entry is trimmed of leading and trailing\
+        \ ECMA-262 `\\s` (blank: the 422 above) and decided in this order, every comparison ignoring case\
+        \ with the database's `lower()`: `own_address` when it equals the owner's stored address; `already_host`\
+        \ when it equals the address of a current non-owner entry of the link (a pending invitation's\
+        \ recorded address, or the stored address of an accepted or declined host's account), which keeps\
+        \ its status (PAC-61); `invited` when it is well-formed (lowercased, Go's `net/mail.ParseAddress`\
+        \ accepts it and returns exactly it: the team invitation's rule) and a pending invitation is recorded\
+        \ for it; otherwise `not_added`, whose only meaning is now \"not a well-formed address\". A pending\
+        \ invitation records the trimmed entry with its letter case kept, the time and the entry's position\
+        \ in the request, and points at no account; it is recorded the same way whether or not any account\
+        \ carries the address. Entries equal after the trim and `lower()` are one entry: one invitation,\
+        \ counted once. The over-5 rule treats an entry as reaching a current host when it equals the\
+        \ owner's address or a current entry's address under the same comparison. On PATCH, every non-owner\
+        \ entry whose address equals no listed entry is removed. The invitee sees and answers the invitation\
+        \ only while their account is the address's single domain-confirmed holder (`listSchedulingLinkHostInvites`).\
+        \ The server performs the same statements for a new address whatever accounts exist (contract\
+        \ md §2.6). Paceday sends no email to an invitee."
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkCreateIdempotencyKey'
       requestBody:
@@ -9599,7 +9627,11 @@ paths:
                 $ref: '#/components/schemas/Team'
         '400':
           description: 'JSON error "name is required" — covers both a malformed body and a blank/ whitespace-only
-            name (one branch, one message).
+            name (one branch, one message). Or "name must not contain line breaks" when the name holds
+            CR, LF or NUL: the team''s name is interpolated into the Subject header of every invitation
+            the team sends, where a line break would end the header and let the rest of the name write
+            headers and a body of its own (2026-11-22 security audit, finding 1). Checked after the blank
+            check, so a blank name keeps its message; nothing is written either way.
 
             '
           content:
@@ -9829,7 +9861,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Team'
         '400':
-          description: JSON error "invalid team id" or "name is required".
+          description: 'JSON error "invalid team id", "name is required", or "name must not contain line
+            breaks" when the name holds CR, LF or NUL (the same rule and reason as on createTeam; nothing
+            is renamed).
+
+            '
           content:
             application/json:
               schema:
@@ -12148,7 +12184,8 @@ components:
         slug:
           type: string
           description: Normalised to lowercase alphanumerics and dashes. When it normalises to the empty
-            string a slug is generated from the owner's name plus the first duration.
+            string a slug is generated from the owner's name, the first duration and 8 random hexadecimal
+            characters (see the operation description).
         duration_options:
           type: array
           nullable: true
@@ -18347,11 +18384,12 @@ components:
           schema:
             $ref: '#/components/schemas/BookingRateLimitError'
     BookingSlotsRateLimited:
-      description: 'The client has already made 120 requests to `getPublicBookingSlots` in its current
-        1-minute window (NEW-booking-rate-limit). Nothing was looked up. Body: `{"error":"rate limit exceeded"}`,
-        Content-Type application/json. `Retry-After` is the whole number of seconds until the client''s
-        window ends, rounded up, never less than 1 and never more than 60. Not exposed to cross-origin
-        pages, as for `BookingCreateRateLimited`.'
+      description: 'The client has already made 120 requests to `getPublicBookingSlots` and `getPublicLinkInfo`
+        together in its current 1-minute window (NEW-booking-rate-limit; `getPublicLinkInfo` joined this
+        budget with the 2026-11-22 security audit, finding 2). Nothing was looked up. Body: `{"error":"rate
+        limit exceeded"}`, Content-Type application/json. `Retry-After` is the whole number of seconds
+        until the client''s window ends, rounded up, never less than 1 and never more than 60. Not exposed
+        to cross-origin pages, as for `BookingCreateRateLimited`.'
       headers:
         Retry-After:
           required: true
@@ -18506,11 +18544,14 @@ components:
             $ref: '#/components/schemas/RequestBudgetExpiredError'
     SchedulingLinkValidationError:
       description: 'Validation failure from validateSchedulingLink / parseClock. Messages: "title is required";
-        "at least one duration is required"; "durations must be positive integers"; "at least one day
-        is required"; "days_of_week must contain values between 0 and 6"; "window times must use HH:MM";
-        "window_start must be before window_end"; "buffers must be zero or positive"; "min_notice_minutes
-        must be zero or positive"; "usage_type must be reusable, recurring, or single_use"; "max_uses
-        must be set to a positive integer for recurring links"; "slug cannot be empty" (PATCH only); "booking_horizon_days
+        "title must not contain line breaks" (the title holds CR, LF or NUL; it is the Subject of the
+        confirmation email and the SUMMARY property of the iCalendar invitation, both line-oriented —
+        2026-11-22 security audit, finding 1; reported right after "title is required"); "at least one
+        duration is required"; "durations must be positive integers"; "at least one day is required";
+        "days_of_week must contain values between 0 and 6"; "window times must use HH:MM"; "window_start
+        must be before window_end"; "buffers must be zero or positive"; "min_notice_minutes must be zero
+        or positive"; "usage_type must be reusable, recurring, or single_use"; "max_uses must be set to
+        a positive integer for recurring links"; "slug cannot be empty" (PATCH only); "booking_horizon_days
         must be between 1 and 365"; "refusal_message must be generic or specific" (both PAC-72 revision
         2). PAC-112 (spec D-9; each also writes nothing): "days contains an unrecognised day name" (API-053:
         the `days` alias is used, i.e. `days_of_week` is absent or null, and at least one entry is not

@@ -42,7 +42,7 @@ func newPAC119Env(t *testing.T) *pac119Env {
 func pac119NewKey() string { return "k119-" + strings.ReplaceAll(uuid.NewString(), "-", "") }
 
 // owner is a domain-confirmed account with a name of its own, so the slug it
-// generates ("<first name>-30min") is free unless the test takes it.
+// generates ("<first name>-30min-<suffix>") is free unless the test takes it.
 func (e *pac119Env) owner(name string) uuid.UUID {
 	e.t.Helper()
 	id, _ := e.confirmed(name)
@@ -404,6 +404,12 @@ func TestPAC119_AC7_ConcurrentSameKey(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// The slug both creates would generate, taken by someone
+				// else first: each create finds it taken and draws again.
+				// The suffix is random since the 2026-11-22 security audit,
+				// so the three draws that must land on it are pinned (this
+				// call's own, then one per create).
+				pinnedSlugSuffixes(t, "beefcafe", 3)
 				base, err := e.slh.bookEng.GenerateSlug(u.Name, 30)
 				if err != nil {
 					t.Fatal(err)

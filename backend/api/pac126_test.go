@@ -3,8 +3,9 @@ package api
 // PAC-126: two creates whose generated slugs collide. GenerateSlug checks that
 // its candidate is free and the insert comes later, so two concurrent creates
 // by owners who share a first name (and first duration) both pick the same
-// "<first name>-30min". The second insert waits on the slug's unique index for
-// the first transaction and then violates it. Before PAC-126 that was
+// "<first name>-30min-<suffix>" (the suffix pinned, as it is random since the
+// 2026-11-22 security audit). The second insert waits on the slug's unique
+// index for the first transaction and then violates it. Before PAC-126 that was
 // 500 "internal error" (PAC-119 spec §5, the follow-up it named); a CI e2e
 // run hit it (pac112-cohosts.spec.ts AC-3 public slots, every e2e user's first
 // name being "E2E"). A generated slug is the server's choice, so the server
@@ -23,15 +24,27 @@ import (
 )
 
 // pac126Twins are two accounts with the same, run-unique first name, so their
-// creates generate the same base slug.
+// creates generate the same base slug. The third value is the stem both
+// generate from, without the suffix.
+//
+// A generated slug also carries 32 bits of entropy since the 2026-11-22
+// security audit (engine.GenerateSlug), which on its own would make two
+// creates collide about once in four billion. The first two draws are pinned
+// to the same suffix so the collision this file is about stays reachable —
+// exactly what two owners sharing a first name hit before the audit — and
+// later draws differ, so the loser's retry finds a slug of its own.
 func (e *pac119Env) pac126Twins() (uuid.UUID, uuid.UUID, string) {
 	e.t.Helper()
 	first := "p126" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	a, b := e.owner("p126-a"), e.owner("p126-b")
 	execT(e.t, `UPDATE users SET name = $2 WHERE id = $1`, a, first+" Alpha")
 	execT(e.t, `UPDATE users SET name = $2 WHERE id = $1`, b, first+" Beta")
+	pinnedSlugSuffixes(e.t, pac126PinnedSuffix, 2)
 	return a, b, first + "-30min"
 }
+
+// pac126PinnedSuffix is the suffix both twins' first create draws.
+const pac126PinnedSuffix = "deadbeef"
 
 func TestPAC126_ConcurrentCreatesOfTheSameGeneratedSlugBothSucceed(t *testing.T) {
 	for _, c := range []struct {
@@ -43,7 +56,7 @@ func TestPAC126_ConcurrentCreatesOfTheSameGeneratedSlugBothSucceed(t *testing.T)
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := newPAC119Env(t)
-			a, b, base := e.pac126Twins()
+			a, b, stem := e.pac126Twins()
 			keyA, keyB := "", ""
 			if c.keyed {
 				keyA, keyB = pac119NewKey(), pac119NewKey()
@@ -63,11 +76,11 @@ func TestPAC126_ConcurrentCreatesOfTheSameGeneratedSlugBothSucceed(t *testing.T)
 			release()
 			sa := pac112Saved(t, pac119Wait(t, first, "A"), http.StatusCreated)
 			sb := pac112Saved(t, pac119Wait(t, second, "B"), http.StatusCreated)
-			if sa.Slug != base {
-				t.Errorf("A's slug %q; want the base %q", sa.Slug, base)
+			if want := stem + "-" + pac126PinnedSuffix; sa.Slug != want {
+				t.Errorf("A's slug %q; want the slug both generated, %q", sa.Slug, want)
 			}
-			if sb.Slug == sa.Slug || !strings.HasPrefix(sb.Slug, base+"-") {
-				t.Errorf("B's slug %q; want %q with a suffix", sb.Slug, base)
+			if sb.Slug == sa.Slug || !strings.HasPrefix(sb.Slug, stem+"-") {
+				t.Errorf("B's slug %q; want %q with a suffix of its own", sb.Slug, stem)
 			}
 			for _, o := range []struct {
 				who  string

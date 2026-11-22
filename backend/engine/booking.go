@@ -20,6 +20,7 @@ import (
 	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/internal/peritem"
+	"github.com/Enach/paceday/backend/internal/safetext"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
@@ -78,15 +79,26 @@ func (r BookingReads) hostBookings(db storage.DBTX, userID uuid.UUID, start, end
 // --- Slug generation -------------------------------------------------------
 
 // GenerateSlug creates a URL-safe slug for a scheduling link.
-// Format: {first-name}-{duration}min, e.g. "nicolas-30min".
-// Appends a 4-char random suffix on collision.
+// Format: {first-name}-{duration}min-{8 hex characters},
+// e.g. "nicolas-30min-3f9a1c04".
+//
+// The suffix is not a collision tie-breaker, it is the slug's secret. Before
+// the read-only security audit of 2026-11-22 a generated slug was exactly
+// {first-name}-{duration}min, which made every default link guessable: an
+// unauthenticated first-name dictionary sweep of GET /api/book/{slug} — the
+// one public booking route with no rate limit at the time — harvested each
+// accepted host's email, name, avatar and calendar-connection coverage. The
+// 32 bits here make the sweep useless. This is generation only: no stored slug
+// is rewritten and every slug already handed out keeps resolving, including an
+// explicit one the owner chose.
 func (e *BookingEngine) GenerateSlug(ownerName string, durationMinutes int) (string, error) {
-	first := strings.ToLower(strings.Fields(ownerName)[0])
-	first = slugify(first)
-	base := fmt.Sprintf("%s-%dmin", first, durationMinutes)
-
-	candidate := base
+	base := slugBase(ownerName, durationMinutes)
 	for range 10 {
+		suffix, err := slugSuffix()
+		if err != nil {
+			return "", err
+		}
+		candidate := base + "-" + suffix
 		exists, err := storage.SlugExists(e.DB, candidate)
 		if err != nil {
 			return "", err
@@ -94,11 +106,46 @@ func (e *BookingEngine) GenerateSlug(ownerName string, durationMinutes int) (str
 		if !exists {
 			return candidate, nil
 		}
-		b := make([]byte, 2)
-		_, _ = rand.Read(b)
-		candidate = base + "-" + hex.EncodeToString(b)
 	}
 	return "", fmt.Errorf("could not generate unique slug")
+}
+
+// defaultSlugStem is the stem of a generated slug when the owner's name gives
+// none.
+const defaultSlugStem = "meet"
+
+// slugBase is a generated slug without its random suffix: the owner's
+// slugified first name and the duration.
+//
+// ownerName can hold nothing usable, and used to panic when it did: it is the
+// name the identity provider sent, `name` is optional in OIDC
+// (handlers_sso.go passes userInfo.Name straight to the account), and a name
+// in a script slugify drops entirely (an ideographic name) leaves the empty
+// string. Either falls back to defaultSlugStem, so such an account can create
+// a link without an explicit slug instead of taking a 500.
+func slugBase(ownerName string, durationMinutes int) string {
+	first := ""
+	if fields := strings.Fields(ownerName); len(fields) > 0 {
+		first = slugify(strings.ToLower(fields[0]))
+	}
+	if first == "" {
+		first = defaultSlugStem
+	}
+	return fmt.Sprintf("%s-%dmin", first, durationMinutes)
+}
+
+// slugSuffixBytes is a generated slug's entropy: 4 bytes, 8 hex characters.
+const slugSuffixBytes = 4
+
+// randomSlugSuffix draws a generated slug's suffix. A failed draw is an
+// error, never a predictable suffix: the entropy is the only thing standing
+// between a default link and a dictionary sweep.
+func randomSlugSuffix() (string, error) {
+	b := make([]byte, slugSuffixBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("slug entropy: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func slugify(s string) string {
@@ -836,7 +883,31 @@ func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, sta
 		smtpPort = "587"
 	}
 
-	ics := generateICS(title, bookerName, bookerEmail, hostNames, start, end)
+	// Every value that reaches a header line or the multipart body is fitted
+	// to one line first. createBooking refuses CR, LF and NUL in the booker's
+	// name and address, and a link's title cannot hold them either, but a host
+	// name comes from their identity provider and a caller added later may
+	// not check anything: without this a line break in any of the four ends
+	// the line it lands in and writes the rest of the message itself (a Bcc,
+	// a text/html part, a second ATTENDEE).
+	//
+	// The labels are repaired and capped; the address is not
+	// (docs/specs/NEW-request-field-length-limits.md §3.2 refuse-never-truncate,
+	// reason 2, recorded for addresses as D-15). An address that cannot
+	// go in a header as it stands fails the send, which is logged with the
+	// booking id and reported: a cut or repaired address is a different, valid
+	// address, so repairing it would deliver this confirmation — and the ICS
+	// ATTENDEE — to somebody who never asked for it.
+	title, bookerName, hostNames = safetext.Label(title), safetext.Label(bookerName), safetext.Label(hostNames)
+	bookerEmail, err := safetext.Address(bookerEmail)
+	if err != nil {
+		return fmt.Errorf("booking confirmation recipient: %w", err)
+	}
+
+	ics, err := generateICS(title, bookerName, bookerEmail, hostNames, start, end)
+	if err != nil {
+		return err
+	}
 	subjectDate, text := composeConfirmation(bookerName, hostNames, start, end, loc)
 
 	boundary := "boundary-paceday-ics"
@@ -871,7 +942,22 @@ func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, sta
 // sendMail is the SMTP sender (a test seam): 15 s from dial to QUIT.
 var sendMail = outbound.SendMail
 
-func generateICS(title, bookerName, bookerEmail, hostNames string, start, end time.Time) string {
+// generateICS builds the METHOD:REQUEST invitation the confirmation carries.
+// iCalendar is line-oriented too (RFC 5545 §3.1), so each interpolated value
+// is fitted to one line: a CR or LF in the title or the booker's name would
+// otherwise add properties of its own to an event the recipient's calendar
+// client parses without asking — a second ATTENDEE, a replacement ORGANIZER,
+// an ATTACH.
+//
+// The error is an ATTENDEE address that cannot go in a content line as it
+// stands; there is no invitation then, because the alternative is one
+// addressed to whoever the repaired address happens to name (D-15).
+func generateICS(title, bookerName, bookerEmail, hostNames string, start, end time.Time) (string, error) {
+	title, bookerName, hostNames = safetext.Label(title), safetext.Label(bookerName), safetext.Label(hostNames)
+	bookerEmail, err := safetext.Address(bookerEmail)
+	if err != nil {
+		return "", fmt.Errorf("invitation attendee: %w", err)
+	}
 	uid := fmt.Sprintf("%d@paceday", start.UnixNano())
 	dtStart := start.UTC().Format("20060102T150405Z")
 	dtEnd := end.UTC().Format("20060102T150405Z")
@@ -890,7 +976,7 @@ func generateICS(title, bookerName, bookerEmail, hostNames string, start, end ti
 		"ATTENDEE;CN=" + bookerName + ":mailto:" + bookerEmail,
 		"END:VEVENT",
 		"END:VCALENDAR",
-	}, "\r\n")
+	}, "\r\n"), nil
 }
 
 // reportBookingEventSaveFailure logs and reports a host event that was

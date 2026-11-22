@@ -589,17 +589,33 @@ func TestGetSlots_ConcurrentBurstCannotOvershoot(t *testing.T) {
 	}
 }
 
-// The link-info read stays unlimited (spec §5, Q3).
-func TestGetLinkInfo_NotLimited(t *testing.T) {
+// The link-info read is on the slot-listing budget, and the booking budget is
+// still separate from it.
+//
+// This replaces TestGetLinkInfo_NotLimited, which pinned the opposite: the
+// spec left the link-info read out of scope (§5) and its Q3 asked whether it
+// should be limited, reasoning that slugs were random. The read-only security
+// audit of 2026-11-22 answered yes — slugs were not random, and this is the
+// route that answers with every accepted host's address — so the behaviour
+// this test pinned is the behaviour that was wrong.
+func TestGetLinkInfo_OnTheSlotsBudget(t *testing.T) {
 	ownerID := createTestUser(t, "rl-info-owner@example.com")
 	link := createPublicBookingLink(t, ownerID, "rl-info", "RL Info", 0, "reusable", nil)
 	r := setupPublicBookingRoutes(t, &countingBookingFlow{})
-	for i := 0; i < 20; i++ {
+
+	// The booking budget is not the slots budget: spending all 20 bookings
+	// leaves the link-info read its full 120.
+	for i := 0; i < defaultBookingCreateLimit; i++ {
 		doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, `{}`, peerA, nil)
 	}
-	for i := 0; i < 130; i++ {
+	for i := 0; i < defaultBookingSlotsLimit; i++ {
 		if got := doPublic(t, r, http.MethodGet, "/api/book/"+link.Slug, "", peerA, nil); got.code != http.StatusOK {
-			t.Fatalf("link info %d: status = %d, want 200", i+1, got.code)
+			t.Fatalf("link info %d: status = %d, want 200; body: %s", i+1, got.code, got.body)
 		}
 	}
+	assertRateLimited(t, doPublic(t, r, http.MethodGet, "/api/book/"+link.Slug, "", peerA, nil), 60)
+
+	// One budget, shared with the slot listing: the slots route is refused
+	// too, by the count the link-info reads used up.
+	assertRateLimited(t, doPublic(t, r, http.MethodGet, "/api/book/"+link.Slug+"/slots?duration=30", "", peerA, nil), 60)
 }

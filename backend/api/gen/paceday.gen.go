@@ -1660,7 +1660,7 @@ type CreateSchedulingLinkRequest struct {
 	// RefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent or null means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
 	RefusalMessage *CreateSchedulingLinkRequestRefusalMessage `json:"refusal_message"`
 
-	// Slug Normalised to lowercase alphanumerics and dashes. When it normalises to the empty string a slug is generated from the owner's name plus the first duration.
+	// Slug Normalised to lowercase alphanumerics and dashes. When it normalises to the empty string a slug is generated from the owner's name, the first duration and 8 random hexadecimal characters (see the operation description).
 	Slug *string `json:"slug,omitempty"`
 
 	// Title Trimmed. Required in effect - an empty title is a 422.
@@ -15200,6 +15200,18 @@ func (response GetPublicLinkInfo410JSONResponse) VisitGetPublicLinkInfoResponse(
 	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type GetPublicLinkInfo429JSONResponse struct {
+	BookingSlotsRateLimitedJSONResponse
+}
+
+func (response GetPublicLinkInfo429JSONResponse) VisitGetPublicLinkInfoResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type GetPublicLinkInfo500JSONResponse BookingError

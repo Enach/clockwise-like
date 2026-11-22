@@ -101,6 +101,28 @@ func InstallHabitGateLeaving(tb TB, fn func(userID uuid.UUID)) (uninstall func()
 	return habitGateLeaving.install(tb, fn)
 }
 
+// slugSuffixOverride replaces a generated slug's random suffix (PAC-126's
+// concurrency case needs two creates to generate the same slug, which the
+// entropy added by the 2026-11-22 security audit otherwise makes unreachable).
+// Production installs none, so every generated slug is random.
+var slugSuffixOverride seam[func() (string, error)]
+
+// InstallSlugSuffix pins the suffix every generated slug takes until the test
+// ends.
+func InstallSlugSuffix(tb TB, fn func() (string, error)) (uninstall func()) {
+	tb.Helper()
+	return slugSuffixOverride.install(tb, fn)
+}
+
+// slugSuffix is a generated slug's suffix: the installed override, else a
+// fresh random draw.
+func slugSuffix() (string, error) {
+	if fn, ok := slugSuffixOverride.get(); ok {
+		return fn()
+	}
+	return randomSlugSuffix()
+}
+
 // slackAPIOverride replaces slackAPIBase for every Slack Web API call when a
 // test installs it (PAC-141 review): packages outside engine, such as the
 // api handlers' recap test send, can then point Slack at a stub and never
