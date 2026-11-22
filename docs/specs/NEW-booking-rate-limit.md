@@ -132,6 +132,10 @@ deliberate (D-3) and awaits owner confirmation.
   `Access-Control-Expose-Headers` (`backend/api/middleware.go:61-85`), and
   `Retry-After` is not a CORS-safelisted response header, so a page on
   another origin cannot read it. A same-origin page can.
+  **Superseded 2026-11-22 (PAC-163):** `corsMiddleware` now sends
+  `Access-Control-Expose-Headers: Retry-After`, so a cross-origin page can
+  read it on all three limited booking routes. The rest of this spec is
+  unaffected: nothing here depends on the header being unreadable.
 - Deployment edge: `docker-compose.prod.yml:47` defaults `TRUSTED_PROXIES`
   to Docker's private ranges (`172.16.0.0/12,192.168.0.0/16,10.0.0.0/8`), so
   the backend already believes `X-Real-IP` from the bundled nginx. That nginx
@@ -341,7 +345,9 @@ propose a way to prove AC-1 end to end without poisoning the suite.
 - **Exposing `Retry-After` to cross-origin pages.** The web does not read
   the header (AC-10 says "a few minutes"), so the CORS configuration is not
   changed. If the web is ever meant to show the exact wait, that work must
-  also expose the header (§2).
+  also expose the header (§2). **Done separately in PAC-163 (2026-11-22),**
+  which added `Access-Control-Expose-Headers: Retry-After` and nothing else;
+  it changed no limit, bound, body or status of this spec.
 - **Distributed floods.** Many addresses each under the limit are not
   stopped (D-3, §8 Q7).
 
@@ -595,6 +601,8 @@ Linear, and §1 is compared against itself because there is no intake text.
    Nothing in this spec needs the web to read it, since AC-10 only says "a
    few minutes", so nothing breaks. If the web is ever meant to show the real
    wait, the spec would need to require that the header be exposed.
+   **Resolved 2026-11-22 by PAC-163:** the header is now exposed, so a
+   cross-origin page can read it. No requirement of this spec changed.
 9. OWNER: is slowing one client from seconds to hours the outcome you want?
    At 20 per 10 minutes, one IPv4 client can still write 120 bookings an hour
    (D-1). That fills a typical host's bookable 60 days in an afternoon, and a
@@ -712,7 +720,9 @@ what changed. Citations added by this revision were re-read at `2c7f5e0`.
    cover it, and AC-13 includes it.
 8. **`Retry-After` and CORS.** §2 records that the header is not exposed
    cross-origin (`middleware.go:61-85`); §5 records that exposing it is out
-   of scope and must accompany any future change that reads it.
+   of scope and must accompany any future change that reads it. That future
+   change is PAC-163 (2026-11-22): the header is exposed now, and §2 and §5
+   carry the supersession.
 9. **Test isolation.** §2 records the shared peer address and
    `resetDetectLimiter`; §6 makes non-leaking limiter state a must, and Q6
    assigns it to the plan.
