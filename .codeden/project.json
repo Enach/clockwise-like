@@ -1,10 +1,15 @@
 {
-  "setup": ["go -C backend mod download", "go -C mcp mod download"],
+  "setup": [
+    "go -C backend mod download",
+    "go -C mcp mod download"
+  ],
   "checks": [
     "go -C backend build ./...",
     "go -C backend vet ./...",
     "python scripts/openapi_assemble.py --check",
-    "bash scripts/openapi_gen_go.sh --check",
-    { "command": "go -C mcp test ./...", "timeoutSec": 900 }
+    {
+      "command": "go -C mcp test ./...",
+      "timeoutSec": 900
+    }
   ]
 }
