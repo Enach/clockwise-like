@@ -103,7 +103,10 @@ func TestCollectiveSlotsAlgorithm(t *testing.T) {
 func TestGenerateICS(t *testing.T) {
 	start := time.Date(2024, 6, 15, 14, 0, 0, 0, time.UTC)
 	end := start.Add(30 * time.Minute)
-	ics := generateICS("Team Sync", "Alice", "alice@example.com", "Bob", start, end)
+	ics, err := generateICS("Team Sync", "Alice", "alice@example.com", "Bob", start, end)
+	if err != nil {
+		t.Fatalf("generateICS: %v", err)
+	}
 
 	for _, want := range []string{
 		"BEGIN:VCALENDAR",

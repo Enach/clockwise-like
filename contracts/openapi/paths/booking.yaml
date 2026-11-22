@@ -24,6 +24,24 @@ paths:
       operationId: getPublicLinkInfo
       tags: [booking]
       summary: Public metadata for a bookable scheduling link.
+      description: >-
+        Rate limited per client on the slot-listing budget, which it shares
+        with `getPublicBookingSlots`: at most 120 requests per client per fixed
+        1-minute window across both operations and all links. The limit is
+        checked and the request counted atomically as the handler's first
+        statement, before the link lookup, so every request counts whatever it
+        would otherwise have answered (200, 404, 410 or 500) and a refused
+        request answers 429 even for an unknown slug — it cannot tell a slug
+        that exists from one that does not. Client identification, the
+        per-process caveat and the sweep are exactly as described on
+        `createPublicBooking`.
+        This operation answers with every accepted host's address, and until
+        the 2026-11-22 security audit it had no limiter at all: with default
+        slugs of the shape "{first-name}-{duration}min" an unauthenticated
+        first-name dictionary sweep harvested each host's email, name, avatar
+        and calendar-connection coverage at any rate. Generated slugs now carry
+        32 bits of entropy as well (see `createSchedulingLink`); slugs issued
+        before that keep resolving unchanged.
       security: []
       responses:
         '200':
@@ -48,6 +66,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '429':
+          $ref: '#/components/responses/BookingSlotsRateLimited'
         '500':
           description: >-
             Storage failure. Body: {"error":"internal error"}. Includes a failed
@@ -299,7 +319,15 @@ paths:
           description: >-
             Validation failure, checked before the offerable-start rule (a 400
             is never turned into a 409). Messages: "invalid request body";
-            "name, email, and start are required"; "invalid start time, use RFC3339";
+            "name, email, and start are required"; "name must not contain line
+            breaks" (`name` holds CR, LF or NUL); "email must be a valid email
+            address" (`email` is not exactly one address: a display name, a
+            second address, a line break, surrounding space or over 254
+            characters are all refused) — both from the 2026-11-22 security
+            audit, finding 1, checked right after the required check and before
+            `start` is parsed, because the booker's name and address reach the
+            To header and Subject of the confirmation email and the ATTENDEE
+            property of the iCalendar invitation it carries; "invalid start time, use RFC3339";
             "invalid end time, use RFC3339"; "duration does not match end time"
             (`end` sent together with `duration` or `duration_minutes`, and
             end - start is not exactly that many minutes, seconds and fractions
@@ -788,7 +816,18 @@ paths:
       summary: Create a scheduling link owned by the caller.
       description: >-
         The caller is inserted as an `accepted` host. An empty/omitted `slug` is
-        auto-generated from the owner's name.
+        auto-generated from the owner's name, their first duration and 8 random
+        hexadecimal characters: "{first-name}-{duration}min-{8 hex}", e.g.
+        "nicolas-30min-3f9a1c04". The entropy is the slug's secret (2026-11-22
+        security audit, finding 2): before it a default slug was exactly
+        "{first-name}-{duration}min", so an unauthenticated first-name
+        dictionary sweep of `getPublicLinkInfo` harvested every host's address.
+        Only generation changed: no stored slug was rewritten, every slug issued
+        before keeps resolving, and an explicit `slug` is still taken exactly as
+        sent. An owner whose name holds nothing usable (a provider that sent no
+        `name` at all, or a name no character of which survives slug
+        normalisation) gets the stem "meet" rather than the 500 that shape used
+        to produce.
 
         PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): an entry of `co_host_emails` resolves to an account only when
         exactly one account holds that address DOMAIN-CONFIRMED (compared
@@ -2693,8 +2732,10 @@ components:
 
     BookingSlotsRateLimited:
       description: >-
-        The client has already made 120 requests to `getPublicBookingSlots` in its
-        current 1-minute window (NEW-booking-rate-limit). Nothing was looked up.
+        The client has already made 120 requests to `getPublicBookingSlots` and
+        `getPublicLinkInfo` together in its current 1-minute window
+        (NEW-booking-rate-limit; `getPublicLinkInfo` joined this budget with
+        the 2026-11-22 security audit, finding 2). Nothing was looked up.
         Body: `{"error":"rate limit exceeded"}`, Content-Type application/json.
         `Retry-After` is the whole number of seconds until the client's window
         ends, rounded up, never less than 1 and never more than 60. Not exposed
@@ -2732,7 +2773,11 @@ components:
     SchedulingLinkValidationError:
       description: >-
         Validation failure from validateSchedulingLink / parseClock. Messages:
-        "title is required"; "at least one duration is required"; "durations must be
+        "title is required"; "title must not contain line breaks" (the title
+        holds CR, LF or NUL; it is the Subject of the confirmation email and
+        the SUMMARY property of the iCalendar invitation, both line-oriented —
+        2026-11-22 security audit, finding 1; reported right after "title is
+        required"); "at least one duration is required"; "durations must be
         positive integers"; "at least one day is required"; "days_of_week must contain
         values between 0 and 6"; "window times must use HH:MM"; "window_start must be
         before window_end"; "buffers must be zero or positive"; "min_notice_minutes
@@ -3585,8 +3630,9 @@ components:
           type: string
           description: >-
             Normalised to lowercase alphanumerics and dashes. When it normalises to
-            the empty string a slug is generated from the owner's name plus the first
-            duration.
+            the empty string a slug is generated from the owner's name, the first
+            duration and 8 random hexadecimal characters (see the operation
+            description).
         duration_options:
           type: array
           nullable: true

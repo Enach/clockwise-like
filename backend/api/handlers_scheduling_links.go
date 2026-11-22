@@ -11,6 +11,7 @@ import (
 
 	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/safetext"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -251,6 +252,12 @@ func parseClock(value string) (time.Time, error) {
 func validateSchedulingLink(link *storage.SchedulingLink) *httpError {
 	if strings.TrimSpace(link.Title) == "" {
 		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "title is required"}
+	}
+	// The title is the confirmation email's Subject and the invitation's
+	// SUMMARY property, both line-oriented (2026-11-22 security audit,
+	// finding 1).
+	if safetext.HasControl(link.Title) {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: msgTitleNoLineBreaks}
 	}
 	if len(link.DurationOptions) == 0 {
 		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "at least one duration is required"}

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Enach/paceday/backend/domain"
+	"github.com/Enach/paceday/backend/internal/safetext"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -97,6 +98,14 @@ func refuse(cause string, account uuid.UUID, kind string) (*SignInResult, error)
 // refusal; any other error is a failure to create or bind (nothing written).
 func ResolveSignIn(ctx context.Context, db DBTX, req SignInRequest) (*SignInResult, error) {
 	req.Email = strings.TrimSpace(req.Email)
+	// 2026-11-22 security audit, finding 1: the stored name reaches the
+	// Subject of a team invitation (as the inviter's name) and the ICS of a
+	// booking confirmation (as a host's name), both line-oriented. It is not
+	// request input and so cannot be answered with a 400 — it is whatever the
+	// identity provider chose to send, and `name` is optional in OIDC — so it
+	// is fitted to one line here, at the one place every provider's sign-in
+	// passes through. The mail and ICS composers sanitise again.
+	req.Name = safetext.Label(req.Name)
 	if req.Identity.Subject == "" || req.Identity.Provider == "" {
 		return refuse("the provider answer carries no subject", uuid.Nil, "")
 	}

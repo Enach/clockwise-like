@@ -713,7 +713,13 @@ paths:
         "400":
           description: >
             JSON error "name is required" — covers both a malformed body and a blank/
-            whitespace-only name (one branch, one message).
+            whitespace-only name (one branch, one message). Or "name must not
+            contain line breaks" when the name holds CR, LF or NUL: the team's
+            name is interpolated into the Subject header of every invitation
+            the team sends, where a line break would end the header and let the
+            rest of the name write headers and a body of its own (2026-11-22
+            security audit, finding 1). Checked after the blank check, so a
+            blank name keeps its message; nothing is written either way.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -929,7 +935,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Team"
         "400":
-          description: JSON error "invalid team id" or "name is required".
+          description: >
+            JSON error "invalid team id", "name is required", or "name must not
+            contain line breaks" when the name holds CR, LF or NUL (the same
+            rule and reason as on createTeam; nothing is renamed).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

@@ -2,9 +2,12 @@ package api
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 
+	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/internal/testdb"
 	"github.com/Enach/paceday/backend/storage"
 )
@@ -41,4 +44,24 @@ func TestMain(m *testing.M) {
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	return sharedTestDB
+}
+
+// pinnedSlugSuffixes pins the first n draws of a generated slug's random
+// suffix to pinned and makes every later draw unique.
+//
+// A generated slug carries 32 bits of entropy since the 2026-11-22 security
+// audit (engine.GenerateSlug): without it a default slug was guessable from
+// the owner's first name, and GET /api/book/{slug} answers with every host's
+// address. A test that needs two creates to pick the same slug — the collision
+// PAC-126 is about — pins the draws it must collide on; the later unique draws
+// let the loser's retry find a slug of its own.
+func pinnedSlugSuffixes(tb engine.TB, pinned string, n int) {
+	tb.Helper()
+	var draws atomic.Int64
+	engine.InstallSlugSuffix(tb, func() (string, error) {
+		if d := draws.Add(1); d > int64(n) {
+			return fmt.Sprintf("c0ffee%02d", d), nil
+		}
+		return pinned, nil
+	})
 }

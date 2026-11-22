@@ -17,6 +17,7 @@ import (
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/internal/safetext"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
@@ -151,7 +152,19 @@ func (h *bookingHandlers) confirmation(db storage.DBTX, link *storage.Scheduling
 }
 
 // GET /api/book/{slug}
+//
+// Rate limited on the slot-listing budget, as the handler's first statement
+// (2026-11-22 security audit, finding 2). This is the route that answers with
+// each accepted host's address, and it was the one public booking route with
+// no limiter at all: an unauthenticated first-name dictionary sweep of the
+// slugs generated before that audit harvested every host's email, name,
+// avatar and calendar coverage, at whatever rate the attacker liked — nginx
+// adds no limit_req by design, so this is the only control. Counted first, so
+// a refused request learns nothing, not even whether the slug exists.
 func (h *bookingHandlers) getLinkInfo(w http.ResponseWriter, r *http.Request) {
+	if !allowPublicBooking(w, r, bookingSlotsLimiter) {
+		return
+	}
 	link, err := storage.GetSchedulingLinkBySlug(h.db, chi.URLParam(r, "slug"))
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -412,6 +425,19 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	body.Name, body.Email = strings.TrimSpace(body.Name), strings.TrimSpace(body.Email)
 	if body.Name == "" || body.Email == "" || body.Start == "" {
 		writeError(w, "name, email, and start are required", http.StatusBadRequest)
+		return
+	}
+	// 2026-11-22 security audit, finding 1: the booker's name and address are
+	// unauthenticated input that reaches the confirmation's To header and
+	// Subject, its body, and the ATTENDEE property of the METHOD:REQUEST
+	// invitation it carries. A line break in either used to end the line it
+	// landed in; an address was never checked for shape at all.
+	if safetext.HasControl(body.Name) {
+		writeError(w, msgNoLineBreaks, http.StatusBadRequest)
+		return
+	}
+	if !validBookerAddress(body.Email) {
+		writeError(w, msgInvalidBookerEmail, http.StatusBadRequest)
 		return
 	}
 	start, err := time.Parse(time.RFC3339, body.Start)
