@@ -18,9 +18,27 @@ import (
 // cannot reintroduce the injection by skipping this check.
 //
 // Deliberately narrow: control characters on the named fields, plus an
-// address shape and a length ceiling where an unbounded value reaches a
-// header. The contract's per-field maxLength is enforced elsewhere, by the
-// generated strict wrapper.
+// address shape and a 254-octet ceiling on the one field that becomes a
+// recipient.
+//
+// It is NOT a length limit on the others, and nothing else is one either.
+// Measured at c3d23aa: the contract declares no maxLength on a team name, a
+// link title or a booker name — it says so in as many words on
+// TeamNameRequest.name, "no maximum length is enforced by the backend" — and
+// the generated strict wrapper would not enforce one if it did: it decodes
+// with the same json.NewDecoder(r.Body).Decode(&body) call, paceday.gen.go
+// contains no maxLength, minLength or pattern check at all, and no validation
+// middleware is mounted. The whole backend has exactly one field-length
+// check, on a habit title (handlers_habits.go:36-37); the only other bound is
+// the 1 MiB body cap. So roughly a megabyte per field is storable today and
+// reaches these composers.
+//
+// Deciding those limits, declaring them in the contract and enforcing them is
+// separate work that nobody has approved yet:
+// docs/specs/NEW-request-field-length-limits.md. Its §0 disproves the
+// "the strict wrapper enforces the contract" premise explicitly — the same
+// premise under which this injection stood unnoticed, which is why this file
+// states the truth rather than pointing at a guard that does not exist.
 
 const (
 	// msgNoLineBreaks refuses a name — a team's or a booker's — that would
@@ -36,8 +54,9 @@ const (
 )
 
 // maxAddressLen is the longest address a forward path may hold (RFC 5321
-// §4.5.3.1.3). A sanity ceiling, not the contract's maxLength. It is the
-// composers' own limit (safetext.MaxAddressLen) so the two cannot drift: an
+// §4.5.3.1.3). It is this gate's own ceiling: the contract declares no
+// maxLength on the booker's address. It is also the composers' limit
+// (safetext.MaxAddressLen) so the two cannot drift: an
 // address this gate lets through is one they can render whole, and neither
 // layer ever shortens one (docs/specs/NEW-request-field-length-limits.md
 // §3.2, recorded for addresses as D-15).

@@ -40,10 +40,17 @@ import (
 //
 // It is a render guard, not an entry gate: it shortens the outgoing header or
 // content line and never the stored value, which keeps whatever was written.
-// The entry limit on these fields is the contract's per-field maxLength,
-// enforced separately (docs/specs/NEW-request-field-length-limits.md, whose
-// rule for a request value is refuse, never truncate — this cap is at the
-// other boundary, on data already stored).
+//
+// There is no entry limit on these fields today. Nothing in the backend
+// bounds a team name, a link title or a person's name, and the contract
+// declares no maxLength on any of them, so a value of roughly a megabyte (the
+// body cap) can be stored and arrive here. That is what this cap is for, and
+// it is why it truncates instead of refusing: refusing at this point would
+// drop a message over data that was already accepted and stored, long after
+// anyone could be told. Declaring and enforcing entry limits is separate,
+// unapproved work (docs/specs/NEW-request-field-length-limits.md); its rule
+// for a request value is refuse, never truncate, which is the right rule at
+// that boundary and not at this one.
 const MaxLen = 200
 
 // MaxAddressLen is the longest address a forward path may hold (RFC 5321
