@@ -395,9 +395,9 @@ configurable). `.codeden/project.json` in each repo gives the setup commands and
 the fast checks a session runs after each turn; the slow gates (database tests,
 lint, sfguard, e2e) stay in CI.
 
-- **Single-repo change.** The `codeden/...` branch is fine: it carries no
-  `pac-N`, so CI pairs it with the other repo's `main` (§3 "Paired branches"
-  rule 1). Open the PR with CodeDen's **Open PR** or `gh pr create`, titled
+- **Single-repo change.** The `codeden/...` branch is fine: no branch of the
+  same name exists in the other repo, so CI pairs it with the other repo's
+  `main` (§3 "Paired branches" rules 1 and 3). Open the PR with CodeDen's **Open PR** or `gh pr create`, titled
   `[PAC-N] …`.
 - **Paired change (both repos).** CI pairs only branches with the same name
   containing `pac-N`, and the two CodeDen sessions have different branch names.
@@ -406,10 +406,13 @@ lint, sfguard, e2e) stay in CI.
   `codeden/...` branch):
   ```bash
   git push origin HEAD:refs/heads/factory/pac-N-<slug>
-  gh pr create --head factory/pac-N-<slug> --base main --title "[PAC-N] …"
+  gh pr create --head factory/pac-N-<slug> --base main     --title "[PAC-N] …" --body-file pr-body.md
   ```
-  Use the same `<slug>` in both repos. Later pushes go to the same remote
-  branch the same way.
+  Use the same `<slug>` in both repos. The body file carries the checks you
+  actually ran and their output (§3 rule 1); `gh` needs a body when it is not
+  run interactively. Later pushes go to the same remote branch the same way;
+  after a rebase use `git push --force-with-lease origin
+  HEAD:refs/heads/factory/pac-N-<slug>`.
 - **Merging.** From a checkout of the PR's repo:
   `bash scripts/factory/merge-when-green.sh <pr> "<merge record>"`. The script
   is identical in both repos (`scripts/factory/README.md`).
