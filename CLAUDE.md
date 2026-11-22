@@ -57,3 +57,7 @@ Before every commit touching `backend/` or `mcp/`:
 ## Pre-commit hook
 
 The `.githooks/pre-commit` hook enforces build + lint automatically. Coverage is **not** enforced by the hook (testcontainers are slow), but must be verified manually before pushing.
+
+## Running the factory from CodeDen
+
+In a CodeDen session, follow `docs/factory/README.md` §9: a change that touches both repos is pushed under the same `factory/pac-N-<slug>` branch in each repo (CI pairs on that name), and PRs merge through `scripts/factory/merge-when-green.sh`.

@@ -385,3 +385,34 @@ so the next stage can start cold.
 This is also why the artifact must stand alone. If a spec, contract or plan only
 makes sense with a verbal gloss from whoever produced it, it cannot cross the
 boundary, and the challenger roles are instructed to treat that as a defect.
+
+## 9. Running the factory from CodeDen
+
+[CodeDen](https://github.com/leonvanzyl/codeden) can host the factory's agent
+sessions locally. Each session works in its own worktree of **one** repository,
+on a branch CodeDen names `codeden/<slug>-<id>` (the prefix is not
+configurable). `.codeden/project.json` in each repo gives the setup commands and
+the fast checks a session runs after each turn; the slow gates (database tests,
+lint, sfguard, e2e) stay in CI.
+
+- **Single-repo change.** The `codeden/...` branch is fine: it carries no
+  `pac-N`, so CI pairs it with the other repo's `main` (§3 "Paired branches"
+  rule 1). Open the PR with CodeDen's **Open PR** or `gh pr create`, titled
+  `[PAC-N] …`.
+- **Paired change (both repos).** CI pairs only branches with the same name
+  containing `pac-N`, and the two CodeDen sessions have different branch names.
+  So publish each half under the same factory name, `factory/pac-N-<slug>`, and
+  open the PRs from it instead of from CodeDen's **Open PR** (which pushes the
+  `codeden/...` branch):
+  ```bash
+  git push origin HEAD:refs/heads/factory/pac-N-<slug>
+  gh pr create --head factory/pac-N-<slug> --base main --title "[PAC-N] …"
+  ```
+  Use the same `<slug>` in both repos. Later pushes go to the same remote
+  branch the same way.
+- **Merging.** From a checkout of the PR's repo:
+  `bash scripts/factory/merge-when-green.sh <pr> "<merge record>"`. The script
+  is identical in both repos (`scripts/factory/README.md`).
+- **Owner decisions** are recorded outside the repositories, on the owner's
+  machine; a session that needs one asks the owner rather than guessing (§2
+  Stage 0).
