@@ -248,6 +248,12 @@ func corsMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
+			// PAC-163: Retry-After is not CORS-safelisted, so without this a page
+			// on another origin sees the public booking 429 but cannot read the
+			// wait the server already computed (ratelimit_booking.go, allowPublicBooking).
+			// The list holds only what a client legitimately needs to read; it is
+			// sent in both CORS shapes, since either can serve a cross-origin page.
+			w.Header().Set("Access-Control-Expose-Headers", "Retry-After")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return
