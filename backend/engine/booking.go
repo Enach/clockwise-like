@@ -891,8 +891,9 @@ func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, sta
 	// the line it lands in and writes the rest of the message itself (a Bcc,
 	// a text/html part, a second ATTENDEE).
 	//
-	// The labels are repaired and capped; the address is not (D-15 of
-	// docs/specs/NEW-request-field-length-limits.md). An address that cannot
+	// The labels are repaired and capped; the address is not
+	// (docs/specs/NEW-request-field-length-limits.md §3.2 refuse-never-truncate,
+	// reason 2, recorded for addresses as D-15). An address that cannot
 	// go in a header as it stands fails the send, which is logged with the
 	// booking id and reported: a cut or repaired address is a different, valid
 	// address, so repairing it would deliver this confirmation — and the ICS

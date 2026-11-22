@@ -825,8 +825,9 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) error {
 	// rest of the message — a Bcc, a text/html part — over the deployment's
 	// relay, SPF/DKIM-aligned as the deployment's own domain.
 	//
-	// The names are repaired and capped; the recipient is not (D-15 of
-	// docs/specs/NEW-request-field-length-limits.md). An address that cannot
+	// The names are repaired and capped; the recipient is not
+	// (docs/specs/NEW-request-field-length-limits.md §3.2 refuse-never-truncate,
+	// reason 2, recorded for addresses as D-15). An address that cannot
 	// go in a header as it stands fails the send, which the caller logs with
 	// the invite id and reports: a repaired or cut address is somebody else's
 	// valid address, and inviting a stranger to a team is worse than an

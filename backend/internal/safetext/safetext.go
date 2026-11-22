@@ -16,8 +16,9 @@
 // reintroduce the injection by skipping the entry check.
 //
 // Labels and addresses are treated differently, and the difference matters
-// (decision D-15 of docs/specs/NEW-request-field-length-limits.md). A label —
-// a team name, a person's name, a meeting title — is prose: cutting it short
+// (docs/specs/NEW-request-field-length-limits.md §3.2, whose reason 2 is this
+// one, recorded for addresses as decision D-15). A label — a team name, a
+// person's name, a meeting title — is prose: cutting it short
 // is ugly but harmless, so Label repairs and caps it. An address is an
 // identifier: a truncated address is a different person's valid address, and a
 // truncated mailto: is a different recipient, so Address never repairs or cuts

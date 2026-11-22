@@ -39,8 +39,8 @@ const (
 // §4.5.3.1.3). A sanity ceiling, not the contract's maxLength. It is the
 // composers' own limit (safetext.MaxAddressLen) so the two cannot drift: an
 // address this gate lets through is one they can render whole, and neither
-// layer ever shortens one (D-15 of
-// docs/specs/NEW-request-field-length-limits.md).
+// layer ever shortens one (docs/specs/NEW-request-field-length-limits.md
+// §3.2, recorded for addresses as D-15).
 const maxAddressLen = safetext.MaxAddressLen
 
 // validBookerAddress reports whether s is exactly one address and nothing
