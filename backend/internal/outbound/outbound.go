@@ -16,9 +16,12 @@ import (
 	"net/smtp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/Enach/paceday/backend/internal/testdial"
 )
 
 // Limits are the per-call bounds.
@@ -120,13 +123,29 @@ func ReadLimited(r io.Reader, max int64) ([]byte, error) {
 	return b, nil
 }
 
+// smtpDialer is SendMail's dialler: the connect timeout is the SMTP limit,
+// and inside a test binary (and only there) Control applies testdial.Check,
+// so no test can open an SMTP connection to anything but loopback whatever
+// address it was handed (PAC-157, following PAC-145). net.DialTimeout, which
+// this replaces, installs no Control function and so escaped the guard; in
+// production Control stays nil and the dial is unchanged.
+func smtpDialer(limit time.Duration) *net.Dialer {
+	d := &net.Dialer{Timeout: limit}
+	if testdial.Active() {
+		d.Control = func(_, address string, _ syscall.RawConn) error {
+			return testdial.Check(address)
+		}
+	}
+	return d
+}
+
 // SendMail is smtp.SendMail with one deadline, the SMTP limit, from the dial
 // to QUIT (net/smtp has none). TLS is negotiated with STARTTLS when the
 // server offers it, as smtp.SendMail does.
 func SendMail(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
 	limit := Current().SMTP
 	deadline := time.Now().Add(limit)
-	conn, err := net.DialTimeout("tcp", addr, limit)
+	conn, err := smtpDialer(limit).Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
