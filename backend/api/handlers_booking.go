@@ -378,6 +378,11 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 // the key's 400, the body 400s that do not depend on the link, the replay
 // decision, 410, "invalid duration" 400, then as without a key. A keyed
 // request about to answer a 409 or 410 looks for its key once more first.
+//
+// PAC-106: the link-settings checks run twice, the second time inside the save
+// on the link row it locks, so a setting the owner changed while the host
+// calendars were read cannot leave a booking on a slot the new settings do not
+// offer. The second pass answers the same 409 as the first.
 func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) {
 	// NEW-booking-rate-limit: counted before the link lookup and the body, so
 	// 429 precedes every other status and a refused request writes nothing.
@@ -573,7 +578,15 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	}
 	// PAC-81 AC-A19: 503 only when the budget ran out before the insert was
 	// sent (nothing saved); once sent, the insert's own result is 201 or 500.
-	booking, err := h.eng.ConfirmBooking(r.Context(), link, body.Name, body.Email, slot.Start, slot.End, body.Notes, key)
+	//
+	// PAC-106: the save carries the settings half of the rule applied above,
+	// and re-runs it on the link row it reads under its FOR SHARE lock. The
+	// checks so far used `link`, read before the host calendars: an owner's
+	// PATCH that committed while they were read is seen only there.
+	saveCtx := storage.WithBookingSettingsCheck(r.Context(),
+		bookingSettingsCheck(loc, slot.Start, slot.End, requestedDuration, now))
+	booking, err := h.eng.ConfirmBooking(saveCtx, link, body.Name, body.Email, slot.Start, slot.End, body.Notes, key)
+	var settingsRefused *settingsRefusalError
 	switch {
 	case errors.Is(err, budget.ErrExpired):
 		budget.WriteExpired(w)
@@ -583,6 +596,13 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		// handled, before the save took its lock on it. Nothing was written:
 		// the same 404 as for a link deleted before the request.
 		writeError(w, "not found", http.StatusNotFound)
+		return
+	case errors.As(err, &settingsRefused):
+		// PAC-106: the link's settings changed while the host calendars were
+		// read, and the slot is no longer one the link offers. Nothing was
+		// saved: the same 409 the rule gives for an unofferable slot, with
+		// the reason the rule gave on the settings the save read.
+		refuse(func() { writeRefusal(w, link, settingsRefused.reason) })
 		return
 	case errors.Is(err, engine.ErrHostCalendarUnreadable):
 		// PAC-72 D-6: an unreadable host calendar counts as busy.
