@@ -569,8 +569,11 @@ func TestPAC97_AC14_DefaultDetectorIsForbiddenInTests(t *testing.T) {
 // the system resolver, the 2 s budget and a 10 000-entry cache.
 func TestPAC97_AC15_ProductionConstruction(t *testing.T) {
 	d := NewDetector(DetectorOptions{})
-	if d.resolver != net.DefaultResolver {
-		t.Errorf("resolver = %T %p, want net.DefaultResolver", d.resolver, d.resolver)
+	// The production resolver is judged through defaultMXResolver: since
+	// PAC-157 a Detector built inside a test binary gets the refusing
+	// stand-in instead, so this binary can never hold net.DefaultResolver.
+	if got := defaultMXResolver(false); got != MXResolver(net.DefaultResolver) {
+		t.Errorf("production resolver = %T %v, want net.DefaultResolver", got, got)
 	}
 	if d.budget != 2*time.Second || MXLookupBudget != 2*time.Second {
 		t.Errorf("budget = %v, want 2s (D-7)", d.budget)

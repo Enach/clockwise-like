@@ -11,9 +11,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Enach/paceday/backend/domain"
+	"github.com/Enach/paceday/backend/internal/testdial"
 	"github.com/Enach/paceday/backend/storage"
 )
 
@@ -101,7 +103,38 @@ type mxCall struct {
 	answer string
 }
 
-// NewDetector builds a Detector. A nil Resolver is the system resolver.
+// refusingMXResolver is the resolver a Detector built without one gets inside
+// a test binary (PAC-157, following backend/internal/testdial). It queries
+// nothing and refuses every name with an error wrapping testdial.ErrRealHost.
+//
+// Refusing with an error rather than panicking is deliberate. The error takes
+// the lookup's documented failure path: the answer is choose, cached for
+// MXFailureTTL only, and Detector.lookup logs the refusal for the domain, so
+// a test that reaches real DNS unconfigured fails loudly and can never read
+// google or microsoft out of a live reply. A silent empty answer — no records,
+// no error — would instead be a definite choose and would let such a test pass
+// for the wrong reason, which is exactly what this guard exists to stop. A
+// panic would abort test binaries in packages that only ever touch the
+// detector in passing, for a condition this package already models as a
+// failure. (The auth package's own tests keep the stricter forbiddenResolver,
+// which does panic: in here, reaching it is always a bug.)
+type refusingMXResolver struct{}
+
+func (refusingMXResolver) LookupMX(_ context.Context, name string) ([]*net.MX, error) {
+	return nil, fmt.Errorf("%w: refused the MX lookup for %q; a test must inject DetectorOptions.Resolver", testdial.ErrRealHost, name)
+}
+
+// defaultMXResolver is the resolver of a Detector built without one: the
+// system resolver in production, refusingMXResolver inside a test binary.
+func defaultMXResolver(inTest bool) MXResolver {
+	if inTest {
+		return refusingMXResolver{}
+	}
+	return net.DefaultResolver
+}
+
+// NewDetector builds a Detector. A nil Resolver is the system resolver, except
+// inside a test binary, where it is one that refuses every query (PAC-157).
 func NewDetector(o DetectorOptions) *Detector {
 	d := &Detector{
 		resolver: o.Resolver,
@@ -113,7 +146,7 @@ func NewDetector(o DetectorOptions) *Detector {
 		inflight: map[string]*mxCall{},
 	}
 	if d.resolver == nil {
-		d.resolver = net.DefaultResolver
+		d.resolver = defaultMXResolver(testdial.Active())
 	}
 	if d.now == nil {
 		d.now = time.Now
@@ -131,11 +164,20 @@ func NewDetector(o DetectorOptions) *Detector {
 // resolver that sends every query to addr (a literal ip:port) and nowhere
 // else. main.go builds it only from config.DecideMXResolver, which refuses it
 // without PACEDAY_ALLOW_STANDINS and outside config.PermittedPeer.
+//
+// Inside a test binary (and only there) its dialler also applies
+// testdial.Check, so a stand-in pointed at anything but loopback is refused
+// (PAC-157): this was the last raw dialler in the package.
 func StandInResolver(addr string) *net.Resolver {
 	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			var dl net.Dialer
+			dl := net.Dialer{}
+			if testdial.Active() {
+				dl.Control = func(_, address string, _ syscall.RawConn) error {
+					return testdial.Check(address)
+				}
+			}
 			return dl.DialContext(ctx, network, addr)
 		},
 	}
