@@ -175,6 +175,57 @@ func cheapRefusal(link *storage.SchedulingLink, loc *time.Location, start, end t
 	return "", false
 }
 
+// --- PAC-106: the same rule, re-applied at the save -------------------------
+
+// settingsRefusal is the link-settings half of the offerable-start rule: the
+// part of it that depends only on the link's own row, so it can be applied
+// again later to a newer read of that row. It is cheapRefusal (horizon, days,
+// hours, grid, notice) plus the duration options, which the handler checks
+// before the rule on its first read and which the grid cannot see: a grid is
+// drawn for a duration, never for the set of durations the link offers.
+//
+// A duration the link no longer offers is reported as outside_link_hours: the
+// requested [start, end) is then not one of the starts the link offers, which
+// is what that reason states, and no new reason or body is introduced.
+//
+// now is the request's clock, read once (PAC-72): the re-check re-reads the
+// settings, never the time, so a slot does not become too soon or beyond the
+// horizon merely because the host calendars took a while to read.
+func settingsRefusal(link *storage.SchedulingLink, loc *time.Location, start, end time.Time, duration int, now time.Time) (gen.BookingRefusalReason, bool) {
+	if !durationAllowed(link, duration) {
+		return gen.OutsideLinkHours, true
+	}
+	return cheapRefusal(link, loc, start, end, duration, now)
+}
+
+// settingsRefusalError is a save-time settings refusal (PAC-106). It carries
+// the rule's reason, so the handler answers exactly the refusal the rule
+// gives for an unofferable slot, and unwraps to storage.ErrLinkSettingsChanged,
+// so the save and the engine pass it through instead of reading it as a
+// storage failure.
+type settingsRefusalError struct{ reason gen.BookingRefusalReason }
+
+func (e *settingsRefusalError) Error() string {
+	return "link settings changed, slot no longer offerable: " + string(e.reason)
+}
+
+func (e *settingsRefusalError) Unwrap() error { return storage.ErrLinkSettingsChanged }
+
+// bookingSettingsCheck is the re-check the booking save runs inside its
+// transaction, against the link row it read under its FOR SHARE lock
+// (PAC-106): the request judged [start, end) against a read taken before the
+// host calendars, and a PATCH can have committed since. Everything it needs
+// is captured here, so the rule applied at the save is the one the request
+// applied, on settings that are current.
+func bookingSettingsCheck(loc *time.Location, start, end time.Time, duration int, now time.Time) storage.BookingSettingsCheck {
+	return func(link *storage.SchedulingLink) error {
+		if reason, refused := settingsRefusal(link, loc, start, end, duration, now); refused {
+			return &settingsRefusalError{reason: reason}
+		}
+		return nil
+	}
+}
+
 // --- PAC-88: the day zone, the overview range and the listing's days ---------
 
 // displayZonePattern is the contract's display_time_zone pattern.

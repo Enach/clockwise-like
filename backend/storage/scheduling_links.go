@@ -667,12 +667,13 @@ func lockLiveLinkForShare(q Querier, id uuid.UUID) error {
 // takes the save's advisory keys (BookingAdvisoryKeys) one statement each in
 // ascending order, and only then decides the booking again in separate
 // statements: the idempotency key (replay or key reused), the link's use
-// limit, the overlap with the link's own bookings and with every rule host's
-// bookings on any link. Each outcome is distinct and never nil, nil:
-// ErrLinkGone, ErrIdempotencyKeyReused, ErrLinkExhausted, ErrSlotTaken,
-// ErrHostBusy, a booking with Replayed set (nothing written), or the saved
-// booking. wrap, when not nil, wraps the transaction for the insert statement
-// only (the PAC-90 seam).
+// limit, the slot against the locked row's settings (PAC-106, the check ctx
+// carries), the overlap with the link's own bookings and with every rule
+// host's bookings on any link. Each outcome is distinct and never nil, nil:
+// ErrLinkGone, ErrIdempotencyKeyReused, ErrLinkExhausted, a check's refusal
+// (wrapping ErrLinkSettingsChanged), ErrSlotTaken, ErrHostBusy, a booking
+// with Replayed set (nothing written), or the saved booking. wrap, when not
+// nil, wraps the transaction for the insert statement only (the PAC-90 seam).
 //
 // There is deliberately no deferred rollback: on a panic the caller cancels
 // ctx, which makes database/sql close any open row and roll the transaction
@@ -788,24 +789,60 @@ func bookingLimit(usageType string, maxUses sql.NullInt64) (limit int64, limited
 	return 0, false
 }
 
-func saveBookingInTx(ctx context.Context, tx *sql.Tx, b *Booking, wrap func(Querier) Querier) (*Booking, error) {
-	// 1. The PAC-101 bound, for every wait of this transaction.
-	if err := setLinkLockTimeout(tx); err != nil {
-		return nil, err
-	}
-	// 2. The link FOR SHARE, live only.
-	var owner uuid.UUID
-	var usageType string
+// lockedLinkForBooking is step 2 of the save: the link row locked FOR SHARE
+// while it is active and not deleted, with the fields the save and the
+// PAC-106 re-check read. A link deleted or paused first is ErrLinkGone.
+// Fields the save does not read (slug, title, buffers, uses count, refusal
+// message) are left zero: the refusal body stays the link owner's choice as
+// the request read it, like every other refusal of the request.
+func lockedLinkForBooking(ctx context.Context, tx *sql.Tx, id uuid.UUID) (*SchedulingLink, error) {
 	var maxUses sql.NullInt64
+	var durOpts, daysOfWeek pq.Int64Array
+	locked := SchedulingLink{ID: id, Active: true}
 	err := tx.QueryRowContext(ctx, `
-		SELECT owner_user_id, usage_type, max_uses FROM scheduling_links
-		WHERE id = $1 AND active AND deleted_at IS NULL FOR SHARE`, b.LinkID).Scan(&owner, &usageType, &maxUses)
+		SELECT owner_user_id, usage_type, max_uses, duration_options, days_of_week,
+		       window_start_time, window_end_time, min_notice_minutes, booking_horizon_days
+		FROM scheduling_links
+		WHERE id = $1 AND active AND deleted_at IS NULL FOR SHARE`, id).Scan(
+		&locked.OwnerUserID, &locked.UsageType, &maxUses, &durOpts, &daysOfWeek,
+		&locked.WindowStart, &locked.WindowEnd, &locked.MinNoticeMinutes, &locked.BookingHorizonDays)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrLinkGone
 	}
 	if err != nil {
 		return nil, err
 	}
+	if maxUses.Valid {
+		n := int(maxUses.Int64)
+		locked.MaxUses = &n
+	}
+	locked.DurationOptions = int64SliceToInt(durOpts)
+	locked.DaysOfWeek = int64SliceToInt(daysOfWeek)
+	return &locked, nil
+}
+
+// nullableMaxUses is a link's max_uses as bookingLimit reads it.
+func nullableMaxUses(n *int) sql.NullInt64 {
+	if n == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*n), Valid: true}
+}
+
+func saveBookingInTx(ctx context.Context, tx *sql.Tx, b *Booking, wrap func(Querier) Querier) (*Booking, error) {
+	// 1. The PAC-101 bound, for every wait of this transaction.
+	if err := setLinkLockTimeout(tx); err != nil {
+		return nil, err
+	}
+	// 2. The link FOR SHARE, live only, read whole: its use limit and, for
+	// the PAC-106 re-check at step 7b, the settings the offerable-start rule
+	// reads. A PATCH in progress holds the row, so this read waits for it
+	// (bounded by step 1) and READ COMMITTED then sees the row it committed.
+	locked, err := lockedLinkForBooking(ctx, tx, b.LinkID)
+	if err != nil {
+		return nil, err
+	}
+	owner, usageType, maxUses := locked.OwnerUserID, locked.UsageType, nullableMaxUses(locked.MaxUses)
 	// 3. The rule host set (the PAC-72 accepted hosts) and the lock host set
 	// (owner and accepted co-hosts), plain reads.
 	ruleHosts, lockHosts, err := bookingHostSets(ctx, tx, b.LinkID, owner)
@@ -850,6 +887,19 @@ func saveBookingInTx(ctx context.Context, tx *sql.Tx, b *Booking, wrap func(Quer
 		}
 		if n >= limit {
 			return nil, ErrLinkExhausted
+		}
+	}
+	// 7b. PAC-106: the slot, re-decided against the settings read under the
+	// FOR SHARE lock at step 2. The request judged it against a read taken
+	// before the host calendars, which can be seconds old, so an owner's
+	// PATCH that committed in between must not leave a booking on a start
+	// the new settings do not offer. It comes after step 6, so a keyed
+	// retry still replays its own booking, and after step 7, so the use
+	// limit keeps its precedence over a refusal, exactly as in the request's
+	// own order of checks. The error travels verbatim: nothing is written.
+	if check := BookingSettingsCheckFrom(ctx); check != nil {
+		if err := check(locked); err != nil {
+			return nil, err
 		}
 	}
 	// 8. The overlap: this link's bookings, then the rule hosts' bookings on

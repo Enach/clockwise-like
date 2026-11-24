@@ -481,6 +481,12 @@ func (e *BookingEngine) calendarClientForUser(ctx, dbCtx context.Context, userID
 // the result is ErrLinkGone: nothing is stored and no completion unit starts.
 // A wait for that lock is bounded by storage.LinkLockTimeout (a 500 past it).
 //
+// PAC-106: when ctx carries a settings check (storage.WithBookingSettingsCheck),
+// the save applies it to the link row it read under that lock, so a setting
+// the owner changed while the host calendars were being read is seen. A
+// refusal is returned verbatim (it unwraps to ErrLinkSettingsChanged):
+// nothing is stored and no completion unit starts.
+//
 // PAC-82: the save decides the booking again under its advisory keys
 // (storage.SaveBookingOnLiveLink). idempotencyKey is the request's
 // Idempotency-Key ("" for none). A save that wrote nothing returns one of
@@ -556,6 +562,14 @@ func (e *BookingEngine) ConfirmBooking(
 		// connection is already released.
 		return nil, ErrLinkGone
 	}
+	if errors.Is(err, ErrLinkSettingsChanged) {
+		// PAC-106: the link's settings changed before the save took its lock
+		// on the link, and the slot is no longer one the link offers. Nothing
+		// was stored and no completion unit starts. The error is returned as
+		// the check built it, so the caller reads its own refusal reason back
+		// from it.
+		return nil, err
+	}
 	for _, refusal := range saveRefusals {
 		if errors.Is(err, refusal) {
 			// PAC-82: decided again under the save's keys; nothing stored,
@@ -626,6 +640,14 @@ func insertBookingOnConn(ctx context.Context, conn *sql.Conn, b *storage.Booking
 // took its lock on the link. Nothing was written and no completion unit was
 // started. The public booking handler answers it with the 404.
 var ErrLinkGone = storage.ErrLinkGone
+
+// ErrLinkSettingsChanged is what a PAC-106 settings refusal unwraps to: the
+// link's settings changed between the request's read of the link and the
+// save, and the slot is no longer one the link offers. Nothing was written.
+// ConfirmBooking returns the check's own error, so a caller that attached a
+// check (storage.WithBookingSettingsCheck) reads its refusal reason back
+// from it.
+var ErrLinkSettingsChanged = storage.ErrLinkSettingsChanged
 
 // The PAC-82 outcomes of a save that wrote nothing (storage's sentinels).
 var (
