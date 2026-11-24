@@ -184,18 +184,21 @@ func cheapRefusal(link *storage.SchedulingLink, loc *time.Location, start, end t
 // before the rule on its first read and which the grid cannot see: a grid is
 // drawn for a duration, never for the set of durations the link offers.
 //
-// A duration the link no longer offers is reported as outside_link_hours: the
-// requested [start, end) is then not one of the starts the link offers, which
-// is what that reason states, and no new reason or body is introduced.
+// A duration the link no longer offers is given no grid at all, which is what
+// it is: the link offers no slot of that length, so no [start, end) of that
+// length is one of its starts. The rule then refuses it with
+// outside_link_hours, in its place in the contract's precedence
+// (beyond_horizon first, too_soon last) and with no new reason or body.
 //
 // now is the request's clock, read once (PAC-72): the re-check re-reads the
 // settings, never the time, so a slot does not become too soon or beyond the
 // horizon merely because the host calendars took a while to read.
 func settingsRefusal(link *storage.SchedulingLink, loc *time.Location, start, end time.Time, duration int, now time.Time) (gen.BookingRefusalReason, bool) {
+	onTheGridFor := duration
 	if !durationAllowed(link, duration) {
-		return gen.OutsideLinkHours, true
+		onTheGridFor = 0 // GridSlots offers nothing: no start of that length
 	}
-	return cheapRefusal(link, loc, start, end, duration, now)
+	return cheapRefusal(link, loc, start, end, onTheGridFor, now)
 }
 
 // settingsRefusalError is a save-time settings refusal (PAC-106). It carries
